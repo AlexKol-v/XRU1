@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cp:*)",
+      "Bash(mkdir:*)",
+      "Bash(find:*)",
+      "Bash(ls:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(robocopy:*)",
+      "Bash(D:/UE5/UE_5.7/Engine/Build/BatchFiles/Build.bat:*)",
+      "PowerShell(Copy-Item:*)",
+      "PowerShell(Get-ChildItem:*)",
+      "PowerShell(Test-Path:*)",
+      "PowerShell(& 'D:/UE5/UE_5.7/Engine/Build/BatchFiles/Build.bat':*)",
+      "Read(//D/UE5/UnrealProjects/cst-3d-gubkin-2026-04/**)",
+      "Grep(//D/UE5/UnrealProjects/cst-3d-gubkin-2026-04/**)",
+      "Glob(//D/UE5/UnrealProjects/cst-3d-gubkin-2026-04/**)",
+      "mcp__codebase-memory",
+      "Bash(npm view:*)",
+      "Bash(npx:*)",
+      "PowerShell(& 'D:/UE5/UnrealProjects/XRU1/Build-XRU1.ps1':*)"
+    ],
+    "deny": [
+      "Write(//D/UE5/UnrealProjects/cst-3d-gubkin-2026-04/**)",
+      "Edit(//D/UE5/UnrealProjects/cst-3d-gubkin-2026-04/**)"
+    ]
+  }
+}

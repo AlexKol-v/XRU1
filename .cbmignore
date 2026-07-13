@@ -1,0 +1,24 @@
+# codebase-memory-mcp ignore — index only code, skip binary/derived data.
+# Keeps the knowledge graph small, relevant and fast (важно для экономии токенов).
+
+# UE build artifacts / derived
+Binaries/
+Intermediate/
+DerivedDataCache/
+Saved/
+.vs/
+*.pdb
+*.obj
+
+# Plugin build artifacts
+Plugins/*/Binaries/
+Plugins/*/Intermediate/
+
+# Binary content (мешы/текстуры/уровни — не код)
+Content/
+*.uasset
+*.umap
+
+# Tooling / VCS
+node_modules/
+.git/

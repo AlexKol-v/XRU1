@@ -20,19 +20,29 @@ public class XRU1 : ModuleRules
 			"GameplayStateTreeModule",
 			"Niagara",
 			"UMG",
-			"Slate"
+			"Slate",
+			"SlateCore",
+			// GAS (migrated Characters/UI + tactical skeletons)
+			"GameplayAbilities",
+			"GameplayTags",
+			"GameplayTasks",
+			// CommonUI (migrated PrimaryGameLayout / GameUIManagerSubsystem + menu skeletons)
+			"CommonUI",
+			"CommonInput",
+			// PCG nodes (hub landscape scatter/slope filter)
+			"PCG"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });
 
 		PublicIncludePaths.AddRange(new string[] {
 			"XRU1",
-			"XRU1/Variant_Strategy",
-			"XRU1/Variant_Strategy/UI",
-			"XRU1/Variant_TwinStick",
-			"XRU1/Variant_TwinStick/AI",
-			"XRU1/Variant_TwinStick/Gameplay",
-			"XRU1/Variant_TwinStick/UI"
+			"XRU1/Characters",
+			"XRU1/UI",
+			"XRU1/Interaction",
+			"XRU1/PCG",
+			"XRU1/Tactics",
+			"XRU1/UI/Menus"
 		});
 
 		// Uncomment if you are using Slate UI
