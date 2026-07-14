@@ -3,8 +3,11 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "GameplayTagContainer.h"
+#include "GameplayEffectTypes.h"
 #include "CoverTypes.h"
 #include "CoverDetectionComponent.generated.h"
+
+class UGameplayEffect;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCoverStateChanged, ECoverType, NewBestCover);
 
@@ -14,8 +17,11 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCoverStateChanged, ECoverType, Ne
  * тип укрытия ОТНОСИТЕЛЬНО конкретного врага (укрытие работает, только если стена
  * стоит между юнитом и источником огня).
  *
- * Каркас: трейс-логика и пороги высот заложены; выдача бонуса к защите через GAS
- * (GameplayEffect с тегами Cover.Half / Cover.Full) — точка расширения ApplyCoverTagsFor().
+ * Статус укрытия отражается на ASC юнита бессрочным GameplayEffect'ом с тегом
+ * Cover.Half / Cover.Full (для UI и способностей), а численный бонус к защите
+ * вычитается из шанса попадания стрелка в момент выстрела — см.
+ * UTacticsCombatStatics::ComputeHitChance (укрытие считается против конкретного
+ * стрелка, как в XCOM: фланкирование его обнуляет).
  */
 UCLASS(ClassGroup = (Tactics), meta = (BlueprintSpawnableComponent))
 class XRU1_API UCoverDetectionComponent : public UActorComponent
@@ -41,11 +47,27 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactics|Cover")
 	TEnumAsByte<ECollisionChannel> CoverTraceChannel = ECC_WorldStatic;
 
-	/** Тег GAS для половинчатого укрытия (напр. Cover.Half). Навешивается при подсчёте боя. */
+	/** Бонус защиты половинчатого укрытия: вычитается из шанса попадания стрелка (XCOM: 20). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactics|Cover", meta = (ClampMin = "0", ClampMax = "100"))
+	float HalfCoverDefenseBonus = 20.f;
+
+	/** Бонус защиты полного укрытия (XCOM: 40). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactics|Cover", meta = (ClampMin = "0", ClampMax = "100"))
+	float FullCoverDefenseBonus = 40.f;
+
+	/** GE, навешиваемый при половинчатом укрытии (выдаёт тег Cover.Half). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Cover")
+	TSubclassOf<UGameplayEffect> HalfCoverEffect;
+
+	/** GE, навешиваемый при полном укрытии (выдаёт тег Cover.Full). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Cover")
+	TSubclassOf<UGameplayEffect> FullCoverEffect;
+
+	/** Тег GAS для половинчатого укрытия (Cover.Half). Используется UI/способностями. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Cover")
 	FGameplayTag HalfCoverTag;
 
-	/** Тег GAS для полного укрытия (напр. Cover.Full). */
+	/** Тег GAS для полного укрытия (Cover.Full). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Cover")
 	FGameplayTag FullCoverTag;
 
@@ -56,7 +78,11 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Tactics|Cover")
 	FOnCoverStateChanged OnCoverStateChanged;
 
-	/** Пересчитывает укрытие по 4 кардинальным направлениям вокруг юнита, обновляет BestCoverAround. */
+	/**
+	 * Пересчитывает укрытие по 4 кардинальным направлениям вокруг юнита, обновляет
+	 * BestCoverAround и синхронизирует GE/тег укрытия на ASC владельца.
+	 * Вызывать после каждого перемещения юнита.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Cover")
 	ECoverType EvaluateSurroundings();
 
@@ -64,7 +90,19 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Cover")
 	ECoverType GetCoverAgainst(const AActor* Threat) const;
 
+	/** Численный бонус защиты против конкретного стрелка (0 / Half / Full). */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Cover")
+	float GetDefenseBonusAgainst(const AActor* Threat) const;
+
 protected:
+	virtual void BeginPlay() override;
+
 	/** Трейс в одном направлении: возвращает тип укрытия у стены в этом направлении. */
 	ECoverType TraceCoverInDirection(const FVector& Direction) const;
+
+	/** Снимает старый GE укрытия и навешивает соответствующий новому состоянию. */
+	void ApplyCoverEffect(ECoverType CoverType);
+
+	/** Хэндл активного GE укрытия на ASC владельца (для снятия при смене состояния). */
+	FActiveGameplayEffectHandle ActiveCoverEffectHandle;
 };

@@ -87,3 +87,52 @@ Materials/Localization-демо, NPC/BT/ST-подсистема донора, п
 Заголовки успешно прошли UnrealHeaderTool (UHT) при первом прогоне. Полная компиляция
 требует **закрытого редактора Unreal** (иначе UBT падает на `Live Coding is active`).
 Команда сборки — в `CLAUDE.md`.
+
+## 7. Этап «боевое ядро» (июль 2026): каркас -> рабочая логика
+Задел из раздела 5 «Финальная боевая логика» реализован; `TODO(next phase)` сняты.
+
+**Новые файлы в `Source/XRU1/Tactics/`:**
+- `TacticsGameplayTags.h/.cpp` — нативные теги: `Cover.Half`, `Cover.Full`,
+  `State.Overwatch`, `Data.Damage` (SetByCaller).
+- `TacticsGameplayEffects.h/.cpp` — `UGE_CoverHalf/UGE_CoverFull` (Infinite,
+  выдают тег укрытия через `UTargetTagsGameplayEffectComponent`) и `UGE_ShotDamage`
+  (Instant, урон в Health через SetByCaller `Data.Damage`).
+- `TacticsCombatStatics.h/.cpp` — общий расчёт выстрела `ResolveShot`
+  (шанс попадания = Base − бонус укрытия цели против стрелка, зажат [5..95]),
+  `IsUnitAlive`, `AreHostile` (GenericTeamId); после выстрела дёргает
+  `CheckCombatOutcome` у TurnManager'а.
+- `TacticalAbility.h/.cpp` — базовая GA юнита: AP-кост через `CheckCost`/`ApplyCost`
+  (канонические точки GAS, срабатывают в `CommitAbility`), запрет активации в чужую
+  фазу хода.
+
+**Доработано:**
+- `CoverDetectionComponent` — при смене укрытия вешает/снимает GE с тегом
+  `Cover.Half/Full`; `GetDefenseBonusAgainst(стрелка)` (20/40, настраивается).
+- `GA_Overwatch` — наследует `UTacticalAbility` (1 AP), реально стреляет через
+  `ResolveShot` при обнаружении врага в чужую фазу; тег `State.Overwatch` блокирует
+  повторную активацию; снимается сам (реакции исчерпаны / ход вернулся / бой кончился).
+- `TurnManagerSubsystem` — исполняет ход врага: юниты по одному через
+  `AUnitAIController::ExecuteUnitTurn`, затем ход возвращается игроку;
+  `CheckCombatOutcome` завершает бой при гибели стороны; `IsUnitOnActiveSide`,
+  `GetOpposingUnits`.
+- `UnitAIController` — простой ход юнита: выстрел по видимой цели в радиусе
+  (perception + LineOfSight), иначе сближение с ближайшим противником; 1 AP за
+  действие, после перемещения пересчитывает укрытие.
+- `UI/Menus` — навигация связана в стек CommonUI: `PushScreen` на слой Menu через
+  `GameUIManagerSubsystem`/`PrimaryGameLayout`, «назад» = `DeactivateWidget()`;
+  новый `AMenuPlayerController` поднимает layout и стартовый экран меню;
+  `UTacticsGameInstance` получил `HubLevel/MainMenuLevel` + `TravelToHub/ToMainMenu`;
+  `AMissionPointOfInterest::SelectPointOfInterest` грузит уровень и пишет сейв.
+- `GameUIManagerSubsystem::CreateLayout` — пересоздаёт layout для нового
+  PlayerController'а после смены уровня (раньше залипал на мёртвом виджете).
+
+**Осталось в редакторе:** BP-виджеты меню и назначение классов экранов,
+BP-наследники юнитов (способности классов), уровни (меню/хаб/миссии), назначение
+`AMenuPlayerController`/`RootLayoutClass` в GameMode уровня меню.
+
+### Грабли UE 5.7: GE-компоненты в C++ конструкторе
+`UGameplayEffect::FindOrAddComponent<>()` / `AddComponent<>()` внутри конструктора
+CDO падают фаталом `NewObject with empty name can't be used to create default
+subobjects`. Компоненты GE в конструкторе создавать только через
+`CreateDefaultSubobject<T>(TEXT("Имя"))` и вручную класть в `GEComponents`
+(protected, доступен из наследника UGameplayEffect). См. `TacticsGameplayEffects.cpp`.

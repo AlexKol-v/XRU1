@@ -32,6 +32,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|POI")
 	FName MissionId = NAME_None;
 
+	/**
+	 * Гейт: POI доступна только после прохождения указанной миссии
+	 * (у «Станции Узел-7» = "Tutorial"). NAME_None — доступна всегда.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|POI")
+	FName RequiredCompletedMission = NAME_None;
+
 	/** Заголовок для попапа. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|POI")
 	FText Title;
@@ -51,9 +58,17 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Tactics|POI")
 	FOnPOIHoverChanged OnHoverChanged;
 
-	/** Загружает связанный уровень (точка расширения — вызывается по клику). */
+	/** Заблокирована ли точка (требуемая миссия ещё не пройдена). Для серого маркера в BP. */
+	UFUNCTION(BlueprintPure, Category = "Tactics|POI")
+	bool IsLocked() const;
+
+	/** Загружает связанный уровень; у заблокированной точки шлёт OnSelectionDenied. */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|POI")
 	void SelectPointOfInterest();
+
+	/** BP-хук отказа (звук/подсказка «сначала пройдите обучение»). */
+	UFUNCTION(BlueprintImplementableEvent, Category = "Tactics|POI")
+	void OnSelectionDenied();
 
 protected:
 	virtual void BeginPlay() override;

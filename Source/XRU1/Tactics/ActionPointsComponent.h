@@ -8,10 +8,13 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnActionPointsChanged, int32, NewC
 
 /**
  * Очки действия (Action Points) боевого юнита. По ТЗ каждый юнит имеет 2 AP за ход:
- * типичное действие (move / shoot) стоит 1 AP. Сбрасывается в начале хода стороны.
+ * типичное действие (move / shoot) стоит 1 AP. Сбрасывается TurnManager'ом в начале
+ * хода стороны.
  *
- * Каркас: хранит значения и делегат; финальная стоимость действий и их привязка
- * к GAS-способностям добавляются на следующем этапе.
+ * Привязка к GAS: способности юнитов наследуются от UTacticalAbility, который
+ * проверяет (CheckCost) и списывает (ApplyCost) AP внутри CommitAbility — этот
+ * компонент выступает хранилищем ресурса. Прямые вызовы TrySpendActionPoint
+ * остаются для действий вне GAS (перемещение по приказу, ход AI).
  */
 UCLASS(ClassGroup = (Tactics), meta = (BlueprintSpawnableComponent))
 class XRU1_API UActionPointsComponent : public UActorComponent
@@ -44,6 +47,14 @@ public:
 	/** Возвращает очки в исходное состояние — вызывается TurnManager'ом в начале хода стороны. */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|ActionPoints")
 	void ResetForNewTurn();
+
+	/** Сжигает весь остаток AP (атака в XCOM завершает активацию; «пропустить ход»). */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|ActionPoints")
+	void SpendAllRemaining();
+
+	/** Выдаёт дополнительные очки сверх максимума («Рывок и удар» штурмовика). */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|ActionPoints")
+	void GrantExtraPoints(int32 Amount = 1);
 
 	UFUNCTION(BlueprintPure, Category = "Tactics|ActionPoints")
 	bool HasActionsLeft() const { return CurrentActionPoints > 0; }

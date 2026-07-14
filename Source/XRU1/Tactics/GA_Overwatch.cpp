@@ -1,12 +1,25 @@
 #include "GA_Overwatch.h"
+#include "TacticsGameplayTags.h"
+#include "TacticsGameplayEffects.h"
+#include "TacticsCombatStatics.h"
+#include "TurnManagerSubsystem.h"
+#include "UnitBase.h"
 #include "Perception/AIPerceptionComponent.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
+#include "Engine/World.h"
 
 UGA_Overwatch::UGA_Overwatch()
 {
-	// Overwatch «висит» весь ход врага, поэтому явно неинстансируем как InstancedPerActor.
-	InstancingPolicy = EGameplayAbilityInstancingPolicy::InstancedPerActor;
+	// Пока способность активна, юнит несёт тег State.Overwatch;
+	// он же блокирует повторную активацию (двойной Overwatch невозможен).
+	ActivationOwnedTags.AddTag(TacticsGameplayTags::State_Overwatch);
+	ActivationBlockedTags.AddTag(TacticsGameplayTags::State_Overwatch);
+
+	// XCOM-правило: наблюдение завершает активацию юнита (остаток AP сгорает).
+	bConsumesAllRemainingAP = true;
+
+	DamageEffect = UGE_ShotDamage::StaticClass();
 }
 
 void UGA_Overwatch::ActivateAbility(
@@ -15,6 +28,7 @@ void UGA_Overwatch::ActivateAbility(
 	const FGameplayAbilityActivationInfo ActivationInfo,
 	const FGameplayEventData* TriggerData)
 {
+	// CommitAbility проверит и спишет 1 AP (UTacticalAbility::CheckCost/ApplyCost).
 	if (!CommitAbility(Handle, ActorInfo, ActivationInfo))
 	{
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
@@ -27,7 +41,17 @@ void UGA_Overwatch::ActivateAbility(
 	{
 		BoundPerception->OnTargetPerceptionUpdated.AddDynamic(this, &UGA_Overwatch::HandlePerceptionUpdated);
 	}
-	// Способность остаётся активной до конца хода врага; EndAbility вызывается TurnManager'ом.
+
+	// Способность снимается сама, когда ход возвращается нашей стороне или бой кончается.
+	const AActor* Avatar = GetAvatarActorFromActorInfo();
+	if (const UWorld* World = Avatar ? Avatar->GetWorld() : nullptr)
+	{
+		if (UTurnManagerSubsystem* TurnManager = World->GetSubsystem<UTurnManagerSubsystem>())
+		{
+			TurnManager->OnTurnStarted.AddDynamic(this, &UGA_Overwatch::HandleTurnStarted);
+			TurnManager->OnCombatEnded.AddDynamic(this, &UGA_Overwatch::HandleCombatEnded);
+		}
+	}
 }
 
 void UGA_Overwatch::EndAbility(
@@ -42,6 +66,17 @@ void UGA_Overwatch::EndAbility(
 		BoundPerception->OnTargetPerceptionUpdated.RemoveDynamic(this, &UGA_Overwatch::HandlePerceptionUpdated);
 		BoundPerception = nullptr;
 	}
+
+	const AActor* Avatar = GetAvatarActorFromActorInfo();
+	if (const UWorld* World = Avatar ? Avatar->GetWorld() : nullptr)
+	{
+		if (UTurnManagerSubsystem* TurnManager = World->GetSubsystem<UTurnManagerSubsystem>())
+		{
+			TurnManager->OnTurnStarted.RemoveDynamic(this, &UGA_Overwatch::HandleTurnStarted);
+			TurnManager->OnCombatEnded.RemoveDynamic(this, &UGA_Overwatch::HandleCombatEnded);
+		}
+	}
+
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
 }
 
@@ -53,17 +88,91 @@ void UGA_Overwatch::HandlePerceptionUpdated(AActor* Actor, FAIStimulus Stimulus)
 	}
 
 	// Реагируем только на факт «увидел» (успешно воспринятый стимул).
-	if (Stimulus.WasSuccessfullySensed())
+	if (!Stimulus.WasSuccessfullySensed())
 	{
-		FireReactionShot(Actor);
+		return;
 	}
+
+	AActor* Avatar = GetAvatarActorFromActorInfo();
+	if (!Avatar)
+	{
+		return;
+	}
+
+	// Реакция — только в ЧУЖУЮ фазу хода (в свою юнит стреляет обычными действиями).
+	if (const UWorld* World = Avatar->GetWorld())
+	{
+		if (const UTurnManagerSubsystem* TurnManager = World->GetSubsystem<UTurnManagerSubsystem>())
+		{
+			if (TurnManager->IsInCombat() && TurnManager->IsUnitOnActiveSide(Avatar))
+			{
+				return;
+			}
+		}
+	}
+
+	// Стреляем только по живым врагам.
+	if (!UTacticsCombatStatics::AreHostile(Avatar, Actor) || !UTacticsCombatStatics::IsUnitAlive(Actor))
+	{
+		return;
+	}
+
+	FireReactionShot(Actor);
+}
+
+void UGA_Overwatch::HandleTurnStarted(ETurnPhase Phase)
+{
+	// Ход вернулся нашей стороне — режим наблюдения заканчивается.
+	const AActor* Avatar = GetAvatarActorFromActorInfo();
+	if (!Avatar)
+	{
+		return;
+	}
+	if (const UWorld* World = Avatar->GetWorld())
+	{
+		if (const UTurnManagerSubsystem* TurnManager = World->GetSubsystem<UTurnManagerSubsystem>())
+		{
+			if (TurnManager->IsUnitOnActiveSide(Avatar))
+			{
+				EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
+			}
+		}
+	}
+}
+
+void UGA_Overwatch::HandleCombatEnded(bool /*bPlayerWon*/)
+{
+	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
 }
 
 void UGA_Overwatch::FireReactionShot(AActor* Target)
 {
-	// TODO(next phase): расчёт попадания с учётом ECoverType цели, применение GameplayEffect урона,
-	// проигрыш монтажа/VFX выстрела. Здесь только учёт лимита реакций.
+	AActor* Avatar = GetAvatarActorFromActorInfo();
+	if (!Avatar || !Target)
+	{
+		return;
+	}
+
+	// Точность/урон — со статов юнита, реакция стреляет со штрафом (GDD §5.4).
+	float Aim = 70.f;
+	float Damage = 25.f;
+	if (const AUnitBase* Unit = Cast<AUnitBase>(Avatar))
+	{
+		Aim = Unit->BaseAim;
+		Damage = Unit->ShotDamage;
+	}
+	Aim = FMath::Max(0.f, Aim - ReactionAimPenalty);
+
+	// Бросок против укрытия цели + урон через GE (SetByCaller Data.Damage).
+	const bool bHit = UTacticsCombatStatics::ResolveShot(Avatar, Target, Aim, Damage, DamageEffect);
 	++ReactionShotsUsed;
+	OnReactionShot(Target, bHit);
+
+	// Реакции исчерпаны — Overwatch снимается (как в XCOM: один выстрел за ход).
+	if (ReactionShotsUsed >= MaxReactionShots)
+	{
+		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
+	}
 }
 
 UAIPerceptionComponent* UGA_Overwatch::GetOwnerPerception() const
@@ -74,7 +183,7 @@ UAIPerceptionComponent* UGA_Overwatch::GetOwnerPerception() const
 		return nullptr;
 	}
 
-	// Perception обычно живёт на AIController пешки; ищем и там, и на самом аваторе.
+	// Perception обычно живёт на AIController пешки; ищем и там, и на самом аватаре.
 	if (const APawn* Pawn = Cast<APawn>(Info->AvatarActor.Get()))
 	{
 		if (AController* C = Pawn->GetController())

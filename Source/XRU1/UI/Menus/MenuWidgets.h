@@ -5,12 +5,16 @@
 #include "TacticsTypes.h"
 #include "MenuWidgets.generated.h"
 
+class UTacticsGameInstance;
+
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnDifficultyChosen, EDifficultyLevel, Difficulty);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnMenuAction);
 
 /**
- * Общий предок экранов меню на CommonUI activatable-стеке. Даёт единый хук
- * «назад» и место для общей навигационной логики. Дизайн виджетов — в BP-наследниках.
+ * Общий предок экранов меню на CommonUI activatable-стеке. Навигация каноном
+ * CommonUI: следующий экран проталкивается на слой Menu корневого
+ * UPrimaryGameLayout (через UGameUIManagerSubsystem), «назад» — деактивация
+ * себя, стек сам показывает предыдущий экран. Дизайн виджетов — в BP-наследниках.
  */
 UCLASS(Abstract, Blueprintable)
 class XRU1_API UMenuScreenBase : public UCommonActivatableWidget
@@ -22,14 +26,23 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Menu")
 	FOnMenuAction OnBackRequested;
 
+	/** Закрывает экран (деактивация = снятие со стека) и шлёт OnBackRequested. */
 	UFUNCTION(BlueprintCallable, Category = "Menu")
-	void RequestBack() { OnBackRequested.Broadcast(); }
+	void RequestBack();
+
+	/** Проталкивает экран ScreenClass на слой Menu корневого лейаута. */
+	UFUNCTION(BlueprintCallable, Category = "Menu")
+	UCommonActivatableWidget* PushScreen(TSubclassOf<UCommonActivatableWidget> ScreenClass);
+
+protected:
+	/** GameInstance проекта (nullptr, если проект настроен на другой класс). */
+	UTacticsGameInstance* GetTacticsGameInstance() const;
 };
 
 /**
  * Главное меню: Продолжить / Новая игра / Настройки / Об авторе / Выйти.
- * BP вешает кнопки на эти BlueprintCallable-методы; логику перехода экранов
- * реализует владелец через GameUIManagerSubsystem / PrimaryGameLayout.
+ * BP вешает кнопки на Request*-методы; переходы экранов реализованы здесь
+ * (пуш на слой Menu), делегаты остаются для дополнительной BP-логики.
  */
 UCLASS(Abstract, Blueprintable)
 class XRU1_API UMainMenuWidget : public UMenuScreenBase
@@ -41,17 +54,35 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Menu")
 	bool CanContinue() const;
 
+	/** Экран настроек, открываемый кнопкой Settings. */
+	UPROPERTY(EditDefaultsOnly, Category = "Menu|Screens")
+	TSubclassOf<UMenuScreenBase> SettingsScreenClass;
+
+	/** Экран «Об авторе». */
+	UPROPERTY(EditDefaultsOnly, Category = "Menu|Screens")
+	TSubclassOf<UMenuScreenBase> AboutScreenClass;
+
+	/** Экран выбора сложности (открывается кнопкой «Новая игра»). */
+	UPROPERTY(EditDefaultsOnly, Category = "Menu|Screens")
+	TSubclassOf<UMenuScreenBase> DifficultyScreenClass;
+
 	UPROPERTY(BlueprintAssignable, Category = "Menu") FOnMenuAction OnContinueClicked;
 	UPROPERTY(BlueprintAssignable, Category = "Menu") FOnMenuAction OnNewGameClicked;
 	UPROPERTY(BlueprintAssignable, Category = "Menu") FOnMenuAction OnSettingsClicked;
 	UPROPERTY(BlueprintAssignable, Category = "Menu") FOnMenuAction OnAboutClicked;
 	UPROPERTY(BlueprintAssignable, Category = "Menu") FOnMenuAction OnQuitClicked;
 
-	UFUNCTION(BlueprintCallable, Category = "Menu") void RequestContinue() { OnContinueClicked.Broadcast(); }
-	UFUNCTION(BlueprintCallable, Category = "Menu") void RequestNewGame()  { OnNewGameClicked.Broadcast(); }
-	UFUNCTION(BlueprintCallable, Category = "Menu") void RequestSettings() { OnSettingsClicked.Broadcast(); }
-	UFUNCTION(BlueprintCallable, Category = "Menu") void RequestAbout()    { OnAboutClicked.Broadcast(); }
-	UFUNCTION(BlueprintCallable, Category = "Menu") void RequestQuit()     { OnQuitClicked.Broadcast(); }
+	/** Загружает кампанию и отправляет игрока в хаб. */
+	UFUNCTION(BlueprintCallable, Category = "Menu") void RequestContinue();
+
+	/** Открывает экран выбора сложности. */
+	UFUNCTION(BlueprintCallable, Category = "Menu") void RequestNewGame();
+
+	UFUNCTION(BlueprintCallable, Category = "Menu") void RequestSettings();
+	UFUNCTION(BlueprintCallable, Category = "Menu") void RequestAbout();
+
+	/** Завершает игру. */
+	UFUNCTION(BlueprintCallable, Category = "Menu") void RequestQuit();
 };
 
 /** Экран настроек (звук/графика/управление). Каркас — поля дозаполняются позже. */
@@ -85,9 +116,12 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Menu")
 	FOnDifficultyChosen OnDifficultyChosen;
 
-	/** BP вызывает по нажатию кнопки конкретной сложности. */
+	/**
+	 * BP вызывает по нажатию кнопки конкретной сложности: создаёт новую кампанию
+	 * (UTacticsGameInstance::StartNewCampaign) и отправляет игрока в хаб.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Menu")
-	void ChooseDifficulty(EDifficultyLevel Difficulty) { OnDifficultyChosen.Broadcast(Difficulty); }
+	void ChooseDifficulty(EDifficultyLevel Difficulty);
 };
 
 /** Экран паузы во время миссии. */
@@ -100,6 +134,9 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Menu") FOnMenuAction OnResumeClicked;
 	UPROPERTY(BlueprintAssignable, Category = "Menu") FOnMenuAction OnReturnToMenuClicked;
 
-	UFUNCTION(BlueprintCallable, Category = "Menu") void RequestResume()       { OnResumeClicked.Broadcast(); }
-	UFUNCTION(BlueprintCallable, Category = "Menu") void RequestReturnToMenu() { OnReturnToMenuClicked.Broadcast(); }
+	/** Снимает паузу и закрывает экран. */
+	UFUNCTION(BlueprintCallable, Category = "Menu") void RequestResume();
+
+	/** Снимает паузу и возвращает в главное меню (уровень MainMenuLevel из GameInstance). */
+	UFUNCTION(BlueprintCallable, Category = "Menu") void RequestReturnToMenu();
 };

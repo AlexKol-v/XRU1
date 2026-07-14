@@ -30,7 +30,9 @@ public class XRU1 : ModuleRules
 			"CommonUI",
 			"CommonInput",
 			// PCG nodes (hub landscape scatter/slope filter)
-			"PCG"
+			"PCG",
+			// Move-range zone fill (Tactics/MoveRangeVisualizer)
+			"ProceduralMeshComponent"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });

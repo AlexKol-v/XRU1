@@ -34,3 +34,19 @@ UTacticsSaveGame* UTacticsGameInstance::LoadCampaign()
 	CurrentSave = Cast<UTacticsSaveGame>(UGameplayStatics::LoadGameFromSlot(SaveSlotName, 0));
 	return CurrentSave;
 }
+
+void UTacticsGameInstance::TravelToHub()
+{
+	if (!HubLevel.IsNull())
+	{
+		UGameplayStatics::OpenLevelBySoftObjectPtr(this, HubLevel);
+	}
+}
+
+void UTacticsGameInstance::TravelToMainMenu()
+{
+	if (!MainMenuLevel.IsNull())
+	{
+		UGameplayStatics::OpenLevelBySoftObjectPtr(this, MainMenuLevel);
+	}
+}

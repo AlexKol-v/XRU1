@@ -2,6 +2,7 @@
 
 #include "GameplayEffect.h"
 #include "GameplayEffectExtension.h"
+#include "TacticsGameplayTags.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 
@@ -20,10 +21,17 @@ void UTDAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModCallback
 
     if (Data.EvaluatedData.Attribute == GetHealthAttribute())
     {
+        const float Magnitude = Data.EvaluatedData.Magnitude;
         // Щит активен — отыгрываем входящий урон обратно. Положительные дельты (heal) пропускаем.
-        if (GetShield() > 0.f && Data.EvaluatedData.Magnitude < 0.f)
+        if (GetShield() > 0.f && Magnitude < 0.f)
         {
-            SetHealth(GetHealth() - Data.EvaluatedData.Magnitude);
+            SetHealth(GetHealth() - Magnitude);
+        }
+        // «Провокация» танка (GDD §7): −50% входящего урона — половину возвращаем.
+        else if (Magnitude < 0.f &&
+            Data.Target.HasMatchingGameplayTag(TacticsGameplayTags::State_Taunting))
+        {
+            SetHealth(GetHealth() - Magnitude * 0.5f);
         }
         SetHealth(FMath::Clamp(GetHealth(), 0.f, GetMaxHealth()));
     }

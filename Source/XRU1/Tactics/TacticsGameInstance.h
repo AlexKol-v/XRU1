@@ -22,6 +22,14 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Save")
 	FString SaveSlotName = TEXT("TacticsCampaign");
 
+	/** Уровень хаба (3D-карта выбора миссий). Задаётся в BP-наследнике GameInstance. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Levels", meta = (AllowedTypes = "World"))
+	TSoftObjectPtr<UWorld> HubLevel;
+
+	/** Уровень главного меню. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Levels", meta = (AllowedTypes = "World"))
+	TSoftObjectPtr<UWorld> MainMenuLevel;
+
 	/** Текущий загруженный/активный слот кампании (в памяти). */
 	UPROPERTY(BlueprintReadOnly, Category = "Tactics|Save")
 	TObjectPtr<UTacticsSaveGame> CurrentSave;
@@ -41,4 +49,12 @@ public:
 	/** Загружает слот в CurrentSave. Возвращает загруженный объект или nullptr. */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Save")
 	UTacticsSaveGame* LoadCampaign();
+
+	/** Открывает уровень хаба (после «Продолжить» / выбора сложности новой игры). */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Levels")
+	void TravelToHub();
+
+	/** Возвращает игрока на уровень главного меню (из паузы / после миссии). */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Levels")
+	void TravelToMainMenu();
 };

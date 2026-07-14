@@ -1,7 +1,19 @@
 #include "UnitAIController.h"
+#include "UnitBase.h"
+#include "ActionPointsComponent.h"
+#include "CoverDetectionComponent.h"
+#include "TacticsCombatStatics.h"
+#include "TacticsGameplayEffects.h"
+#include "TacticsGameplayTags.h"
+#include "TurnManagerSubsystem.h"
+#include "AbilitySystemComponent.h"
+#include "AbilitySystemGlobals.h"
 #include "Perception/AIPerceptionComponent.h"
 #include "Perception/AISenseConfig_Sight.h"
 #include "Perception/AISense_Sight.h"
+#include "Navigation/PathFollowingComponent.h"
+#include "Engine/World.h"
+#include "TimerManager.h"
 
 AUnitAIController::AUnitAIController()
 {
@@ -18,9 +30,310 @@ AUnitAIController::AUnitAIController()
 	Perception->ConfigureSense(*SightConfig);
 	Perception->SetDominantSense(UAISense_Sight::StaticClass());
 	SetPerceptionComponent(*Perception);
+
+	DamageEffect = UGE_ShotDamage::StaticClass();
 }
 
 void AUnitAIController::BeginPlay()
 {
 	Super::BeginPlay();
+
+	if (Perception)
+	{
+		Perception->OnTargetPerceptionUpdated.AddDynamic(this, &AUnitAIController::HandlePerceptionUpdated);
+	}
+}
+
+void AUnitAIController::OnPossess(APawn* InPawn)
+{
+	Super::OnPossess(InPawn);
+
+	// Тревога — состояние конкретного бойца: новый пешка = новый пост.
+	AlertState = EUnitAlertState::Patrol;
+	bHasThreatLocation = false;
+	PatrolIndex = 0;
+}
+
+void AUnitAIController::HandlePerceptionUpdated(AActor* Actor, FAIStimulus Stimulus)
+{
+	const APawn* MyPawn = GetPawn();
+	if (!MyPawn || !Actor || !UTacticsCombatStatics::AreHostile(MyPawn, Actor))
+	{
+		return;
+	}
+
+	if (Stimulus.WasSuccessfullySensed())
+	{
+		// Red alert: враг в прямой видимости.
+		AlertState = EUnitAlertState::Combat;
+		LastKnownThreatLocation = Actor->GetActorLocation();
+		bHasThreatLocation = true;
+	}
+	else if (AlertState == EUnitAlertState::Combat)
+	{
+		// Цель пропала из виду: red → yellow, идём к последней известной точке.
+		AlertState = EUnitAlertState::Investigate;
+		LastKnownThreatLocation = Stimulus.StimulusLocation;
+		bHasThreatLocation = true;
+	}
+}
+
+void AUnitAIController::NotifyNoiseHeard(const FVector& NoiseLocation)
+{
+	// Шум не понижает тревогу: в бою уже знаем больше, чем «где-то стреляли».
+	if (AlertState != EUnitAlertState::Combat)
+	{
+		AlertState = EUnitAlertState::Investigate;
+		LastKnownThreatLocation = NoiseLocation;
+		bHasThreatLocation = true;
+	}
+}
+
+void AUnitAIController::ExecuteUnitTurn(FSimpleDelegate OnFinished)
+{
+	TurnFinishedDelegate = MoveTemp(OnFinished);
+	bTurnMoveInProgress = false;
+	AdvanceTurnStep();
+}
+
+void AUnitAIController::AdvanceTurnStep()
+{
+	AUnitBase* Unit = Cast<AUnitBase>(GetPawn());
+	UActionPointsComponent* ActionPoints = Unit ? Unit->GetActionPoints() : nullptr;
+
+	// Нет пешки/очков действия или юнит выбыл — заканчиваем.
+	if (!Unit || !ActionPoints || !ActionPoints->HasActionsLeft() ||
+		!UTacticsCombatStatics::IsUnitAlive(Unit))
+	{
+		FinishUnitTurn();
+		return;
+	}
+
+	// Бой мог закончиться (или фаза смениться) во время нашего перемещения —
+	// например, реакционный выстрел Overwatch снял последнего юнита стороны.
+	const UWorld* World = GetWorld();
+	if (const UTurnManagerSubsystem* TurnManager = World ? World->GetSubsystem<UTurnManagerSubsystem>() : nullptr)
+	{
+		if (!TurnManager->IsInCombat() || !TurnManager->IsUnitOnActiveSide(Unit))
+		{
+			FinishUnitTurn();
+			return;
+		}
+	}
+
+	// Видимая цель мгновенно поднимает red alert (перцепция могла отстать на кадр).
+	if (FindVisibleTarget())
+	{
+		AlertState = EUnitAlertState::Combat;
+	}
+
+	bool bStepHandled = false;
+	switch (AlertState)
+	{
+	case EUnitAlertState::Combat:      bStepHandled = StepCombat(Unit);      break;
+	case EUnitAlertState::Investigate: bStepHandled = StepInvestigate(Unit); break;
+	default:                           bStepHandled = StepPatrol(Unit);      break;
+	}
+
+	if (!bStepHandled)
+	{
+		// Состоянию нечего делать (нет точек патруля, некуда идти) — ход окончен.
+		FinishUnitTurn();
+	}
+}
+
+bool AUnitAIController::StepCombat(AUnitBase* Unit)
+{
+	AActor* Target = FindVisibleTarget();
+
+	// 1) Цель видна и в дальности — стреляем (1 AP за выстрел).
+	if (Target)
+	{
+		LastKnownThreatLocation = Target->GetActorLocation();
+		bHasThreatLocation = true;
+
+		const float Distance = FVector::Dist(Unit->GetActorLocation(), Target->GetActorLocation());
+		if (Distance <= Unit->AttackRange && LineOfSightTo(Target))
+		{
+			Unit->GetActionPoints()->TrySpendActionPoint();
+			UTacticsCombatStatics::ResolveShot(Unit, Target, Unit->BaseAim, Unit->ShotDamage, DamageEffect);
+			ScheduleNextStep();
+			return true;
+		}
+
+		// 2) Цель видна, но далеко — сближение (1 AP, бюджет пути).
+		return MoveWithBudget(Unit, Target->GetActorLocation(), Unit->AttackRange * 0.8f);
+	}
+
+	// 3) Цели не видно — переходим к разведке последней известной точки.
+	AlertState = EUnitAlertState::Investigate;
+	return StepInvestigate(Unit);
+}
+
+bool AUnitAIController::StepInvestigate(AUnitBase* Unit)
+{
+	if (!bHasThreatLocation)
+	{
+		AlertState = EUnitAlertState::Patrol;
+		return StepPatrol(Unit);
+	}
+
+	// Дошли до точки интереса и никого не нашли — успокаиваемся до патруля.
+	if (FVector::Dist2D(Unit->GetActorLocation(), LastKnownThreatLocation) <= InvestigateAcceptanceRadius * 2.f)
+	{
+		bHasThreatLocation = false;
+		AlertState = EUnitAlertState::Patrol;
+		return StepPatrol(Unit);
+	}
+
+	return MoveWithBudget(Unit, LastKnownThreatLocation, InvestigateAcceptanceRadius);
+}
+
+bool AUnitAIController::StepPatrol(AUnitBase* Unit)
+{
+	if (Unit->PatrolPoints.Num() == 0)
+	{
+		// Пост без маршрута: стоит на месте, ход не тратим.
+		return false;
+	}
+
+	const AActor* PatrolPoint = Unit->PatrolPoints[PatrolIndex % Unit->PatrolPoints.Num()];
+	if (!PatrolPoint)
+	{
+		return false;
+	}
+
+	// У точки — идём к следующей на этом же ходу.
+	if (FVector::Dist2D(Unit->GetActorLocation(), PatrolPoint->GetActorLocation()) <= 150.f)
+	{
+		++PatrolIndex;
+		const AActor* Next = Unit->PatrolPoints[PatrolIndex % Unit->PatrolPoints.Num()];
+		return Next ? MoveWithBudget(Unit, Next->GetActorLocation(), 100.f) : false;
+	}
+
+	return MoveWithBudget(Unit, PatrolPoint->GetActorLocation(), 100.f);
+}
+
+bool AUnitAIController::MoveWithBudget(AUnitBase* Unit, const FVector& Goal, float AcceptanceRadius)
+{
+	// Обрезаем путь бюджетом 1 AP (MoveRange по длине пути навмеша, не по прямой).
+	FVector BudgetedGoal;
+	if (!UTacticsCombatStatics::GetPointAlongPathBudget(this, Unit->GetActorLocation(), Goal,
+		Unit->MoveRange, BudgetedGoal))
+	{
+		return false;
+	}
+
+	// Бюджетная точка совпадает с текущей позицией — двигаться некуда.
+	if (FVector::Dist2D(Unit->GetActorLocation(), BudgetedGoal) <= 50.f)
+	{
+		return false;
+	}
+
+	const EPathFollowingRequestResult::Type Result = MoveToLocation(BudgetedGoal, AcceptanceRadius);
+	if (Result == EPathFollowingRequestResult::RequestSuccessful)
+	{
+		bTurnMoveInProgress = true; // AP спишется в OnMoveCompleted
+		return true;
+	}
+	if (Result == EPathFollowingRequestResult::AlreadyAtGoal)
+	{
+		// У цели: тратим AP, чтобы ход гарантированно закончился, и продолжаем.
+		Unit->GetActionPoints()->TrySpendActionPoint();
+		ScheduleNextStep();
+		return true;
+	}
+	return false;
+}
+
+void AUnitAIController::OnMoveCompleted(FAIRequestID RequestID, const FPathFollowingResult& Result)
+{
+	Super::OnMoveCompleted(RequestID, Result);
+
+	// Юнит встал на новую позицию — пересчитать укрытие (и для приказов игрока тоже).
+	if (AUnitBase* Unit = Cast<AUnitBase>(GetPawn()))
+	{
+		if (UCoverDetectionComponent* Cover = Unit->GetCoverDetection())
+		{
+			Cover->EvaluateSurroundings();
+		}
+	}
+
+	if (!bTurnMoveInProgress)
+	{
+		return;
+	}
+	bTurnMoveInProgress = false;
+
+	if (AUnitBase* Unit = Cast<AUnitBase>(GetPawn()))
+	{
+		if (UActionPointsComponent* ActionPoints = Unit->GetActionPoints())
+		{
+			ActionPoints->TrySpendActionPoint();
+		}
+	}
+
+	ScheduleNextStep();
+}
+
+void AUnitAIController::ScheduleNextStep()
+{
+	GetWorldTimerManager().SetTimer(TurnStepTimerHandle, this,
+		&AUnitAIController::AdvanceTurnStep, ActionInterval, false);
+}
+
+void AUnitAIController::FinishUnitTurn()
+{
+	GetWorldTimerManager().ClearTimer(TurnStepTimerHandle);
+	bTurnMoveInProgress = false;
+
+	// Сначала сбрасываем делегат, потом зовём: колбэк может тут же начать новый ход.
+	FSimpleDelegate Finished = MoveTemp(TurnFinishedDelegate);
+	TurnFinishedDelegate.Unbind();
+	Finished.ExecuteIfBound();
+}
+
+AActor* AUnitAIController::FindVisibleTarget() const
+{
+	const APawn* MyPawn = GetPawn();
+	if (!MyPawn || !Perception)
+	{
+		return nullptr;
+	}
+
+	TArray<AActor*> Perceived;
+	Perception->GetCurrentlyPerceivedActors(UAISense_Sight::StaticClass(), Perceived);
+
+	AActor* Best = nullptr;
+	float BestDistSq = TNumericLimits<float>::Max();
+	bool bBestIsTaunting = false;
+
+	for (AActor* Actor : Perceived)
+	{
+		if (!UTacticsCombatStatics::AreHostile(MyPawn, Actor) ||
+			!UTacticsCombatStatics::IsUnitAlive(Actor))
+		{
+			continue;
+		}
+
+		// Провокация танка: провоцирующая цель всегда приоритетнее обычных.
+		bool bTaunting = false;
+		if (const UAbilitySystemComponent* ASC = UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(Actor))
+		{
+			bTaunting = ASC->HasMatchingGameplayTag(TacticsGameplayTags::State_Taunting);
+		}
+		if (bBestIsTaunting && !bTaunting)
+		{
+			continue;
+		}
+
+		const float DistSq = FVector::DistSquared(MyPawn->GetActorLocation(), Actor->GetActorLocation());
+		if ((bTaunting && !bBestIsTaunting) || DistSq < BestDistSq)
+		{
+			BestDistSq = DistSq;
+			Best = Actor;
+			bBestIsTaunting = bTaunting;
+		}
+	}
+	return Best;
 }

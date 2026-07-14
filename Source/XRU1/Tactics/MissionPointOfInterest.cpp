@@ -1,7 +1,10 @@
 #include "MissionPointOfInterest.h"
+#include "TacticsGameInstance.h"
+#include "TacticsSaveGame.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/SphereComponent.h"
 #include "Components/WidgetComponent.h"
+#include "Kismet/GameplayStatics.h"
 
 AMissionPointOfInterest::AMissionPointOfInterest()
 {
@@ -61,8 +64,46 @@ void AMissionPointOfInterest::SetHovered(bool bHovered)
 	OnHoverChanged.Broadcast(bHovered);
 }
 
+bool AMissionPointOfInterest::IsLocked() const
+{
+	if (RequiredCompletedMission == NAME_None)
+	{
+		return false;
+	}
+	if (const UTacticsGameInstance* GI = GetGameInstance<UTacticsGameInstance>())
+	{
+		if (GI->CurrentSave)
+		{
+			return !GI->CurrentSave->IsMissionCompleted(RequiredCompletedMission);
+		}
+	}
+	// Кампании нет (прямой запуск хаба в PIE) — не блокируем.
+	return false;
+}
+
 void AMissionPointOfInterest::SelectPointOfInterest()
 {
-	// TODO(next phase): открыть брифинг и загрузить LevelToLoad через UGameplayStatics::OpenLevelBySoftObjectPtr,
-	// обновив прогресс кампании (UTacticsSaveGame / UTacticsGameInstance).
+	// Гейт: миссия недоступна, пока не пройдено требуемое (обучение).
+	if (IsLocked())
+	{
+		OnSelectionDenied();
+		return;
+	}
+
+	if (LevelToLoad.IsNull())
+	{
+		return;
+	}
+
+	// Запоминаем в кампании, из какой точки хаба ушли (для «Продолжить»).
+	if (UTacticsGameInstance* GI = GetGameInstance<UTacticsGameInstance>())
+	{
+		if (GI->CurrentSave)
+		{
+			GI->CurrentSave->LastHubPointOfInterest = MissionId;
+			GI->SaveCampaign();
+		}
+	}
+
+	UGameplayStatics::OpenLevelBySoftObjectPtr(this, LevelToLoad);
 }

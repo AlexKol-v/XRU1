@@ -8,8 +8,15 @@
 
 void UGameUIManagerSubsystem::CreateLayout(APlayerController* OwningPlayer, TSubclassOf<UPrimaryGameLayout> LayoutClass)
 {
-    // Слой создаётся один раз на локального игрока.
-    if (RootLayout || !OwningPlayer || !LayoutClass)
+    if (!OwningPlayer || !LayoutClass)
+    {
+        return;
+    }
+
+    // Слой создаётся один раз на локального игрока. Подсистема живёт на
+    // GameInstance и переживает смену уровня, а виджет умирает вместе со своим
+    // PlayerController'ом — для нового контроллера лейаут пересоздаём.
+    if (RootLayout && RootLayout->GetOwningPlayer() == OwningPlayer)
     {
         return;
     }

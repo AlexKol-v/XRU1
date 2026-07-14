@@ -35,6 +35,25 @@ void UActionPointsComponent::ResetForNewTurn()
 	BroadcastChanged();
 }
 
+void UActionPointsComponent::SpendAllRemaining()
+{
+	if (CurrentActionPoints > 0)
+	{
+		CurrentActionPoints = 0;
+		BroadcastChanged();
+	}
+}
+
+void UActionPointsComponent::GrantExtraPoints(int32 Amount)
+{
+	if (Amount > 0)
+	{
+		// Сознательно допускаем превышение MaxActionPoints (Run & Gun даёт очко сверх нормы).
+		CurrentActionPoints += Amount;
+		BroadcastChanged();
+	}
+}
+
 void UActionPointsComponent::BroadcastChanged()
 {
 	OnActionPointsChanged.Broadcast(CurrentActionPoints, MaxActionPoints);

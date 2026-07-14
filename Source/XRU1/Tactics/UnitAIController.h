@@ -2,18 +2,39 @@
 
 #include "CoreMinimal.h"
 #include "AIController.h"
+#include "Engine/TimerHandle.h"
 #include "UnitAIController.generated.h"
 
 class UAIPerceptionComponent;
 class UAISenseConfig_Sight;
+class UGameplayEffect;
+class AUnitBase;
+
+/** Уровень тревоги AI-юнита (упрощённая модель XCOM: green/yellow/red alert). */
+UENUM(BlueprintType)
+enum class EUnitAlertState : uint8
+{
+	/** Green: противник не обнаружен — патрулирует свой маршрут / стоит на посту. */
+	Patrol      UMETA(DisplayName = "Patrol (green)"),
+	/** Yellow: слышал шум боя или потерял цель из виду — идёт разведать точку. */
+	Investigate UMETA(DisplayName = "Investigate (yellow)"),
+	/** Red: видел противника — сближается и атакует. */
+	Combat      UMETA(DisplayName = "Combat (red)")
+};
 
 /**
  * AI-контроллер тактического юнита. Несёт UAIPerceptionComponent с чувством
- * зрения (UAISenseConfig_Sight) — общий источник «линии видимости» и для
- * ходов вражеского AI, и для реакций Overwatch у юнитов игрока.
+ * зрения — общий источник «линии видимости» и для вражеского AI, и для
+ * реакций Overwatch юнитов игрока.
  *
- * Каркас перенесён по паттерну донорского NPCStateTreeAIController (только часть
- * с perception/sight, без StateTree-веток).
+ * Ход юнита исполняется по запросу TurnManager'а (ExecuteUnitTurn) конечным
+ * автоматом тревоги (EUnitAlertState, GDD §8):
+ *  - Patrol: движение по PatrolPoints юнита (или стоит на посту);
+ *  - Investigate: движение к последней известной точке (шум выстрелов /
+ *    потерянная цель); дойдя и никого не найдя — возврат в Patrol;
+ *  - Combat: видимая цель в дальности — выстрел, иначе сближение с целью.
+ * Все перемещения ограничены бюджетом пути юнита (MoveRange за 1 AP).
+ * Боевые статы (aim/урон/дальность) читаются с пешки AUnitBase.
  */
 UCLASS()
 class XRU1_API AUnitAIController : public AAIController
@@ -24,6 +45,21 @@ public:
 	AUnitAIController();
 
 	UAIPerceptionComponent* GetUnitPerception() const { return Perception; }
+
+	/**
+	 * Выполняет ход юнита (тратит его AP), по завершении зовёт OnFinished.
+	 * Вызывается TurnManager'ом в фазу стороны юнита.
+	 */
+	void ExecuteUnitTurn(FSimpleDelegate OnFinished);
+
+	/** Шум боя рядом (выстрел): green→yellow, обновить точку интереса. */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|AI")
+	void NotifyNoiseHeard(const FVector& NoiseLocation);
+
+	UFUNCTION(BlueprintPure, Category = "Tactics|AI")
+	EUnitAlertState GetAlertState() const { return AlertState; }
+
+	// --- Perception ---------------------------------------------------------
 
 	/** Радиус зрения (см). Дизайнерский параметр, влияет на дальность обнаружения. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Perception")
@@ -37,12 +73,75 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Perception")
 	float PeripheralVisionHalfAngle = 60.f;
 
+	// --- Параметры хода -------------------------------------------------------
+
+	/** GE урона выстрела (по умолчанию UGE_ShotDamage с SetByCaller Data.Damage). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Combat")
+	TSubclassOf<UGameplayEffect> DamageEffect;
+
+	/** Насколько близко подходить к точке интереса при разведке (см). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Combat", meta = (ClampMin = "0"))
+	float InvestigateAcceptanceRadius = 150.f;
+
+	/** Пауза между последовательными действиями юнита в его ход (читабельность). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Combat", meta = (ClampMin = "0"))
+	float ActionInterval = 0.4f;
+
 protected:
 	virtual void BeginPlay() override;
+	virtual void OnPossess(APawn* InPawn) override;
+	virtual void OnMoveCompleted(FAIRequestID RequestID, const FPathFollowingResult& Result) override;
+
+	/** Колбэк перцепции: увидел/потерял враждебного актора → смена тревоги. */
+	UFUNCTION()
+	void HandlePerceptionUpdated(AActor* Actor, struct FAIStimulus Stimulus);
+
+	/** Один шаг хода: атака / движение по состоянию / завершение — пока есть AP. */
+	void AdvanceTurnStep();
+
+	/** Действия шага в состоянии Combat. true — шаг обработан (ждём таймер/движение). */
+	bool StepCombat(AUnitBase* Unit);
+
+	/** Действия шага в состоянии Investigate. */
+	bool StepInvestigate(AUnitBase* Unit);
+
+	/** Действия шага в состоянии Patrol. */
+	bool StepPatrol(AUnitBase* Unit);
+
+	/** Движение к точке с обрезкой по бюджету пути юнита (1 AP). true — движение началось. */
+	bool MoveWithBudget(AUnitBase* Unit, const FVector& Goal, float AcceptanceRadius);
+
+	/** Завершает ход юнита и уведомляет TurnManager. */
+	void FinishUnitTurn();
+
+	/** Планирует следующий шаг хода через ActionInterval. */
+	void ScheduleNextStep();
+
+	/** Ближайший живой враждебный актор, видимый перцепцией; провоцирующий (Taunt) — приоритетнее. */
+	AActor* FindVisibleTarget() const;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tactics|Perception")
 	TObjectPtr<UAIPerceptionComponent> Perception;
 
 	UPROPERTY()
 	TObjectPtr<UAISenseConfig_Sight> SightConfig;
+
+	/** Текущий уровень тревоги. */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Tactics|AI")
+	EUnitAlertState AlertState = EUnitAlertState::Patrol;
+
+	/** Последняя известная точка противника/шума (Investigate-цель). */
+	FVector LastKnownThreatLocation = FVector::ZeroVector;
+	bool bHasThreatLocation = false;
+
+	/** Индекс следующей патрульной точки юнита. */
+	int32 PatrolIndex = 0;
+
+	/** Колбэк TurnManager'а на завершение хода этого юнита. */
+	FSimpleDelegate TurnFinishedDelegate;
+
+	/** Идёт ли сейчас перемещение, начатое в рамках хода. */
+	bool bTurnMoveInProgress = false;
+
+	FTimerHandle TurnStepTimerHandle;
 };

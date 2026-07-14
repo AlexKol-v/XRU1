@@ -1,4 +1,8 @@
 #include "CoverDetectionComponent.h"
+#include "TacticsGameplayTags.h"
+#include "TacticsGameplayEffects.h"
+#include "AbilitySystemComponent.h"
+#include "AbilitySystemGlobals.h"
 #include "GameFramework/Actor.h"
 #include "Engine/World.h"
 #include "CollisionQueryParams.h"
@@ -6,6 +10,20 @@
 UCoverDetectionComponent::UCoverDetectionComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
+
+	// Дефолты из нативных тегов/эффектов; при желании переопределяются в BP.
+	HalfCoverTag = TacticsGameplayTags::Cover_Half;
+	FullCoverTag = TacticsGameplayTags::Cover_Full;
+	HalfCoverEffect = UGE_CoverHalf::StaticClass();
+	FullCoverEffect = UGE_CoverFull::StaticClass();
+}
+
+void UCoverDetectionComponent::BeginPlay()
+{
+	Super::BeginPlay();
+
+	// Стартовая оценка: юнит мог заспавниться уже у стены.
+	EvaluateSurroundings();
 }
 
 ECoverType UCoverDetectionComponent::EvaluateSurroundings()
@@ -29,6 +47,7 @@ ECoverType UCoverDetectionComponent::EvaluateSurroundings()
 	if (Best != BestCoverAround)
 	{
 		BestCoverAround = Best;
+		ApplyCoverEffect(BestCoverAround);
 		OnCoverStateChanged.Broadcast(BestCoverAround);
 	}
 	return BestCoverAround;
@@ -49,6 +68,16 @@ ECoverType UCoverDetectionComponent::GetCoverAgainst(const AActor* Threat) const
 		return ECoverType::None;
 	}
 	return TraceCoverInDirection(ToThreat);
+}
+
+float UCoverDetectionComponent::GetDefenseBonusAgainst(const AActor* Threat) const
+{
+	switch (GetCoverAgainst(Threat))
+	{
+	case ECoverType::Half: return HalfCoverDefenseBonus;
+	case ECoverType::Full: return FullCoverDefenseBonus;
+	default:               return 0.f;
+	}
 }
 
 ECoverType UCoverDetectionComponent::TraceCoverInDirection(const FVector& Direction) const
@@ -82,4 +111,36 @@ ECoverType UCoverDetectionComponent::TraceCoverInDirection(const FVector& Direct
 		return ECoverType::Half;
 	}
 	return ECoverType::None;
+}
+
+void UCoverDetectionComponent::ApplyCoverEffect(ECoverType CoverType)
+{
+	UAbilitySystemComponent* ASC = UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(GetOwner());
+	if (!ASC)
+	{
+		return;
+	}
+
+	// Снимаем предыдущий GE укрытия (если был).
+	if (ActiveCoverEffectHandle.IsValid())
+	{
+		ASC->RemoveActiveGameplayEffect(ActiveCoverEffectHandle);
+		ActiveCoverEffectHandle.Invalidate();
+	}
+
+	TSubclassOf<UGameplayEffect> EffectClass;
+	switch (CoverType)
+	{
+	case ECoverType::Half: EffectClass = HalfCoverEffect; break;
+	case ECoverType::Full: EffectClass = FullCoverEffect; break;
+	default: break; // None — юнит открыт, эффекта нет.
+	}
+
+	if (EffectClass)
+	{
+		FGameplayEffectContextHandle Context = ASC->MakeEffectContext();
+		Context.AddSourceObject(this);
+		ActiveCoverEffectHandle = ASC->ApplyGameplayEffectToSelf(
+			EffectClass->GetDefaultObject<UGameplayEffect>(), 1.f, Context);
+	}
 }
