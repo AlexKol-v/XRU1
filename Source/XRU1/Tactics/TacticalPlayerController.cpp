@@ -58,6 +58,10 @@ void ATacticalPlayerController::BeginPlay()
 			MoveRangeVisualizer->Hide();
 		}
 	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[MoveRange] MoveRangeVisualizerClass не назначен в BP-контроллере — зона хода и превью пути не будут видны"));
+	}
 
 	// Блокировка ввода в фазу врага + сброс выбора при смене фазы.
 	if (UTurnManagerSubsystem* TurnManager = GetWorld()->GetSubsystem<UTurnManagerSubsystem>())
@@ -139,6 +143,65 @@ void ATacticalPlayerController::SetupInputComponent()
 				&ATacticalPlayerController::SelectUnitBySlot, i);
 		}
 	}
+}
+
+void ATacticalPlayerController::PlayerTick(float DeltaTime)
+{
+	Super::PlayerTick(DeltaTime);
+
+	// Юнит закончил перемещение — зона хода перестраивается от новой позиции.
+	const bool bMovingNow = IsSelectedUnitMoving();
+	if (bSelectedUnitWasMoving && !bMovingNow)
+	{
+		RefreshMoveRange();
+	}
+	bSelectedUnitWasMoving = bMovingNow;
+
+	UpdatePathPreviewUnderCursor();
+}
+
+bool ATacticalPlayerController::IsSelectedUnitMoving() const
+{
+	// Статус path following ставится сразу при выдаче приказа (в отличие от
+	// velocity, которая в кадр приказа ещё нулевая).
+	const AUnitAIController* UnitAI = SelectedUnit
+		? Cast<AUnitAIController>(SelectedUnit->GetController()) : nullptr;
+	return UnitAI && UnitAI->GetMoveStatus() != EPathFollowingStatus::Idle;
+}
+
+void ATacticalPlayerController::UpdatePathPreviewUnderCursor()
+{
+	if (!MoveRangeVisualizer)
+	{
+		return;
+	}
+
+	// Превью уместно только когда юнит готов принять приказ и стоит на месте.
+	const bool bCanPreview = IsPlayerPhase() && SelectedUnit && !SelectedUnit->IsDowned()
+		&& !SelectedUnit->IsEvacuated() && !bAwaitingAbilityTarget && !IsSelectedUnitMoving();
+	if (!bCanPreview)
+	{
+		MoveRangeVisualizer->HidePathPreview();
+		LastPathPreviewGoal = FVector(TNumericLimits<float>::Max());
+		return;
+	}
+
+	FHitResult Hit;
+	if (!GetHitResultUnderCursor(ECC_Visibility, false, Hit) || !Hit.bBlockingHit ||
+		Cast<AUnitBase>(Hit.GetActor())) // над юнитом — контекст выбора/атаки, не движения
+	{
+		MoveRangeVisualizer->HidePathPreview();
+		LastPathPreviewGoal = FVector(TNumericLimits<float>::Max());
+		return;
+	}
+
+	// Перезапрашиваем путь только при заметном сдвиге курсора (25 см).
+	if (FVector::DistSquared2D(Hit.Location, LastPathPreviewGoal) < 625.f)
+	{
+		return;
+	}
+	LastPathPreviewGoal = Hit.Location;
+	MoveRangeVisualizer->UpdatePathPreview(Hit.Location);
 }
 
 // --- Выбор юнита ---------------------------------------------------------------
@@ -274,6 +337,11 @@ void ATacticalPlayerController::HandleSelectPressed()
 		{
 			TryAttackTarget(ClickedUnit);
 		}
+	}
+	else
+	{
+		// ЛКМ по пустому месту — снять выбор (зона хода прячется).
+		SelectUnit(nullptr);
 	}
 }
 
@@ -514,7 +582,10 @@ void ATacticalPlayerController::RefreshMoveRange()
 		return;
 	}
 
-	if (SelectedUnit && IsPlayerPhase() && !SelectedUnit->IsDowned() && !SelectedUnit->IsEvacuated())
+	// Во время выполнения приказа зона прячется: она устарела (юнит уже не там)
+	// и перестроится по остановке (PlayerTick ловит конец перемещения).
+	if (SelectedUnit && IsPlayerPhase() && !SelectedUnit->IsDowned() && !SelectedUnit->IsEvacuated()
+		&& !IsSelectedUnitMoving())
 	{
 		MoveRangeVisualizer->ShowForUnit(SelectedUnit);
 	}

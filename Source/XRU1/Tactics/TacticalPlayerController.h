@@ -92,6 +92,7 @@ public:
 protected:
 	virtual void BeginPlay() override;
 	virtual void SetupInputComponent() override;
+	virtual void PlayerTick(float DeltaTime) override;
 
 	// --- Обработчики Enhanced Input -------------------------------------------
 
@@ -117,6 +118,12 @@ protected:
 
 	/** Обновить зону хода под выбранного юнита (или спрятать). */
 	void RefreshMoveRange();
+
+	/** Превью пути к точке под курсором (лента; троттлинг по сдвигу курсора). */
+	void UpdatePathPreviewUnderCursor();
+
+	/** Выполняет ли выбранный юнит приказ перемещения прямо сейчас. */
+	bool IsSelectedUnitMoving() const;
 
 	/** Колбэк смены фазы: блокировка/разблокировка, сброс выбора. */
 	UFUNCTION()
@@ -172,4 +179,10 @@ protected:
 
 	/** Ждём клик по цели способности (Event.Heal медика). */
 	bool bAwaitingAbilityTarget = false;
+
+	/** Последняя точка превью пути (троттлинг перзапроса FindPath). */
+	FVector LastPathPreviewGoal = FVector(TNumericLimits<float>::Max());
+
+	/** Двигался ли выбранный юнит в прошлый тик (ловим остановку → перестроить зону). */
+	bool bSelectedUnitWasMoving = false;
 };

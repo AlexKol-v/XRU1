@@ -38,9 +38,9 @@ ACharacter → ABaseCharacter (TeamId) → AGASCharacter (ASC) → ATDCombatant
 | `UGA_RunAndGun` | +1 AP немедленно, 1 раз/миссию | BP-хук `OnRunAndGun` |
 | `UTacticsCombatStatics` | общий выстрел/проверки | `ResolveShot` (форс 100/0 для туториала; шумит врагам), `ComputeHitChance` (укрытие + hunker ×2), `HasLineOfSight`, `SquadHasLineOfSight`, `IsUnitAlive/Downed/Evacuated`, `NotifyCombatNoise`, `GetNavPathLength`, `GetPointAlongPathBudget` |
 | `AUnitAIController` | perception (sight) + **XCOM-тревога: Patrol → Investigate (шум/потеря) → Combat**; бюджет пути AI = MoveRange; приоритет Taunt-цели | `ExecuteUnitTurn`, `NotifyNoiseHeard`, `GetAlertState` |
-| `ATacticalPlayerController` | управление боем: выбор (ЛКМ/1–4/Tab), движение ПКМ (**валидация по длине пути**: 1 AP ≤ 800, 2 AP ≤ 1600), атака кликом (Event.Attack), хоткеи Y/X/Q/F/Backspace/Enter/Esc, режим цели медика, камера | `SelectUnit(BySlot/Next)`, `GetSquad`, `Request*`, делегат `OnSelectedUnitChanged` |
+| `ATacticalPlayerController` | управление боем: выбор (ЛКМ/1–4/Tab), движение ПКМ (**валидация по длине пути**: 1 AP ≤ 800, 2 AP ≤ 1600), атака кликом (Event.Attack), хоткеи Y/X/Q/F/Backspace/Enter/Esc, режим цели медика, камера; **PlayerTick**: превью пути под курсором (троттлинг 25 см) | `SelectUnit(BySlot/Next)`, `GetSquad`, `Request*`, делегат `OnSelectedUnitChanged` |
 | `ATacticalCameraPawn` | XCOM-камера: панорама/поворот 45°/зум с интерполяцией | `AddPanInput/AddRotationStep/AddZoomInput`, `FocusOnActor` |
-| `AMoveRangeVisualizer` | **зона хода**: заливка полигонов навмеша по path-distance (секция 1 AP + кольцо 2 AP), ProceduralMesh | `ShowForUnit`, `Hide`; материалы зон — в BP |
+| `AMoveRangeVisualizer` | **зона хода**: волновой Dijkstra по сетке сэмплов `CellSize` (октильная метрика; связность рёбер — surface-raycast навмеша `NavMeshRaycast`, уровень — `ProjectPoint` от волны; полоса у порогов уточняется `FindPathSync`) → гладкий контур marching squares с разрывом на обрывах; зоны 1 AP/2 AP не пересекаются, при последнем AP зона жёлтая («рывок»); **превью пути**: лента к курсору + маркер цели, цвет по стоимости AP | `ShowForUnit`, `Hide`, `UpdatePathPreview`, `HidePathPreview`; материалы зон/пути — в BP |
 | `ABombObjective` | цель «бомба»: 2 действия «Обезвредить» по 1 AP вплотную | `TryDefuse`, `CanDefuse`, делегаты `OnDefuseProgress`, `OnDisarmed` |
 | `AEvacZone` | зона эвакуации: активация после цели, «Эвакуация» 1 AP | `ActivateZone`, `TryEvacuate`, `OnUnitEvacuated`, `bActiveFromStart` |
 | `ATacticsGameMode` | сбор сторон по TeamId, сложность (HP/aim/таймер по `DifficultyParams`), бомба→эвакуация→победа, результат→сейв | `ActivateEvacuation` (зовёт и скрипт туториала), `WasDefeatByTimeout`; настройки: `MissionId`, `bWinWhenAllEnemiesDead`, `MissionResultWidgetClass`, `TacticalHUDClass` |
@@ -69,7 +69,9 @@ ACharacter → ABaseCharacter (TeamId) → AGASCharacter (ASC) → ATDCombatant
 
 1. AI: выбор точки перемещения С УКРЫТИЕМ от цели (сэмплинг + GetCoverAgainst);
    scamper-рывок при первом обнаружении.
-2. Обводка-контур зоны хода (сейчас — заливка полигонов; выглядит достаточно).
+2. ~~Обводка-контур зоны хода~~ — сделано (2026-07-15): гладкий контур marching
+   squares по полю дистанций + лента превью пути. Возможная полировка: пунктир
+   вместо ленты, анимация материала контура.
 3. Всплывающие числа урона / декаль-маркеры подсказок туториала — BP-only.
 4. Процедурная раскладка укрытий PCG для L_Mission01 (стретч GDD §12).
 

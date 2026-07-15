@@ -178,8 +178,13 @@ Manny с тёмным материалом, статы: BaseAim 65 / ShotDamage 
    `RootLayoutClass = WBP_PrimaryGameLayout`, `PauseMenuClass = WBP_PauseMenu`,
    `MoveRangeVisualizerClass = BP_MoveRangeVisualizer`.
 4. **BP_MoveRangeVisualizer** от `AMoveRangeVisualizer`: материалы зон —
-   полупрозрачные unlit (M_MoveZone_Blue / M_MoveZone_Yellow, Translucent,
-   эмиссив ~0.3 альфы).
+   полупрозрачные unlit (`ZoneOneMaterial` = синий M_MoveZone_Blue,
+   `ZoneTwoMaterial` = жёлтый M_MoveZone_Yellow, Translucent, ~0.3 альфы).
+   Для ленты превью пути — `PathOneMaterial`/`PathDashMaterial` (те же цвета,
+   но плотнее, ~0.8 альфы; пусто = возьмёт материалы зон). Параметры `CellSize`
+   (шаг сетки, 50 см — меньше = глаже/дороже) и `PathWidth` — там же в дефолтах.
+   Зона строится волновым Dijkstra по сетке сэмплов и рисуется гладким контуром
+   (marching squares), путь — лентой по рельефу; всё по метрике валидации приказа.
 5. **GM_Tactics** от `ATacticsGameMode`: PlayerController = BP_TacticalPlayerController,
    Default Pawn = BP_TacticalCameraPawn; `MissionResultWidgetClass =
    WBP_MissionResult`, `TacticalHUDClass = WBP_TacticalHUD`; `MissionId` и
