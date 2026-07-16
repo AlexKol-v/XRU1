@@ -1,6 +1,7 @@
 #include "TacticalCameraPawn.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "Camera/CameraComponent.h"
+#include "Components/PostProcessComponent.h"
 
 ATacticalCameraPawn::ATacticalCameraPawn()
 {
@@ -17,6 +18,28 @@ ATacticalCameraPawn::ATacticalCameraPawn()
 
 	Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
 	Camera->SetupAttachment(SpringArm);
+
+	// Глобальный пост-процесс: unbound (действует всегда, независимо от активной
+	// камеры и позиции пешки) — надёжнее блендабла на самой камере.
+	PostProcess = CreateDefaultSubobject<UPostProcessComponent>(TEXT("PostProcess"));
+	PostProcess->SetupAttachment(Root);
+	PostProcess->bUnbound = true;
+}
+
+void ATacticalCameraPawn::BeginPlay()
+{
+	Super::BeginPlay();
+
+	// Обводка юнитов при наведении: PP-материал блендаблом на unbound-компонент.
+	if (OutlineMaterial && PostProcess)
+	{
+		PostProcess->Settings.AddBlendable(OutlineMaterial, 1.f);
+	}
+	else if (!OutlineMaterial)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Highlight] OutlineMaterial не назначен в пешке-камере — ")
+			TEXT("обводки юнитов не будет (проверь Default Pawn Class в GameMode = BP_TacticalCameraPawn)"));
+	}
 }
 
 void ATacticalCameraPawn::AddPanInput(const FVector2D& Input)
@@ -25,6 +48,10 @@ void ATacticalCameraPawn::AddPanInput(const FVector2D& Input)
 	{
 		return;
 	}
+
+	// Ручная панорама разрывает автофокус/следование (как в XCOM).
+	ClearFollowTarget();
+	bHasFocusGoal = false;
 
 	// Направления берём от текущего yaw камеры, движение — в плоскости земли.
 	const FRotator YawRot(0.f, SpringArm->GetRelativeRotation().Yaw, 0.f);
@@ -49,11 +76,48 @@ void ATacticalCameraPawn::AddZoomInput(float Input)
 	TargetZoom = FMath::Clamp(TargetZoom - Input * ZoomStep, MinZoom, MaxZoom);
 }
 
-void ATacticalCameraPawn::FocusOnActor(const AActor* Target)
+void ATacticalCameraPawn::FocusOnActor(const AActor* Target, bool bInstant)
 {
 	if (Target)
 	{
-		SetActorLocation(FVector(Target->GetActorLocation().X, Target->GetActorLocation().Y, GetActorLocation().Z));
+		FocusOnLocation(Target->GetActorLocation(), bInstant);
+	}
+}
+
+void ATacticalCameraPawn::FocusOnLocation(const FVector& Location, bool bInstant)
+{
+	// Явный фокус отменяет следование за актором.
+	FollowTarget = nullptr;
+
+	if (bInstant)
+	{
+		// Телепорт (старт боя): двигаем только в плоскости земли, высота пешки своя.
+		bHasFocusGoal = false;
+		SetActorLocation(FVector(Location.X, Location.Y, GetActorLocation().Z));
+	}
+	else
+	{
+		FocusGoal = Location;
+		bHasFocusGoal = true; // полёт доводится в Tick
+	}
+}
+
+void ATacticalCameraPawn::SetFollowTarget(const AActor* Target)
+{
+	FollowTarget = Target;
+	bHasFocusGoal = Target != nullptr; // цель обновляется каждый тик в Tick
+	if (Target)
+	{
+		FocusGoal = Target->GetActorLocation();
+	}
+}
+
+void ATacticalCameraPawn::ClearFollowTarget()
+{
+	if (FollowTarget.IsValid())
+	{
+		FollowTarget = nullptr;
+		bHasFocusGoal = false;
 	}
 }
 
@@ -72,4 +136,28 @@ void ATacticalCameraPawn::Tick(float DeltaSeconds)
 	SpringArm->SetRelativeRotation(Rot);
 
 	SpringArm->TargetArmLength = FMath::FInterpTo(SpringArm->TargetArmLength, TargetZoom, DeltaSeconds, InterpSpeed);
+
+	// Полёт к цели фокуса / следование за актором (XCOM-glide, только XY).
+	if (FollowTarget.IsValid())
+	{
+		FocusGoal = FollowTarget->GetActorLocation();
+	}
+	else if (FollowTarget.IsStale())
+	{
+		// Цель уничтожена (юнит умер в кадре) — долетаем до последней точки.
+		FollowTarget = nullptr;
+	}
+
+	if (bHasFocusGoal)
+	{
+		const FVector Current = GetActorLocation();
+		const FVector Goal(FocusGoal.X, FocusGoal.Y, Current.Z);
+		SetActorLocation(FMath::VInterpTo(Current, Goal, DeltaSeconds, FocusInterpSpeed));
+
+		// Долетели и никого не сопровождаем — фокус завершён.
+		if (!FollowTarget.IsValid() && FVector::DistSquared2D(GetActorLocation(), Goal) < 25.f)
+		{
+			bHasFocusGoal = false;
+		}
+	}
 }

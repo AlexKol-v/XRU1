@@ -2,6 +2,7 @@
 #include "ActionPointsComponent.h"
 #include "TacticsCombatStatics.h"
 #include "UnitAIController.h"
+#include "UnitBase.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/Pawn.h"
 #include "Engine/World.h"
@@ -163,8 +164,17 @@ void UTurnManagerSubsystem::ProcessNextEnemyUnit()
 
 		if (Unit && AI && UTacticsCombatStatics::IsUnitAlive(Unit))
 		{
-			AI->ExecuteUnitTurn(FSimpleDelegate::CreateUObject(
-				this, &UTurnManagerSubsystem::HandleEnemyUnitFinished));
+			// Действующий юнит не вырезает навмеш под собой (иначе не построит
+			// свой путь); камера игрока летит к нему (подписан контроллер).
+			if (AUnitBase* UnitBase = Cast<AUnitBase>(Unit))
+			{
+				UnitBase->SetNavObstacleEnabled(false);
+			}
+			OnEnemyUnitActivated.Broadcast(Unit);
+
+			// Пауза перед действиями: навмеш латает дыру, камера долетает.
+			GetWorld()->GetTimerManager().SetTimer(EnemyStepTimerHandle, this,
+				&UTurnManagerSubsystem::ActivateCurrentEnemyUnit, EnemyActivationDelay, false);
 			return;
 		}
 		++EnemyTurnIndex;
@@ -174,8 +184,38 @@ void UTurnManagerSubsystem::ProcessNextEnemyUnit()
 	EndTurn();
 }
 
+void UTurnManagerSubsystem::ActivateCurrentEnemyUnit()
+{
+	if (!bInCombat || CurrentPhase != ETurnPhase::Enemy || !EnemySide.IsValidIndex(EnemyTurnIndex))
+	{
+		return;
+	}
+
+	AActor* Unit = EnemySide[EnemyTurnIndex];
+	APawn* Pawn = Cast<APawn>(Unit);
+	AUnitAIController* AI = Pawn ? Cast<AUnitAIController>(Pawn->GetController()) : nullptr;
+	if (Unit && AI && UTacticsCombatStatics::IsUnitAlive(Unit))
+	{
+		AI->ExecuteUnitTurn(FSimpleDelegate::CreateUObject(
+			this, &UTurnManagerSubsystem::HandleEnemyUnitFinished));
+	}
+	else
+	{
+		// Юнит выбыл за время паузы (овервотч) — дальше по очереди.
+		HandleEnemyUnitFinished();
+	}
+}
+
 void UTurnManagerSubsystem::HandleEnemyUnitFinished()
 {
+	// Юнит отходил — снова вырезает навмеш на новой позиции.
+	if (EnemySide.IsValidIndex(EnemyTurnIndex))
+	{
+		if (AUnitBase* UnitBase = Cast<AUnitBase>(EnemySide[EnemyTurnIndex].Get()))
+		{
+			UnitBase->SetNavObstacleEnabled(true);
+		}
+	}
 	++EnemyTurnIndex;
 	CheckCombatOutcome();
 	if (!bInCombat)
@@ -192,6 +232,14 @@ void UTurnManagerSubsystem::StopEnemyTurnProcessing()
 	if (UWorld* World = GetWorld())
 	{
 		World->GetTimerManager().ClearTimer(EnemyStepTimerHandle);
+	}
+	// Прерванный посреди хода юнит (конец боя) не должен остаться без выреза.
+	if (CurrentPhase == ETurnPhase::Enemy && EnemySide.IsValidIndex(EnemyTurnIndex))
+	{
+		if (AUnitBase* UnitBase = Cast<AUnitBase>(EnemySide[EnemyTurnIndex].Get()))
+		{
+			UnitBase->SetNavObstacleEnabled(true);
+		}
 	}
 	EnemyTurnIndex = 0;
 }

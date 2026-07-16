@@ -7,6 +7,7 @@
 
 class UActionPointsComponent;
 class UCoverDetectionComponent;
+class UDecalComponent;
 class UGameplayAbility;
 class UTacticalAbility;
 
@@ -119,9 +120,31 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|State")
 	void Evacuate();
 
+	/**
+	 * Включает/выключает вырез навмеша под юнитом (капсула — динамическое
+	 * препятствие: чужие пути и зоны хода огибают юнита). У ДЕЙСТВУЮЩЕГО юнита
+	 * (выбран игроком / ходит по приказу AI) вырез выключается, иначе он не
+	 * сможет построить путь из «дыры» под собственными ногами.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Unit")
+	void SetNavObstacleEnabled(bool bEnabled);
+
 	/** Смена состояния (смерть/ранение/подъём/эвакуация) — для HUD. */
 	UPROPERTY(BlueprintAssignable, Category = "Tactics|State")
 	FOnUnitStateChanged OnUnitStateChanged;
+
+	// --- Подсветка выбора/наведения (зовёт ATacticalPlayerController) --------
+
+	/** Кольцо-декаль под ногами: юнит выбран/снят с выбора. */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Highlight")
+	void SetSelectionHighlight(bool bSelected);
+
+	/**
+	 * Обводка при наведении курсора: Render Custom Depth на меше.
+	 * Stencil: 1 — юнит отряда, 2 — враг (цвета задаёт post-process материал).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Highlight")
+	void SetHoverHighlight(bool bHovered);
 
 protected:
 	virtual void BeginPlay() override;
@@ -158,6 +181,14 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tactics|Unit")
 	TObjectPtr<UCoverDetectionComponent> CoverDetection;
+
+	/** Кольцо-декаль выбранного юнита (скрыто по умолчанию; материал — в BP). */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tactics|Highlight")
+	TObjectPtr<UDecalComponent> SelectionDecal;
+
+	/** Stencil-значения обводки (совпадают с ветками в M_OutlinePP). */
+	static constexpr int32 HoverStencilAlly = 1;
+	static constexpr int32 HoverStencilEnemy = 2;
 
 	bool bIsDead = false;
 	bool bIsDowned = false;

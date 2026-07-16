@@ -114,22 +114,42 @@ Epic положил готовый конвейер ретаргета:
 
 Death/HitReact в GASP НЕТ — используем донорские (`MM_Death_*`, `MM_HitReact_*`).
 
-### 4.1 ABP_Soldier
-`Content/XRU1Game/Units/` → Animation Blueprint (Skeleton = SK_Mannequin).
-Входные данные (Event Graph, из Pawn-владельца `AUnitBase`):
-- `Speed` (velocity), `bIsDead`, `bIsDowned` (по событиям смерти этапа 1),
-- **`CoverState`** — из `CoverDetection->BestCoverAround` (enum None/Half/Full;
-  обновлять по делегату `OnCoverStateChanged`),
-- `bOverwatch` — наличие тега `State.Overwatch` на ASC.
+### 4.1 ABP_Soldier — расширение стокового ABP (решение — 04_ROADMAP этап 4)
 
-State Machine (правило стоек — GDD §12.1):
-- `Idle_Open` (rifle idle) ↔ `Move` (Rifle Walk/Jog по Speed)
-- `Idle_HalfCover` — **crouch idle (GASP)**; перемещение у укрытия — crouch walk
-- `Idle_FullCover` — rifle idle + лёгкий lean к стене (упрощённо — та же idle)
-- `Overwatch` — ADS-поза (`MF_Rifle_Idle_ADS`)
-- `Downed` — лежит (кадр Death-анимации на паузе), `Death` — по bIsDead
-Slot «UpperBody» для монтажей. Монтажи: `MM_Rifle_Fire` → AM_Fire,
-`MM_HitReact_*` → AM_HitReact, `MM_Death_*` → AM_Death.
+**Статус:** базовая локомоция (idle/бег) у юнитов УЖЕ работает — на стоковом
+ABP шаблона. Двигает юнита `AIController`, поэтому в C++ включён
+`bUseAccelerationForPaths` (конструктор `AUnitBase`) — без него стоковое
+условие `Should Move` (= `Speed>0 AND Acceleration≠0`) не видит AI-движение
+(path following по умолчанию задаёт скорость напрямую, минуя Acceleration).
+Ту же логику Should Move сохранять и в новых ветках ABP.
+
+**Почему НЕ GASP-риг целиком:** motion matching в GASP предсказывает
+траекторию по вводу игрока — при движении через `AI MoveTo` даёт футслайдинг
+и неверные направления; для дискретных стоек тактики он и не нужен.
+Из GASP берём только отдельные секвенции через ретаргет §4.0.
+
+**Шаги:**
+1. Дублировать стоковый ABP (который сейчас стоит на юнитах, ABP_Manny) →
+   `Content/XRU1Game/Units/ABP_Soldier`. НЕ child-класс — дубликат: свободно
+   правим state machine, не боясь обновлений шаблона.
+2. Ретаргет недостающих секвенций из GASP по §4.0: crouch idle, crouch walk
+   loop; сложить в `Content/XRU1Game/Units/Anims/GASP/`.
+3. Event Graph — добавить переменные из Pawn-владельца (`AUnitBase`;
+   каст к нему делать ОТДЕЛЬНО от расчёта Speed, чтобы локомоция не зависела
+   от успеха каста):
+   - `bIsDead`, `bIsDowned` (по событиям смерти этапа 1),
+   - **`CoverState`** — из `CoverDetection->BestCoverAround` (None/Half/Full;
+     обновлять по делегату `OnCoverStateChanged`),
+   - `bOverwatch` — наличие тега `State.Overwatch` на ASC.
+4. State Machine — добавить состояния (правило стоек — GDD §12.1):
+   - `Idle_Open` ↔ `Move` — уже есть в стоке (idle/run по Should Move)
+   - `Idle_HalfCover` — **crouch idle (GASP)**; движение у укрытия — crouch walk
+   - `Idle_FullCover` — rifle idle + лёгкий lean к стене (упрощённо — та же idle)
+   - `Overwatch` — ADS-поза (`MF_Rifle_Idle_ADS` из донора)
+   - `Downed` — лежит (кадр Death-анимации на паузе), `Death` — по bIsDead
+5. Slot «UpperBody» для монтажей. Монтажи: `MM_Rifle_Fire` → AM_Fire,
+   `MM_HitReact_*` → AM_HitReact, `MM_Death_*` → AM_Death (донорские).
+6. Назначить ABP_Soldier в Mesh всех BP-юнитов (взамен стокового).
 
 ### 4.2 BP-классы юнитов
 `Content/XRU1Game/Units/` → BP от `AUnit_Assault` / `AUnit_Sniper` /
@@ -172,7 +192,11 @@ Manny с тёмным материалом, статы: BaseAim 65 / ShotDamage 
    `IA_Pause` (Esc), `IA_CameraPan` (Axis2D: WASD со Swizzle/Negate),
    `IA_CameraRotate` (Axis1D: **Q** с Negate, **E** — как в XCOM),
    `IA_CameraZoom` (Axis1D: колесо), `IA_SelectSlot1..4` (клавиши 1–4).
-2. **BP_TacticalCameraPawn** от `ATacticalCameraPawn` (дефолты ок).
+2. **BP_TacticalCameraPawn** от `ATacticalCameraPawn` (дефолты ок; поведение
+   XCOM уже в C++: плавный полёт к цели `FocusInterpSpeed`, следование за
+   бегущим/действующим юнитом, разрыв follow при ручной панораме). Edge scroll
+   мышью у края — параметры на КОНТРОЛЛЕРЕ (`bEdgeScrollEnabled`,
+   `EdgeScrollMarginPx`).
 3. **BP_TacticalPlayerController** от `ATacticalPlayerController`: назначить
    IMC + все IA (слоты 1–4 — в массив `SelectSlotActions` по порядку),
    `RootLayoutClass = WBP_PrimaryGameLayout`, `PauseMenuClass = WBP_PauseMenu`,
@@ -198,6 +222,62 @@ Manny с тёмным материалом, статы: BaseAim 65 / ShotDamage 
    InteractRadius ~200) и `BP_EvacZone` (радиус ~400, `bActiveFromStart=false`;
    в туториале зону активирует скрипт: GameMode->`ActivateEvacuation()`).
    Юнит рядом с бомбой / в зоне жмёт **F**.
+
+## 4.6 Подсветка юнитов: обводка при наведении + кольцо выбора
+
+C++ уже всё делает (ховер-трейс, Render Custom Depth со stencil 1 = отряд /
+2 = враг, показ кольца в `SelectUnit`); `r.CustomDepth=3` включён в
+DefaultEngine.ini (проверить: Project Settings → Rendering → Postprocessing →
+Custom Depth-Stencil Pass = **Enabled with Stencil**). В редакторе нужно два
+материала и два назначения.
+
+1. **M_OutlinePP** (`Content/XRU1Game/Materials/`) — post-process обводка:
+   - Details материала: Material Domain = **Post Process**; Blendable Location =
+     **Before Tonemapping** (в новых версиях пункт называется *Scene Color
+     Before Bloom*) — так обводку сглаживает TSR/TAA.
+   - Граф (классический 4-тап edge-detect, без Custom-нод):
+     1. `SceneTexture: CustomStencil` (UVs пустые) → `Mask(R)` — stencil в
+        центре пикселя, далее **C**.
+     2. Четыре `SceneTexture: CustomStencil` с UVs = `ScreenPosition` +
+        смещение на 1 пиксель: смещение = `float2(±1,0)/float2(0,±1)` ×
+        скалярный параметр **Thickness** (деф. 2) × `ViewSize` (нода
+        *ViewProperty → InvSize*). Их `Mask(R)` свести попарно нодами `Max` →
+        **N** (максимальный stencil соседей).
+     3. Маска ребра: `If (C < 0.5 && N > 0.5)` → практично: `1 - saturate(C)`
+        умножить на `saturate(N)` → **EdgeMask** (обводка рисуется СНАРУЖИ
+        юнита: центр пуст, сосед закрашен).
+     4. Цвет: `If (N == 1)` → VectorParam **AllyColor** (голубой ~(0.1,0.8,1)),
+        иначе VectorParam **EnemyColor** (красный ~(1,0.15,0.1)); сравнение —
+        `If` с порогом 1.5.
+     5. Итог: `Lerp( SceneTexture:PostProcessInput0 , Цвет×Intensity(деф. 5) ,
+        EdgeMask )` → **Emissive Color**.
+2. **M_SelectionRing** (там же) — кольцо-декаль:
+   - Material Domain = **Deferred Decal**, Blend Mode = **Translucent**.
+   - Маска кольца: `RadialGradientExponential` (Radius 0.5, Density 8) минус
+     `RadialGradientExponential` (Radius 0.4, Density 8) → **Opacity**;
+     VectorParam **RingColor** (жёлто-зелёный, ×3 эмиссив) → **Emissive Color**.
+   - (По желанию текстура-кольцо вместо градиентов — просто в Opacity.)
+3. **BP_TacticalCameraPawn** → Details → Tactics|Camera → `OutlineMaterial =
+   M_OutlinePP`. Материал вешается блендаблом на **unbound-`PostProcessComponent`**
+   пешки в BeginPlay — отдельный PostProcessVolume на карте НЕ нужен (если добавлял
+   вручную для теста — можно убрать, иначе обводка примёнится дважды).
+4. **BP-юниты** (BP_Unit_* и враг): компонент `SelectionDecal` → Decal Material
+   = `M_SelectionRing`. Дефолты положения/размера уже заданы в C++ (опущен к
+   ногам `Z=-88`, `DecalSize` X=120 глубина / Y/Z=60 радиус) — трогать только
+   если у юнита нестандартная капсула (напр. у танка увеличить радиус).
+
+Логика подсветки (C++, уже работает):
+- **кольцо выбора** — только в свою (игрока) фазу; в ход врага прячется, чтобы
+  не загромождать картинку, и возвращается в начале нашего хода;
+- **ховер-обводка** в фазу игрока — и свои (голубым), и враги (красным);
+- **ховер-обводка** в фазу врага — свои НЕ подсвечиваются, враги подсвечиваются
+  (видно их ход);
+- смерть/эвакуация гасят и обводку, и кольцо.
+
+Проверка на Lvl_TopDown: навёл на бойца — голубая обводка, на врага — красная;
+ЛКМ по бойцу — под ногами кольцо, ЛКМ в пусто — гаснет; заверши ход — в фазу
+врага кольцо выбранного пропадает и наведение на своих обводку не даёт, а
+враги при наведении подсвечиваются.
 
 ## 5. Уровень-туториал (этап 7)
 

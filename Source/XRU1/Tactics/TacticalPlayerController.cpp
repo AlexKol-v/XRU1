@@ -67,6 +67,7 @@ void ATacticalPlayerController::BeginPlay()
 	if (UTurnManagerSubsystem* TurnManager = GetWorld()->GetSubsystem<UTurnManagerSubsystem>())
 	{
 		TurnManager->OnTurnStarted.AddDynamic(this, &ATacticalPlayerController::HandleTurnStarted);
+		TurnManager->OnEnemyUnitActivated.AddDynamic(this, &ATacticalPlayerController::HandleEnemyUnitActivated);
 	}
 
 	// Ввод: и мир (клики), и UI (HUD).
@@ -149,15 +150,102 @@ void ATacticalPlayerController::PlayerTick(float DeltaTime)
 {
 	Super::PlayerTick(DeltaTime);
 
-	// Юнит закончил перемещение — зона хода перестраивается от новой позиции.
+	// Юнит закончил перемещение — зона хода перестраивается от новой позиции,
+	// камера прекращает сопровождение бегущего бойца.
 	const bool bMovingNow = IsSelectedUnitMoving();
 	if (bSelectedUnitWasMoving && !bMovingNow)
 	{
 		RefreshMoveRange();
+		if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+		{
+			Camera->ClearFollowTarget();
+		}
 	}
 	bSelectedUnitWasMoving = bMovingNow;
 
+	UpdateEdgeScroll();
+	UpdateHoverHighlight();
 	UpdatePathPreviewUnderCursor();
+}
+
+void ATacticalPlayerController::UpdateEdgeScroll()
+{
+	if (!bEdgeScrollEnabled)
+	{
+		return;
+	}
+
+	// В ход врага камеру ведёт авто-слежение (XCOM). Edge scroll здесь выключен:
+	// иначе курсор, замерший у края экрана, каждый кадр рвал бы follow и камера
+	// не переходила бы к следующему действующему врагу.
+	if (IsEnemyPhaseNow())
+	{
+		return;
+	}
+
+	float MouseX, MouseY;
+	int32 ViewX, ViewY;
+	if (!GetMousePosition(MouseX, MouseY))
+	{
+		return; // курсор вне окна — не скроллим
+	}
+	GetViewportSize(ViewX, ViewY);
+	if (ViewX <= 0 || ViewY <= 0)
+	{
+		return;
+	}
+
+	// Единичный вектор панорамы: у левого края — влево, у верхнего — вперёд и т.д.
+	FVector2D Pan = FVector2D::ZeroVector;
+	if (MouseX <= EdgeScrollMarginPx)                 { Pan.X = -1.f; }
+	else if (MouseX >= ViewX - EdgeScrollMarginPx)    { Pan.X = 1.f; }
+	if (MouseY <= EdgeScrollMarginPx)                 { Pan.Y = 1.f; }
+	else if (MouseY >= ViewY - EdgeScrollMarginPx)    { Pan.Y = -1.f; }
+
+	if (!Pan.IsNearlyZero())
+	{
+		if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+		{
+			Camera->AddPanInput(Pan); // ручной ввод: заодно разрывает follow (XCOM)
+		}
+	}
+}
+
+void ATacticalPlayerController::UpdateHoverHighlight()
+{
+	// Кого подсвечивать: живой неэвакуированный юнит под курсором (свой — контекст
+	// выбора, враг — контекст атаки; цвет обводки различает stencil-значение).
+	AUnitBase* NewHovered = nullptr;
+	FHitResult Hit;
+	if (GetHitResultUnderCursor(ECC_Pawn, /*bTraceComplex=*/false, Hit))
+	{
+		AUnitBase* Unit = Cast<AUnitBase>(Hit.GetActor());
+		if (Unit && !Unit->IsDead() && !Unit->IsEvacuated())
+		{
+			// В фазу врага свои юниты не интерактивны — наведением их не подсвечиваем
+			// (как в XCOM). Врагов подсвечиваем всегда, чтобы читать их ход.
+			const bool bAlly = Unit->GetGenericTeamId().GetId() == 1;
+			if (!(bAlly && IsEnemyPhaseNow()))
+			{
+				NewHovered = Unit;
+			}
+		}
+	}
+
+	if (HoveredUnit.Get() == NewHovered)
+	{
+		return;
+	}
+
+	if (AUnitBase* OldHovered = HoveredUnit.Get())
+	{
+		OldHovered->SetHoverHighlight(false);
+	}
+	if (NewHovered)
+	{
+		NewHovered->SetHoverHighlight(true);
+	}
+	HoveredUnit = NewHovered;
 }
 
 bool ATacticalPlayerController::IsSelectedUnitMoving() const
@@ -213,13 +301,15 @@ void ATacticalPlayerController::SelectUnit(AUnitBase* Unit)
 		return;
 	}
 
-	// Отписка от AP предыдущего выбранного.
+	// Отписка от AP предыдущего выбранного + погасить его кольцо + вернуть вырез навмеша.
 	if (SelectedUnit)
 	{
 		if (UActionPointsComponent* OldAP = SelectedUnit->GetActionPoints())
 		{
 			OldAP->OnActionPointsChanged.RemoveDynamic(this, &ATacticalPlayerController::HandleSelectedUnitAPChanged);
 		}
+		SelectedUnit->SetSelectionHighlight(false);
+		SelectedUnit->SetNavObstacleEnabled(true);
 	}
 
 	bAwaitingAbilityTarget = false;
@@ -235,10 +325,28 @@ void ATacticalPlayerController::SelectUnit(AUnitBase* Unit)
 		{
 			Camera->FocusOnActor(SelectedUnit);
 		}
+		SelectedUnit->SetSelectionHighlight(!IsEnemyPhaseNow());
+		// Действующий юнит не должен вырезать навмеш под собой (иначе не построит
+		// свой путь/зону); чужие вырезы остаются — пути огибают других юнитов.
+		SelectedUnit->SetNavObstacleEnabled(false);
 	}
 
-	RefreshMoveRange();
+	ScheduleMoveRangeRefresh();
 	OnSelectedUnitChanged.Broadcast(SelectedUnit);
+}
+
+void ATacticalPlayerController::ScheduleMoveRangeRefresh()
+{
+	if (MoveRangeVisualizer)
+	{
+		MoveRangeVisualizer->Hide();
+	}
+	GetWorldTimerManager().ClearTimer(MoveRangeRefreshTimer);
+	if (SelectedUnit)
+	{
+		GetWorldTimerManager().SetTimer(MoveRangeRefreshTimer, this,
+			&ATacticalPlayerController::RefreshMoveRange, 0.25f, false);
+	}
 }
 
 void ATacticalPlayerController::SelectUnitBySlot(int32 SlotIndex)
@@ -364,6 +472,22 @@ bool ATacticalPlayerController::IsPlayerPhase() const
 	return TurnManager && TurnManager->IsInCombat() && TurnManager->GetCurrentPhase() == ETurnPhase::Player;
 }
 
+bool ATacticalPlayerController::IsEnemyPhaseNow() const
+{
+	const UTurnManagerSubsystem* TurnManager = GetWorld() ? GetWorld()->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
+	return TurnManager && TurnManager->IsInCombat() && TurnManager->GetCurrentPhase() != ETurnPhase::Player;
+}
+
+void ATacticalPlayerController::RefreshSelectionHighlight()
+{
+	// Кольцо видно только в свою фазу (вне боя — тоже): в ход врага прячем,
+	// чтобы не загромождать картину. Ховер-обводка живёт отдельно.
+	if (SelectedUnit)
+	{
+		SelectedUnit->SetSelectionHighlight(!IsEnemyPhaseNow());
+	}
+}
+
 void ATacticalPlayerController::TryMoveSelectedUnit(const FVector& Goal)
 {
 	if (!IsPlayerPhase() || !SelectedUnit || SelectedUnit->IsDowned())
@@ -408,6 +532,13 @@ void ATacticalPlayerController::TryMoveSelectedUnit(const FVector& Goal)
 	{
 		// AP списываем сразу (как XCOM), укрытие пересчитается в OnMoveCompleted.
 		ActionPoints->TrySpendActionPoint(Cost);
+
+		// Камера сопровождает бегущего бойца (follow отпустится по остановке
+		// в PlayerTick или по ручной панораме игрока).
+		if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+		{
+			Camera->SetFollowTarget(SelectedUnit);
+		}
 	}
 }
 
@@ -599,15 +730,89 @@ void ATacticalPlayerController::HandleTurnStarted(ETurnPhase Phase)
 {
 	bAwaitingAbilityTarget = false;
 
-	if (Phase == ETurnPhase::Player)
+	// Смена фазы: камера бросает сопровождение (нового скажет следующий делегат).
+	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
 	{
-		// Новый ход: если никто не выбран — взять первого бойца с AP.
-		if (!SelectedUnit)
+		Camera->ClearFollowTarget();
+
+		// Начало нашего хода: вернуть камеру к выбранному бойцу или к отряду.
+		if (Phase == ETurnPhase::Player && bInitialSquadFocusDone)
 		{
-			SelectNextUnit();
+			if (SelectedUnit)
+			{
+				Camera->FocusOnActor(SelectedUnit);
+			}
+			else
+			{
+				FocusCameraOnSquad();
+			}
 		}
 	}
-	RefreshMoveRange();
+
+	if (Phase == ETurnPhase::Player && !bInitialSquadFocusDone)
+	{
+		// Старт боя: камеру ставим на центр отряда МГНОВЕННО (без полёта через
+		// карту), но НИКОГО не выбираем — первого бойца игрок берёт сам.
+		FocusCameraOnSquad(/*bInstant=*/true);
+		bInitialSquadFocusDone = true;
+	}
+
+	// Вырез навмеша выбранного бойца: в ход врага возвращаем (иначе вражеские
+	// пути пройдут сквозь него), в свою фазу снова снимаем — он действующий.
+	if (SelectedUnit)
+	{
+		SelectedUnit->SetNavObstacleEnabled(Phase != ETurnPhase::Player);
+	}
+
+	ScheduleMoveRangeRefresh();
+	RefreshSelectionHighlight(); // кольцо: показать в свою фазу, скрыть в ход врага
+}
+
+void ATacticalPlayerController::HandleEnemyUnitActivated(AActor* Unit)
+{
+	if (!Unit)
+	{
+		return;
+	}
+
+	// XCOM: камера сопровождает действующего врага, но только если отряд его
+	// ВИДИТ — скрытые враги ходят «за кадром», их позицию камера не выдаёт.
+	const TArray<AUnitBase*> Squad = GetSquad();
+	const bool bVisibleToSquad = Squad.Num() > 0
+		&& UTacticsCombatStatics::SquadHasLineOfSight(Squad[0], Unit);
+	if (!bVisibleToSquad)
+	{
+		return;
+	}
+
+	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+	{
+		Camera->SetFollowTarget(Unit); // следуем весь его ход (движение + выстрел)
+	}
+}
+
+void ATacticalPlayerController::FocusCameraOnSquad(bool bInstant)
+{
+	ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn());
+	if (!Camera)
+	{
+		return;
+	}
+
+	FVector Centroid = FVector::ZeroVector;
+	int32 Count = 0;
+	for (AUnitBase* Unit : GetSquad())
+	{
+		if (Unit && !Unit->IsDead() && !Unit->IsEvacuated())
+		{
+			Centroid += Unit->GetActorLocation();
+			++Count;
+		}
+	}
+	if (Count > 0)
+	{
+		Camera->FocusOnLocation(Centroid / static_cast<float>(Count), bInstant);
+	}
 }
 
 void ATacticalPlayerController::HandleSelectedUnitAPChanged(int32 /*NewCurrent*/, int32 /*Max*/)

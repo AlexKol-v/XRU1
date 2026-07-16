@@ -116,11 +116,30 @@ protected:
 	/** Сейчас фаза игрока и бой идёт (приказы разрешены). */
 	bool IsPlayerPhase() const;
 
+	/** Идёт бой и сейчас фаза врага (наш выбор/ховер своих скрываем). */
+	bool IsEnemyPhaseNow() const;
+
+	/** Обновить видимость кольца выбранного юнита по текущей фазе. */
+	void RefreshSelectionHighlight();
+
 	/** Обновить зону хода под выбранного юнита (или спрятать). */
 	void RefreshMoveRange();
 
+	/**
+	 * Перестроить зону с задержкой: после снятия навмеш-выреза выбранного юнита
+	 * дыра под ним латается асинхронно (кадр-два) — мгновенная перестройка не
+	 * нашла бы старт волны. До срабатывания таймера зона прячется.
+	 */
+	void ScheduleMoveRangeRefresh();
+
 	/** Превью пути к точке под курсором (лента; троттлинг по сдвигу курсора). */
 	void UpdatePathPreviewUnderCursor();
+
+	/** Обводка юнита под курсором (Custom Depth; трейс по Pawn-каналу каждый тик). */
+	void UpdateHoverHighlight();
+
+	/** Панорама камеры мышью у края экрана (XCOM edge scrolling). */
+	void UpdateEdgeScroll();
 
 	/** Выполняет ли выбранный юнит приказ перемещения прямо сейчас. */
 	bool IsSelectedUnitMoving() const;
@@ -128,6 +147,13 @@ protected:
 	/** Колбэк смены фазы: блокировка/разблокировка, сброс выбора. */
 	UFUNCTION()
 	void HandleTurnStarted(ETurnPhase Phase);
+
+	/** Колбэк начала хода вражеского юнита: наводим на него камеру (как в XCOM). */
+	UFUNCTION()
+	void HandleEnemyUnitActivated(AActor* Unit);
+
+	/** Навести камеру на центр живого отряда (без выбора юнита). */
+	void FocusCameraOnSquad(bool bInstant = false);
 
 	/** Колбэк трат AP выбранного юнита — перестроить зону хода. */
 	UFUNCTION()
@@ -169,6 +195,14 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Tactics|Control")
 	TSubclassOf<AMoveRangeVisualizer> MoveRangeVisualizerClass;
 
+	/** Панорама мышью у края экрана (XCOM). Выключается в BP при желании. */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|Control")
+	bool bEdgeScrollEnabled = true;
+
+	/** Ширина зоны edge scroll от края вьюпорта, px. */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|Control", meta = (ClampMin = "2", ClampMax = "100"))
+	float EdgeScrollMarginPx = 16.f;
+
 	// --- Состояние ---------------------------------------------------------------
 
 	UPROPERTY(Transient)
@@ -176,6 +210,9 @@ protected:
 
 	UPROPERTY(Transient)
 	TObjectPtr<AMoveRangeVisualizer> MoveRangeVisualizer;
+
+	/** Юнит под курсором (с обводкой). Weak: юнит может умереть/исчезнуть между тиками. */
+	TWeakObjectPtr<AUnitBase> HoveredUnit;
 
 	/** Ждём клик по цели способности (Event.Heal медика). */
 	bool bAwaitingAbilityTarget = false;
@@ -185,4 +222,10 @@ protected:
 
 	/** Двигался ли выбранный юнит в прошлый тик (ловим остановку → перестроить зону). */
 	bool bSelectedUnitWasMoving = false;
+
+	/** Отложенная перестройка зоны (ждём перестройку навмеша после смены выреза). */
+	FTimerHandle MoveRangeRefreshTimer;
+
+	/** Стартовый фокус камеры на отряд уже выполнен (не повторять каждый ход). */
+	bool bInitialSquadFocusDone = false;
 };

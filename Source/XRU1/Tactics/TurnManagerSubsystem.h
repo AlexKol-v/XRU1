@@ -11,6 +11,7 @@ class AActor;
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnTurnStarted, ETurnPhase, Phase);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCombatEnded, bool, bPlayerWon);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnTurnLimitExpired);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnEnemyUnitActivated, AActor*, Unit);
 
 /**
  * Менеджер пошагового боя уровня. Хранит очередь юнитов и текущую фазу
@@ -98,6 +99,13 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Tactics|Turns")
 	FOnTurnLimitExpired OnTurnLimitExpired;
 
+	/**
+	 * Вражеский юнит начал свой ход (шлётся перед ExecuteUnitTurn). Контроллер
+	 * игрока фокусирует на нём камеру (XCOM: камера летит к действующему врагу).
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "Tactics|Turns")
+	FOnEnemyUnitActivated OnEnemyUnitActivated;
+
 protected:
 	/** Открывает ход указанной стороны: сбрасывает её AP и шлёт OnTurnStarted. */
 	void BeginPhase(ETurnPhase Phase);
@@ -112,6 +120,13 @@ protected:
 
 	/** Отдаёт ход следующему живому вражескому юниту; когда юниты кончились — EndTurn. */
 	void ProcessNextEnemyUnit();
+
+	/**
+	 * Запускает ExecuteUnitTurn текущего юнита. Отделено от ProcessNextEnemyUnit
+	 * паузой: за неё асинхронно латается навмеш-вырез под юнитом (иначе AI не
+	 * построит путь из «дыры») и камера игрока долетает до действующего врага.
+	 */
+	void ActivateCurrentEnemyUnit();
 
 	/** Колбэк AI-контроллера: юнит закончил действия, переходим к следующему. */
 	void HandleEnemyUnitFinished();
@@ -137,6 +152,9 @@ protected:
 
 	/** Пауза между действиями вражеских юнитов — чтобы игрок успевал читать ход. */
 	float EnemyStepInterval = 0.5f;
+
+	/** Пауза между «камера полетела к юниту» и его действиями (латание навмеша + полёт). */
+	float EnemyActivationDelay = 0.35f;
 
 	FTimerHandle EnemyStepTimerHandle;
 
