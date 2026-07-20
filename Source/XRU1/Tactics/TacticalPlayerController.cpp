@@ -259,11 +259,13 @@ void ATacticalPlayerController::UpdateHoverHighlight()
 
 bool ATacticalPlayerController::IsSelectedUnitMoving() const
 {
-	// Статус path following ставится сразу при выдаче приказа (в отличие от
-	// velocity, которая в кадр приказа ещё нулевая).
+	// Общий предикат «в пути» (см. AUnitAIController::IsMoving): статус path
+	// following ставится сразу при выдаче приказа — в отличие от velocity,
+	// которая в кадр приказа ещё нулевая, — и учитывает паузы между отрезками
+	// ломаной маршрута, иначе на каждом повороте боец «финишировал» бы.
 	const AUnitAIController* UnitAI = SelectedUnit
 		? Cast<AUnitAIController>(SelectedUnit->GetController()) : nullptr;
-	return UnitAI && UnitAI->GetMoveStatus() != EPathFollowingStatus::Idle;
+	return UnitAI && UnitAI->IsMoving();
 }
 
 void ATacticalPlayerController::UpdatePathPreviewUnderCursor()
@@ -569,27 +571,21 @@ void ATacticalPlayerController::TryMoveSelectedUnit(const FVector& Goal)
 		return;
 	}
 
-	// Точка в диске занятости другого юнита — выталкиваем на край (клик «в»
-	// стоящего бойца); не вытолкнулась (толпа) — приказ отклоняется.
-	FVector AdjustedGoal = Goal;
-	if (!UTacticsCombatStatics::AdjustGoalOutOfUnits(GetWorld(), SelectedUnit, AdjustedGoal))
-	{
-		return;
-	}
-
-	// Достижимость и стоимость — ПО ПОЛЮ ЗАНЯТОСТИ визуализатора, а НЕ прямым
-	// navmesh-запросом. Поле строит волна, огибающая диски юнитов, поэтому оно
-	// знает про обходы: перекрытый тремя бойцами коридор непроходим, а
-	// одиночный боец в чистом поле обходится и приказ проходит. Прямой запрос
-	// такого различить не мог — отсюда был баг «клик разрешён, AP списаны, юнит
-	// упёрся в толпу». Зона рисуется из ЭТОГО ЖЕ поля тем же порогом, поэтому
-	// «что подсвечено — то и кликается» верно по построению.
+	// ЕДИНЫЙ план приказа — тот же вызов, которым нарисованы зона и лента превью.
+	// Он же приводит цель к полю: проецирует на навмеш и выталкивает из дисков
+	// занятости. Поэтому «что подсвечено — то и кликается, и туда же побежим»
+	// верно ПО ПОСТРОЕНИЮ: сравнивать нечего, результат буквально один.
+	//
+	// Метрика плана — волна, огибающая диски юнитов, а не прямой navmesh-запрос:
+	// прямой не отличал «одиночного бойца обойдём» от «коридор перекрыт тремя».
+	// Каждый отрезок маршрута проверен рэйкастом, поэтому длина плана — верхняя
+	// оценка кратчайшего пути: пробежать БОЛЬШЕ обещанного боец не может.
 	if (!MoveRangeVisualizer || !MoveRangeVisualizer->IsFieldBuiltFor(SelectedUnit))
 	{
 		return;
 	}
-	const int32 Cost = MoveRangeVisualizer->GetMoveCostTo(AdjustedGoal);
-	if (Cost == 0 || !ActionPoints->CanSpend(Cost))
+	FMoveOrderPlan Plan;
+	if (!MoveRangeVisualizer->PlanMoveTo(Goal, Plan) || !ActionPoints->CanSpend(Plan.ActionPointCost))
 	{
 		return; // недостижимо по занятости / вне оплачиваемой зоны
 	}
@@ -600,10 +596,13 @@ void ATacticalPlayerController::TryMoveSelectedUnit(const FVector& Goal)
 		return;
 	}
 
-	if (UnitAI->MoveToLocation(AdjustedGoal, /*AcceptanceRadius=*/50.f) == EPathFollowingRequestResult::RequestSuccessful)
+	// Ведём бойца ПО ЛОМАНОЙ плана, а не «в точку»: приказ в конечную цель
+	// заставлял навмеш строить свою прямую — сквозь стоящих бойцов, которых
+	// он не видит. Боец упирался в них, а очко действия уже было списано.
+	if (UnitAI->MoveAlongRoute(Plan.PathPoints, /*AcceptanceRadius=*/50.f) == EPathFollowingRequestResult::RequestSuccessful)
 	{
 		// AP списываем сразу (как XCOM), укрытие пересчитается в OnMoveCompleted.
-		ActionPoints->TrySpendActionPoint(Cost);
+		ActionPoints->TrySpendActionPoint(Plan.ActionPointCost);
 
 		// Камера сопровождает бегущего бойца (follow отпустится по остановке
 		// в PlayerTick или по ручной панораме игрока).

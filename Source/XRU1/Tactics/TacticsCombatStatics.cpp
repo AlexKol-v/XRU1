@@ -244,7 +244,7 @@ bool UTacticsCombatStatics::GetPointAlongPathBudget(UObject* WorldContextObject,
 	// впустую пропускал бы ход вместо «подойти насколько можно».
 	TArray<FVector> Obstacles;
 	GetUnitObstacles(World, Mover, Obstacles);
-	const double ClearanceLimit = FindPathClearanceLimit(Path->PathPoints, Obstacles, GetTransitClearance(Mover));
+	const double ClearanceLimit = FindPathClearanceLimit(Path->PathPoints, Obstacles, GetUnitClearance(Mover));
 	double Remaining = PathBudget;
 	if (ClearanceLimit >= 0.)
 	{
@@ -275,23 +275,6 @@ bool UTacticsCombatStatics::GetPointAlongPathBudget(UObject* WorldContextObject,
 	return true;
 }
 
-float UTacticsCombatStatics::GetNavPathLength(UObject* WorldContextObject, const FVector& Start, const FVector& Goal)
-{
-	UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull) : nullptr;
-	UNavigationSystemV1* NavSys = World ? FNavigationSystem::GetCurrent<UNavigationSystemV1>(World) : nullptr;
-	if (!NavSys)
-	{
-		return -1.f;
-	}
-
-	UNavigationPath* Path = NavSys->FindPathToLocationSynchronously(World, Start, Goal);
-	if (!Path || !Path->IsValid() || Path->IsPartial())
-	{
-		return -1.f;
-	}
-	return Path->GetPathLength();
-}
-
 int32 UTacticsCombatStatics::GetMoveCostForDistance(const AUnitBase* Unit, float PathLength, int32 AvailableActionPoints)
 {
 	if (!Unit || PathLength < 0.f || AvailableActionPoints <= 0)
@@ -309,11 +292,12 @@ int32 UTacticsCombatStatics::GetMoveCostForDistance(const AUnitBase* Unit, float
 	return 0; // вне оплачиваемой зоны
 }
 
-float UTacticsCombatStatics::GetTransitClearance(const AActor* Mover)
+float UTacticsCombatStatics::GetUnitClearance(const AActor* Mover)
 {
-	// Занятая клетка стоящего + собственный радиус бегущего: тело мувера тоже
-	// не должно налезать на клетку. Радиус берём с капсулы (BP может её менять),
-	// фолбэк — дефолт ACharacter (34 см).
+	// Занятая клетка стоящего + СОБСТВЕННЫЙ радиус бегущего. Второе слагаемое —
+	// то самое «раздувание препятствия на радиус агента», без которого маршрут
+	// прокладывался между двумя бойцами в щель, куда третий физически не лезет.
+	// Радиус берём с капсулы (BP может её менять), фолбэк — дефолт ACharacter.
 	float MoverRadius = 34.f;
 	if (const ACharacter* Character = Cast<ACharacter>(Mover))
 	{
@@ -370,6 +354,13 @@ double UTacticsCombatStatics::FindPathClearanceLimit(const TArray<FVector>& Path
 
 // --- Занятость (диски юнитов вместо мутаций навмеша) ---------------------------
 
+bool UTacticsCombatStatics::IsUnitInTransit(const AActor* Unit)
+{
+	const APawn* Pawn = Cast<APawn>(Unit);
+	const AUnitAIController* UnitAI = Pawn ? Cast<AUnitAIController>(Pawn->GetController()) : nullptr;
+	return UnitAI && UnitAI->IsMoving();
+}
+
 void UTacticsCombatStatics::GetUnitObstacles(UWorld* World, const AActor* Ignored, TArray<FVector>& OutPositions)
 {
 	OutPositions.Reset();
@@ -387,7 +378,13 @@ void UTacticsCombatStatics::GetUnitObstacles(UWorld* World, const AActor* Ignore
 		}
 		// Бегущий юнит — переходное состояние: диск не ставим, по финишу
 		// AIController уведомит контроллер игрока и зона перестроится.
-		if (Unit->GetVelocity().SizeSquared2D() > 100.f)
+		//
+		// Судим по статусу path following, а НЕ по velocity: после финиша боец
+		// ещё ~0.3 с гасит скорость торможением и по velocity считался бы
+		// «бегущим» — поэтому зона следующего бойца, построенная в тот же кадр,
+		// показывала его клетку свободной, и лечилось это только переключением
+		// выбора туда-обратно.
+		if (IsUnitInTransit(Unit))
 		{
 			continue;
 		}
@@ -395,26 +392,19 @@ void UTacticsCombatStatics::GetUnitObstacles(UWorld* World, const AActor* Ignore
 	}
 }
 
-bool UTacticsCombatStatics::IsLocationBlockedByUnit(UObject* WorldContextObject, const FVector& Location,
-	const AActor* Ignored)
-{
-	UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull) : nullptr;
-	TArray<FVector> Obstacles;
-	GetUnitObstacles(World, Ignored, Obstacles);
-	for (const FVector& Position : Obstacles)
-	{
-		if (FVector::DistSquared2D(Position, Location) < FMath::Square(UnitObstacleRadius))
-		{
-			return true;
-		}
-	}
-	return false;
-}
-
 bool UTacticsCombatStatics::AdjustGoalOutOfUnits(UWorld* World, const AActor* Mover, FVector& InOutGoal)
 {
 	TArray<FVector> Obstacles;
 	GetUnitObstacles(World, Mover, Obstacles);
+	return AdjustGoalOutOfUnits(Obstacles, Mover, InOutGoal);
+}
+
+bool UTacticsCombatStatics::AdjustGoalOutOfUnits(const TArray<FVector>& Obstacles, const AActor* Mover,
+	FVector& InOutGoal)
+{
+	// Радиус тот же, что у поля достижимости: вытолкнуть надо на расстояние, где
+	// боец действительно помещается, иначе поле отклонит собственную же цель.
+	const double Clearance = GetUnitClearance(Mover);
 
 	// Пара итераций: выталкивание из одного диска может вдавить в соседний.
 	for (int32 Iteration = 0; Iteration < 3; ++Iteration)
@@ -423,7 +413,7 @@ bool UTacticsCombatStatics::AdjustGoalOutOfUnits(UWorld* World, const AActor* Mo
 		for (const FVector& Position : Obstacles)
 		{
 			const double Dist = FVector::Dist2D(Position, InOutGoal);
-			if (Dist >= UnitObstacleRadius)
+			if (Dist >= Clearance)
 			{
 				continue;
 			}
@@ -434,7 +424,7 @@ bool UTacticsCombatStatics::AdjustGoalOutOfUnits(UWorld* World, const AActor* Mo
 			{
 				Away = Mover ? (Mover->GetActorLocation() - Position).GetSafeNormal2D() : FVector::ForwardVector;
 			}
-			InOutGoal = Position + Away * (UnitObstacleRadius + 15.f);
+			InOutGoal = Position + Away * (Clearance + 15.);
 			bMoved = true;
 		}
 		if (!bMoved)
@@ -446,7 +436,7 @@ bool UTacticsCombatStatics::AdjustGoalOutOfUnits(UWorld* World, const AActor* Mo
 	// Не разрулилось (плотная толпа) — проверяем финально.
 	for (const FVector& Position : Obstacles)
 	{
-		if (FVector::Dist2D(Position, InOutGoal) < UnitObstacleRadius)
+		if (FVector::Dist2D(Position, InOutGoal) < Clearance)
 		{
 			return false;
 		}

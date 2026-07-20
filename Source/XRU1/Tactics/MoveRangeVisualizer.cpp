@@ -7,6 +7,19 @@
 #include "NavigationData.h"
 #include "NavMesh/RecastNavMesh.h"
 #include "Engine/World.h"
+#include "HAL/IConsoleManager.h"
+
+/**
+ * Диагностика стоимости построения зоны: в лог уходят размер сетки и время.
+ * Под cvar и выключено по умолчанию — цена `CellSize` квадратична, и решение
+ * о разрешении надо принимать по замеру, а не на глаз. Включить в консоли:
+ * `xru1.MoveRange.LogBuildTime 1`.
+ */
+static TAutoConsoleVariable<int32> CVarLogMoveRangeBuildTime(
+	TEXT("xru1.MoveRange.LogBuildTime"),
+	0,
+	TEXT("1 — писать в лог время и размер сетки при каждой перестройке зоны хода."),
+	ECVF_Default);
 
 AMoveRangeVisualizer::AMoveRangeVisualizer()
 {
@@ -37,10 +50,12 @@ bool AMoveRangeVisualizer::ShowForUnit(AUnitBase* Unit)
 	const double BudgetOne = Unit->MoveRange;
 	const double BudgetMax = (ActionPoints >= 2) ? BudgetOne * 2. : BudgetOne;
 
+	const double BuildStartTime = FPlatformTime::Seconds();
 	if (!BuildDistanceField(Unit, BudgetOne, BudgetMax))
 	{
 		return false; // навмеш не готов (дыра под юнитом) — контроллер ретраит
 	}
+	const double FieldDoneTime = FPlatformTime::Seconds();
 
 	UMaterialInterface* BorderOne = BorderOneMaterial ? BorderOneMaterial.Get()
 		: (PathOneMaterial ? PathOneMaterial.Get() : ZoneOneMaterial.Get());
@@ -59,6 +74,24 @@ bool AMoveRangeVisualizer::ShowForUnit(AUnitBase* Unit)
 		BuildContourSection(0, -1.0e9, BudgetOne, ZoneTwoMaterial, 4, BorderTwo);
 	}
 
+	// Замер ПОЛНОЙ стоимости: контур масштабируется с CellSize так же, как поле
+	// (ячеек столько же), и по одному лишь времени волны решение о разрешении
+	// принимать нельзя — это половина картины.
+	if (CVarLogMoveRangeBuildTime.GetValueOnGameThread() != 0)
+	{
+		int32 ReachableSamples = 0;
+		for (const FZoneSample& Sample : Field)
+		{
+			ReachableSamples += Sample.bReachable ? 1 : 0;
+		}
+		const double Now = FPlatformTime::Seconds();
+		UE_LOG(LogTemp, Log,
+			TEXT("[MoveRange] CellSize=%.0f сетка=%dx%d (%d сэмплов, достижимо %d): волна %.2f мс + контур %.2f мс = %.2f мс"),
+			CellSize, FieldSamplesPerSide, FieldSamplesPerSide, Field.Num(), ReachableSamples,
+			(FieldDoneTime - BuildStartTime) * 1000., (Now - FieldDoneTime) * 1000.,
+			(Now - BuildStartTime) * 1000.);
+	}
+
 	SetActorHiddenInGame(false);
 	return true;
 }
@@ -71,6 +104,123 @@ void AMoveRangeVisualizer::Hide()
 	bPathPreviewVisible = false;
 	Field.Reset();
 	FieldSamplesPerSide = 0;
+	FieldObstacles.Reset();
+}
+
+// --- Общие примитивы поля (одни для отрисовки, запроса и волны) --------------------
+
+double AMoveRangeVisualizer::SampleDistance(int32 SampleIndex) const
+{
+	const FZoneSample& Sample = Field[SampleIndex];
+	return Sample.bReachable ? Sample.PathDist : FieldUnreachableDistance;
+}
+
+FVector AMoveRangeVisualizer::SampleLocation(int32 SampleIndex) const
+{
+	// Достижимый сэмпл живёт там, куда его спроецировал навмеш (по этим точкам
+	// волна и считала длины). Недостижимый спроецировать не удалось — остаётся
+	// узел сетки: он нужен контуру как «внешний» угол ячейки.
+	const FZoneSample& Sample = Field[SampleIndex];
+	if (Sample.bReachable)
+	{
+		return Sample.Position;
+	}
+	const int32 IX = SampleIndex % FieldSamplesPerSide;
+	const int32 IY = SampleIndex / FieldSamplesPerSide;
+	return FVector(FieldOrigin.X + IX * CellSize, FieldOrigin.Y + IY * CellSize, 0.);
+}
+
+double AMoveRangeVisualizer::FindObstacleEntry(const FVector& From, const FVector& To) const
+{
+	// Пересечение отрезка с окружностью радиуса FieldClearance: ближайший корень
+	// квадратного уравнения |From + t·d − O|² = C² в плоскости XY.
+	const FVector2D Start(From.X, From.Y);
+	const FVector2D Delta(To.X - From.X, To.Y - From.Y);
+	const double A = FVector2D::DotProduct(Delta, Delta);
+	if (A <= UE_DOUBLE_SMALL_NUMBER)
+	{
+		return 1.;
+	}
+
+	double Earliest = 1.;
+	for (const FVector& Obstacle : FieldObstacles)
+	{
+		const FVector2D ToStart = Start - FVector2D(Obstacle.X, Obstacle.Y);
+		const double B = 2. * FVector2D::DotProduct(ToStart, Delta);
+		const double C = FVector2D::DotProduct(ToStart, ToStart) - FMath::Square(FieldClearance);
+		if (C <= 0.)
+		{
+			return 0.; // начало уже внутри диска
+		}
+		const double Discriminant = B * B - 4. * A * C;
+		if (Discriminant < 0.)
+		{
+			continue; // мимо
+		}
+		const double T = (-B - FMath::Sqrt(Discriminant)) / (2. * A);
+		if (T >= 0. && T < Earliest)
+		{
+			Earliest = T;
+		}
+	}
+	return Earliest;
+}
+
+bool AMoveRangeVisualizer::HasClearLine(const ANavigationData* NavData, const FVector& From, const FVector& To,
+	NavNodeRef FromPoly) const
+{
+	if (!NavData)
+	{
+		return false;
+	}
+
+	// 1) Геометрия уровня: surface-raycast по навмешу — стена или обрыв рвут линию.
+	// Вариант с известным полигоном старта дешевле (не проецирует точку заново).
+	const FSharedConstNavQueryFilter Filter = NavData->GetDefaultQueryFilter();
+	FVector HitLocation;
+	const bool bHitGeometry = (FromPoly != INVALID_NAVNODEREF)
+		? ARecastNavMesh::NavMeshRaycast(NavData, FromPoly, From, To, HitLocation, Filter, this)
+		: ARecastNavMesh::NavMeshRaycast(NavData, From, To, HitLocation, Filter, this);
+	if (bHitGeometry)
+	{
+		return false;
+	}
+
+	// 2) Занятость: между линией и чужой занятой клеткой нужен просвет
+	// FieldClearance — он ВКЛЮЧАЕТ собственную ширину бегущего. Без неё маршрут
+	// прокладывался в щель между двумя бойцами, куда третий физически не лезет.
+	// Радиус тот же, что у правила «сюда нельзя встать»: одно конфигурационное
+	// пространство на всё, иначе появляются клетки, куда встать можно, а выйти
+	// нельзя.
+	const double ClearanceSq = FMath::Square(FieldClearance);
+	const FVector SegStart(From.X, From.Y, 0.);
+	const FVector SegEnd(To.X, To.Y, 0.);
+	const FVector Segment = SegEnd - SegStart;
+	const double SegmentLenSq = Segment.SizeSquared();
+
+	for (const FVector& Obstacle : FieldObstacles)
+	{
+		const FVector Flat(Obstacle.X, Obstacle.Y, 0.);
+		const double T = (SegmentLenSq > UE_DOUBLE_SMALL_NUMBER)
+			? FMath::Clamp(FVector::DotProduct(Flat - SegStart, Segment) / SegmentLenSq, 0., 1.)
+			: 0.;
+		if (FVector::DistSquared(Flat, SegStart + Segment * T) >= ClearanceSq)
+		{
+			continue; // просвет есть
+		}
+
+		// Единственное послабление: ближайшая к диску точка отрезка — его НАЧАЛО,
+		// значит просвет был нарушен уже на старте, а отрезок только удаляется.
+		// Это «выйти из тесноты»: боец, оказавшийся вплотную к союзнику, обязан
+		// иметь возможность сдвинуться. Войти в теснину или пройти сквозь неё
+		// это не разрешает — там минимум приходится на середину отрезка.
+		if (T <= UE_DOUBLE_SMALL_NUMBER)
+		{
+			continue;
+		}
+		return false;
+	}
+	return true;
 }
 
 // --- Поле дистанций ---------------------------------------------------------------
@@ -86,15 +236,21 @@ bool AMoveRangeVisualizer::BuildDistanceField(const AUnitBase* Unit, double Budg
 	}
 
 	const FVector Origin = Unit->GetActorLocation();
+	FieldStart = Origin;
 
 	// Диски занятости ДРУГИХ юнитов (навмеш статичен и о юнитах не знает —
-	// XCOM-подход «занятые клетки»): волна в диск не заходит.
-	TArray<FVector> UnitObstacles;
-	UTacticsCombatStatics::GetUnitObstacles(GetWorld(), Unit, UnitObstacles);
-	const double BlockRadiusSq = FMath::Square(static_cast<double>(UTacticsCombatStatics::UnitObstacleRadius));
-	auto IsBlockedByUnit = [&UnitObstacles, BlockRadiusSq](const FVector& Position)
+	// XCOM-подход «занятые клетки»): волна в диск не заходит. Снимок держим в
+	// поле: запрос приказа обязан судить по ТЕМ ЖЕ дискам, что и волна.
+	UTacticsCombatStatics::GetUnitObstacles(GetWorld(), Unit, FieldObstacles);
+
+	// Просвет с учётом ширины САМОГО бойца — одна величина на «встать» и
+	// «пройти» (см. UTacticsCombatStatics::GetUnitClearance). Кладём в поле:
+	// им же судит запрос приказа, иначе волна и валидация разойдутся.
+	FieldClearance = UTacticsCombatStatics::GetUnitClearance(Unit);
+	const double BlockRadiusSq = FMath::Square(FieldClearance);
+	auto IsBlockedByUnit = [this, BlockRadiusSq](const FVector& Position)
 	{
-		for (const FVector& Obstacle : UnitObstacles)
+		for (const FVector& Obstacle : FieldObstacles)
 		{
 			if (FVector::DistSquared2D(Obstacle, Position) < BlockRadiusSq)
 			{
@@ -104,16 +260,27 @@ bool AMoveRangeVisualizer::BuildDistanceField(const AUnitBase* Unit, double Budg
 		return false;
 	};
 
-	// ВОЛНОВОЙ Dijkstra ПО СЕТКЕ СЭМПЛОВ (не по полигонам!): метрика октильная
-	// (8 соседей, завышение ≤ ~8% и не зависит от размера полигонов Recast —
-	// полигонный Dijkstra на огромных полигонах врал в разы). Ячейки соединены,
-	// если между их точками проходит surface-raycast навмеша: стены и обрывы
-	// отсекаются самим рейкастом, фантомов вне навмеша нет по построению.
-	// Проекция соседа берётся от высоты текущей волны — поле корректно следует
-	// пандусам и не прилипает к чужим этажам. Спорная полоса у порогов ниже
-	// уточняется честным funnel-путём (метрика валидации приказа и ленты).
-	const double MetricSlack = 1.12;
-	const double ExpandLimit = BudgetMax * MetricSlack + CellSize;
+	// ВОЛНА ПО СЕТКЕ СЭМПЛОВ (не по полигонам: полигонный Dijkstra на огромных
+	// полигонах Recast врал в разы) — но не пошаговая, а ANY-ANGLE (Theta*):
+	// релаксируя соседа, сначала пробуем протянуть прямую от РОДИТЕЛЯ текущей
+	// ячейки. Это даёт два свойства, ради которых всё и переделано:
+	//
+	//  1) длина в поле = длина настоящей ломаной, а не октильная оценка с
+	//     завышением ~8%. Костыль «уточнить спорную полосу у порогов честным
+	//     FindPathSync» больше не нужен — а он смешивал в одном поле ДВЕ метрики
+	//     (октиль и funnel), из-за чего граница зоны дрожала и расходилась с лентой;
+	//  2) цепочка родителей — это уже готовый маршрут. Лента превью рисуется ПО
+	//     НЕЙ, а не отдельным navmesh-запросом «для картинки», который шёл своей
+	//     дорогой и мог увести линию за пределы нарисованной зоны.
+	//
+	// Проходимость каждого отрезка проверяет HasClearLine (навмеш-рэйкаст +
+	// диски). Отсюда ключевая гарантия: ломаная целиком проходима по навмешу,
+	// значит её длина — ВЕРХНЯЯ оценка кратчайшего пути, и боец не может
+	// пробежать больше, чем обещала зона.
+	//
+	// Проекция соседа берётся от высоты текущей волны — поле следует пандусам и
+	// не прилипает к чужим этажам.
+	const double ExpandLimit = BudgetMax + CellSize * 2.;
 
 	// Регулярная сетка сэмплов с запасом в ячейку по краям (для интерполяции границы).
 	const float GridRadius = static_cast<float>(BudgetMax) + CellSize * 2.f;
@@ -122,6 +289,11 @@ bool AMoveRangeVisualizer::BuildDistanceField(const AUnitBase* Unit, double Budg
 	const int32 NumSamples = FieldSamplesPerSide * FieldSamplesPerSide;
 	Field.Reset();
 	Field.SetNum(NumSamples);
+
+	// Одна условность «недостижимо» на ВСЕХ потребителей поля: чуть дальше
+	// максимального порога. Раньше отрисовка и запрос считали её по-разному —
+	// отсюда и расхождение «нарисовано больше, чем кликается».
+	FieldUnreachableDistance = BudgetMax + CellSize;
 
 	// Рабочие данные волны: позиция сэмпла на навмеше и его полигон.
 	TArray<FVector> SamplePositions;
@@ -146,8 +318,9 @@ bool AMoveRangeVisualizer::BuildDistanceField(const AUnitBase* Unit, double Budg
 	}
 	const int32 StartIndex = IndexOf(StartIX, StartIY);
 	Field[StartIndex].PathDist = FVector::Dist2D(Origin, StartLocation.Location);
-	Field[StartIndex].Z = StartLocation.Location.Z;
+	Field[StartIndex].Position = StartLocation.Location;
 	Field[StartIndex].bReachable = true;
+	Field[StartIndex].Parent = StartIndex; // старт — сам себе родитель (конец цепочки)
 	SamplePositions[StartIndex] = StartLocation.Location;
 	SamplePolys[StartIndex] = StartLocation.NodeRef;
 	ProjectionTried[StartIndex] = true;
@@ -212,8 +385,10 @@ bool AMoveRangeVisualizer::BuildDistanceField(const AUnitBase* Unit, double Budg
 				continue; // вне навмеша
 			}
 
-			// Клетка занята другим юнитом: волна не заходит; помечаем особо —
-			// контур на границе диска интерполируется, а не ищется raycast'ом.
+			// Клетка занята другим юнитом — волна не заходит. Флаг здесь чисто
+			// как КЭШ: не пускать в клетку уже умеет HasClearLine (отрезок,
+			// упирающийся в диск, свободным не считается), но ранний выход
+			// экономит рэйкаст на каждую попытку релаксации такой клетки.
 			if (!Field[NIdx].bBlockedByUnit && !Field[NIdx].bReachable && IsBlockedByUnit(SamplePositions[NIdx]))
 			{
 				Field[NIdx].bBlockedByUnit = true;
@@ -223,83 +398,57 @@ bool AMoveRangeVisualizer::BuildDistanceField(const AUnitBase* Unit, double Budg
 				continue;
 			}
 
-			const double NewDist = Top.Dist + FVector::Dist(CurrentPos, SamplePositions[NIdx]);
-			if (NewDist > ExpandLimit || NewDist + UE_KINDA_SMALL_NUMBER >= Field[NIdx].PathDist)
+			// ANY-ANGLE: сначала пробуем протянуть прямую от РОДИТЕЛЯ текущей
+			// ячейки — если она свободна, маршрут спрямляется и длина становится
+			// настоящей евклидовой, а не суммой шагов по сетке. Родитель уже
+			// извлечён из кучи, значит его дистанция окончательна.
+			//
+			// ПОРЯДОК ПРОВЕРОК ВАЖЕН: сначала дешёвая арифметика (улучшает ли
+			// кандидат и влезает ли в волну), и только потом рэйкаст. Соседей
+			// пробуют до 8 раз каждого, и почти всегда сосед уже релаксирован
+			// короче — рэйкаст для него чистая трата. Проверка «сначала LOS»
+			// стоила бы примерно на порядок больше запросов к навмешу.
+			const int32 ParentIdx = Field[Top.Index].Parent;
+			const double BestKnown = Field[NIdx].PathDist;
+			double NewDist = TNumericLimits<double>::Max();
+			int32 NewParent = INDEX_NONE;
+
+			auto TryBranch = [&](int32 FromIdx, double FromDist)
 			{
-				continue;
+				const double Candidate = FromDist + FVector::Dist(SamplePositions[FromIdx], SamplePositions[NIdx]);
+				if (Candidate > ExpandLimit || Candidate + UE_KINDA_SMALL_NUMBER >= BestKnown)
+				{
+					return false;
+				}
+				if (!HasClearLine(NavData, SamplePositions[FromIdx], SamplePositions[NIdx], SamplePolys[FromIdx]))
+				{
+					return false;
+				}
+				NewDist = Candidate;
+				NewParent = FromIdx;
+				return true;
+			};
+
+			// Спрямление от родителя даёт кандидата НЕ ХУЖЕ обычного шага
+			// (неравенство треугольника, D(C) = D(P) + |P−C| по построению),
+			// поэтому пробуем его первым; обычный шаг — только если спрямить
+			// не вышло геометрически.
+			if (ParentIdx == INDEX_NONE || ParentIdx == Top.Index ||
+				!TryBranch(ParentIdx, Field[ParentIdx].PathDist))
+			{
+				TryBranch(Top.Index, Top.Dist);
 			}
 
-			// Связность: внутри одного (выпуклого) полигона — свободно; через
-			// границу — рэйкаст по поверхности навмеша (стена/обрыв = блок).
-			if (SamplePolys[NIdx] != SamplePolys[Top.Index])
+			if (NewParent == INDEX_NONE)
 			{
-				FVector HitLocation;
-				if (ARecastNavMesh::NavMeshRaycast(NavData, CurrentPos, SamplePositions[NIdx], HitLocation, Filter, this))
-				{
-					continue;
-				}
+				continue;
 			}
 
 			Field[NIdx].PathDist = NewDist;
-			Field[NIdx].Z = SamplePositions[NIdx].Z;
+			Field[NIdx].Position = SamplePositions[NIdx];
 			Field[NIdx].bReachable = true;
+			Field[NIdx].Parent = NewParent;
 			Heap.HeapPush({NewDist, NIdx});
-		}
-	}
-
-	// Уточнение спорной полосы честным funnel-путём — той же метрикой, что
-	// валидация приказа и лента; границы зоны и линии перестают расходиться.
-	// Полоса ДВУСТОРОННЯЯ: октильная метрика завышает ≤ ~8%, поэтому сверху
-	// порога сэмпл может на деле быть внутри бюджета; снизу уточняем тоже,
-	// чтобы обе стороны границы были в одной метрике — иначе контур дрожит.
-	const double RefineLow = 0.88;
-	for (int32 IY = 0; IY < FieldSamplesPerSide; ++IY)
-	{
-		for (int32 IX = 0; IX < FieldSamplesPerSide; ++IX)
-		{
-			FZoneSample& Sample = Field[IY * FieldSamplesPerSide + IX];
-			if (!Sample.bReachable)
-			{
-				continue;
-			}
-			const double D = Sample.PathDist;
-			const bool bNearThreshold =
-				(D > BudgetOne * RefineLow && D <= BudgetOne * MetricSlack) ||
-				(D > BudgetMax * RefineLow && D <= BudgetMax * MetricSlack);
-			if (!bNearThreshold)
-			{
-				continue;
-			}
-
-			const FVector SampleOnNav(
-				FieldOrigin.X + IX * CellSize,
-				FieldOrigin.Y + IY * CellSize,
-				Sample.Z);
-			FPathFindingQuery Query(Unit, *NavData, Origin, SampleOnNav);
-			Query.SetAllowPartialPaths(false);
-			const FPathFindingResult Result = NavSys->FindPathSync(Query);
-			if (Result.IsSuccessful() && Result.Path.IsValid() && !Result.Path->IsPartial())
-			{
-				// Funnel-путь (в отличие от волны) о дисках занятости не знает и
-				// может геометрически срезать через стоящего юнита — тогда его
-				// длина короче настоящей, и уточнение соврало бы в пользу «ближе».
-				// В этом случае не доверяем funnel'у и оставляем октильную оценку
-				// волны (она диски уже уважает). Диски берём ГОТОВЫЕ (собраны в
-				// начале функции): собирать их здесь = TActorIterator на каждый
-				// сэмпл спорной полосы.
-				TArray<FVector> RefinedPoints;
-				RefinedPoints.Reserve(Result.Path->GetPathPoints().Num());
-				for (const FNavPathPoint& PathPoint : Result.Path->GetPathPoints())
-				{
-					RefinedPoints.Add(PathPoint.Location);
-				}
-				const double ClearanceLimit = UTacticsCombatStatics::FindPathClearanceLimit(
-					RefinedPoints, UnitObstacles, UTacticsCombatStatics::GetTransitClearance(Unit));
-				if (ClearanceLimit < 0.)
-				{
-					Sample.PathDist = Result.Path->GetLength();
-				}
-			}
 		}
 	}
 	return true;
@@ -312,67 +461,162 @@ bool AMoveRangeVisualizer::IsFieldBuiltFor(const AUnitBase* Unit) const
 	return Unit && CurrentUnit.Get() == Unit && FieldSamplesPerSide >= 2;
 }
 
-double AMoveRangeVisualizer::GetFieldDistanceAt(const FVector& Location) const
+bool AMoveRangeVisualizer::PlanMoveTo(const FVector& Goal, FMoveOrderPlan& OutPlan) const
 {
-	if (FieldSamplesPerSide < 2)
+	OutPlan = FMoveOrderPlan();
+	OutPlan.Goal = Goal;
+
+	const AUnitBase* Unit = CurrentUnit.Get();
+	const UActionPointsComponent* ActionPoints = Unit ? Unit->GetActionPoints() : nullptr;
+	if (!ActionPoints || FieldSamplesPerSide < 2)
 	{
-		return -1.;
+		return false;
 	}
 
-	// Позиция в координатах сетки; берём ячейку и билинейно смешиваем 4 угла.
-	const double GX = (Location.X - FieldOrigin.X) / CellSize;
-	const double GY = (Location.Y - FieldOrigin.Y) / CellSize;
-	const int32 IX = FMath::FloorToInt(GX);
-	const int32 IY = FMath::FloorToInt(GY);
-	if (IX < 0 || IY < 0 || IX + 1 >= FieldSamplesPerSide || IY + 1 >= FieldSamplesPerSide)
+	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
+	ANavigationData* NavData = NavSys ? NavSys->GetDefaultNavDataInstance() : nullptr;
+	if (!NavData)
 	{
-		return -1.; // вне поля — заведомо дальше любого бюджета
+		return false;
 	}
 
-	// Недостижимый угол = «чуть за краем»: та же условность, что в
-	// BuildContourSection, иначе клик и нарисованная граница разъедутся.
-	double MaxReachable = 0.;
-	for (int32 CornerY = IY; CornerY <= IY + 1; ++CornerY)
+	// 1) Приводим цель к полю ОДИН раз — и превью, и приказ дальше работают с
+	// этой точкой. Раньше превью просто пряталось на занятой точке, а клик её
+	// выталкивал и проходил: ховер говорил «нельзя», клик делал.
+	FVector Adjusted = Goal;
+	if (!UTacticsCombatStatics::AdjustGoalOutOfUnits(FieldObstacles, Unit, Adjusted))
 	{
-		for (int32 CornerX = IX; CornerX <= IX + 1; ++CornerX)
+		return false; // плотная толпа — встать негде
+	}
+
+	// Проекция на навмеш: клик по крыше/пропасти отсекается здесь, а не даёт
+	// «недостижимую» ячейку, которую потом кто-нибудь истолкует как близкую.
+	const FSharedConstNavQueryFilter Filter = NavData->GetDefaultQueryFilter();
+	FNavLocation GoalOnNav;
+	if (!NavData->ProjectPoint(Adjusted, GoalOnNav, FVector(CellSize, CellSize, 300.f), Filter))
+	{
+		return false;
+	}
+
+	// 2) Дистанция до произвольной точки = продолжение той же волны: минимум по
+	// ближайшим сэмплам от «дойти до сэмпла + прямая до цели», причём прямая
+	// проверяется тем же HasClearLine. Это НЕ интерполяция поля «на глаз»:
+	// каждое слагаемое — реально проходимая ломаная, поэтому результат всегда
+	// не меньше настоящего кратчайшего пути.
+	//
+	// Именно здесь жил главный баг: старая билинейная версия при ячейке БЕЗ
+	// достижимых углов возвращала CellSize (≈50 см) вместо «недостижимо» —
+	// и любая точка за стеной или в углу квадратной сетки (а её угол дальше
+	// бюджета в 1.4 раза!) стоила 1 AP. Отсюда «убегаю дальше, чем показано,
+	// за один поинт». Теперь недостижимость — это отсутствие кандидатов.
+	const int32 CenterIX = FMath::RoundToInt((GoalOnNav.Location.X - FieldOrigin.X) / CellSize);
+	const int32 CenterIY = FMath::RoundToInt((GoalOnNav.Location.Y - FieldOrigin.Y) / CellSize);
+
+	double BestDistance = TNumericLimits<double>::Max();
+	int32 BestSample = INDEX_NONE;
+	for (int32 OffsetY = -1; OffsetY <= 1; ++OffsetY)
+	{
+		for (int32 OffsetX = -1; OffsetX <= 1; ++OffsetX)
 		{
-			const FZoneSample& S = Field[CornerY * FieldSamplesPerSide + CornerX];
-			if (S.bReachable)
+			const int32 IX = CenterIX + OffsetX;
+			const int32 IY = CenterIY + OffsetY;
+			if (IX < 0 || IY < 0 || IX >= FieldSamplesPerSide || IY >= FieldSamplesPerSide)
 			{
-				MaxReachable = FMath::Max(MaxReachable, S.PathDist);
+				continue;
 			}
+			const int32 Index = IY * FieldSamplesPerSide + IX;
+			if (!Field[Index].bReachable)
+			{
+				continue;
+			}
+			const FVector SamplePos = SampleLocation(Index);
+			const double Candidate = Field[Index].PathDist + FVector::Dist(SamplePos, GoalOnNav.Location);
+			if (Candidate >= BestDistance || !HasClearLine(NavData, SamplePos, GoalOnNav.Location))
+			{
+				continue;
+			}
+			BestDistance = Candidate;
+			BestSample = Index;
 		}
 	}
-	const double UnreachableDist = MaxReachable + CellSize;
-	auto DistAt = [&](int32 CornerX, int32 CornerY)
+	if (BestSample == INDEX_NONE)
 	{
-		const FZoneSample& S = Field[CornerY * FieldSamplesPerSide + CornerX];
-		return S.bReachable ? S.PathDist : UnreachableDist;
-	};
+		return false; // ни одного достижимого сэмпла со свободной линией до цели
+	}
 
-	const double FX = GX - IX;
-	const double FY = GY - IY;
-	const double D00 = DistAt(IX, IY);
-	const double D10 = DistAt(IX + 1, IY);
-	const double D01 = DistAt(IX, IY + 1);
-	const double D11 = DistAt(IX + 1, IY + 1);
-	return FMath::Lerp(FMath::Lerp(D00, D10, FX), FMath::Lerp(D01, D11, FX), FY);
+	// 3) Стоимость — через ЕДИНСТВЕННОЕ правило порогов (GDD §5.3).
+	const int32 Cost = UTacticsCombatStatics::GetMoveCostForDistance(
+		Unit, static_cast<float>(BestDistance), ActionPoints->CurrentActionPoints);
+	if (Cost == 0)
+	{
+		return false;
+	}
+
+	// 4) Маршрут — цепочка родителей поля, развёрнутая от цели к старту.
+	TArray<FVector> Reversed;
+	int32 Current = BestSample;
+	for (int32 Guard = 0; Current != INDEX_NONE && Guard <= Field.Num(); ++Guard)
+	{
+		Reversed.Add(SampleLocation(Current));
+		const int32 ParentIndex = Field[Current].Parent;
+		if (ParentIndex == Current)
+		{
+			break; // дошли до старта
+		}
+		Current = ParentIndex;
+	}
+
+	OutPlan.PathPoints.Reserve(Reversed.Num() + 2);
+	OutPlan.PathPoints.Add(FieldStart);
+	for (int32 i = Reversed.Num() - 1; i >= 0; --i)
+	{
+		// Отбрасываем ТОЛЬКО стартовый сэмпл, и только если он практически
+		// совпал с позицией бойца. Остальные вершины — поворотные точки у
+		// занятых клеток: выкидывать их «за близостью» нельзя, срезанный угол
+		// уводит в союзника. Лишние вершины уберёт спрямление ниже — оно, в
+		// отличие от этой проверки, доказывает проходимость рэйкастом.
+		const bool bIsStartSample = (i == Reversed.Num() - 1);
+		if (bIsStartSample &&
+			FVector::DistSquared2D(Reversed[i], OutPlan.PathPoints.Last()) <= FMath::Square(CellSize * 0.5))
+		{
+			continue;
+		}
+		OutPlan.PathPoints.Add(Reversed[i]);
+	}
+	if (FVector::DistSquared2D(GoalOnNav.Location, OutPlan.PathPoints.Last()) > 1.)
+	{
+		OutPlan.PathPoints.Add(GoalOnNav.Location);
+	}
+
+	// Спрямление (string pulling): выкидываем вершину, если её сосед слева виден
+	// соседу справа. Волна any-angle уже даёт почти прямые участки, но остаточные
+	// изломы от сетки остаются — а по этой ломаной боец РЕАЛЬНО бежит, тормозя на
+	// каждой вершине. Спрямление и рисует чище, и убирает лишние остановки.
+	// Длину приказа НЕ пересчитываем: платим по метрике поля, спрямление делает
+	// фактический путь только короче — ошибка остаётся в пользу игрока.
+	for (int32 i = 1; i + 1 < OutPlan.PathPoints.Num(); )
+	{
+		if (HasClearLine(NavData, OutPlan.PathPoints[i - 1], OutPlan.PathPoints[i + 1]))
+		{
+			OutPlan.PathPoints.RemoveAt(i);
+		}
+		else
+		{
+			++i;
+		}
+	}
+
+	OutPlan.bReachable = true;
+	OutPlan.PathLength = static_cast<float>(BestDistance);
+	OutPlan.ActionPointCost = Cost;
+	OutPlan.Goal = GoalOnNav.Location;
+	return true;
 }
 
 int32 AMoveRangeVisualizer::GetMoveCostTo(const FVector& Goal) const
 {
-	const AUnitBase* Unit = CurrentUnit.Get();
-	if (!Unit || !Unit->GetActionPoints())
-	{
-		return 0;
-	}
-	const double Distance = GetFieldDistanceAt(Goal);
-	if (Distance < 0.)
-	{
-		return 0; // вне поля / недостижимо
-	}
-	return UTacticsCombatStatics::GetMoveCostForDistance(
-		Unit, static_cast<float>(Distance), Unit->GetActionPoints()->CurrentActionPoints);
+	FMoveOrderPlan Plan;
+	return PlanMoveTo(Goal, Plan) ? Plan.ActionPointCost : 0;
 }
 
 // --- Marching squares ---------------------------------------------------------------
@@ -392,19 +636,24 @@ void AMoveRangeVisualizer::BuildContourSection(int32 SectionIndex, double MinDis
 
 	// «Внутренность» области MinDist < D ≤ MaxDist как знаковая функция:
 	// f = min(D − MinDist, MaxDist − D) ≥ 0 внутри; ноль — искомый контур.
-	// Недостижимые сэмплы прижимаются чуть за порог, чтобы граница
-	// интерполировалась внутрь ячейки, а не схлопывалась в точку.
-	const double UnreachableDist = MaxDist + CellSize;
-	auto Inside = [&](int32 IX, int32 IY) -> double
+	//
+	// Дистанцию берём через ОБЩИЙ SampleDistance — ту же, по которой отвечает
+	// PlanMoveTo. Прежняя версия дополнительно ЗАЖИМАЛА достижимые сэмплы
+	// (min(D, MaxDist+CellSize)): на крутом градиенте у стены или диска это
+	// уводило нарисованную границу к дальнему углу ячейки, и зона выглядела
+	// заметно больше того, что реально кликалось.
+	auto Inside = [this, MinDist, MaxDist](int32 IX, int32 IY) -> double
 	{
-		const FZoneSample& S = Field[IY * FieldSamplesPerSide + IX];
-		const double D = S.bReachable ? FMath::Min(S.PathDist, UnreachableDist) : UnreachableDist;
+		const double D = SampleDistance(IY * FieldSamplesPerSide + IX);
 		return FMath::Min(D - MinDist, MaxDist - D);
 	};
-	auto SamplePos = [&](int32 IX, int32 IY) -> FVector
+	// Через общий SampleLocation: достижимый угол берётся ТАМ, куда его
+	// спроецировал навмеш (по этим точкам волна и считала длины), недостижимый —
+	// узлом сетки. Раньше здесь был узел сетки всегда, и контур расходился с
+	// метрикой на пол-ячейки там, где проекция уползала.
+	auto SamplePos = [this](int32 IX, int32 IY) -> FVector
 	{
-		const FZoneSample& S = Field[IY * FieldSamplesPerSide + IX];
-		return FVector(FieldOrigin.X + IX * CellSize, FieldOrigin.Y + IY * CellSize, S.Z);
+		return SampleLocation(IY * FieldSamplesPerSide + IX);
 	};
 
 	TArray<FVector> Vertices;
@@ -427,7 +676,6 @@ void AMoveRangeVisualizer::BuildContourSection(int32 SectionIndex, double MinDis
 			double F[4];
 			FVector V[4];
 			bool bReach[4];
-			bool bBlockedU[4];
 			int32 NumInside = 0;
 			double MinZ = TNumericLimits<double>::Max();
 			double MaxZ = -TNumericLimits<double>::Max();
@@ -436,7 +684,6 @@ void AMoveRangeVisualizer::BuildContourSection(int32 SectionIndex, double MinDis
 				F[i] = Inside(CornerX[i], CornerY[i]);
 				V[i] = SamplePos(CornerX[i], CornerY[i]);
 				bReach[i] = Field[CornerY[i] * FieldSamplesPerSide + CornerX[i]].bReachable;
-				bBlockedU[i] = Field[CornerY[i] * FieldSamplesPerSide + CornerX[i]].bBlockedByUnit;
 				NumInside += (F[i] >= 0.);
 				if (bReach[i])
 				{
@@ -473,22 +720,34 @@ void AMoveRangeVisualizer::BuildContourSection(int32 SectionIndex, double MinDis
 					const int32 In = (F[i] >= 0.) ? i : j;   // внутренний угол
 					const int32 Out = (In == i) ? j : i;      // внешний угол
 
-					double T; // доля отрезка In→Out до границы
-					// Диск занятости юнита — НЕ кромка навмеша: raycast прошёл бы
-					// его насквозь до настоящей стены, поэтому для диска — интерп.
-					if (!bReach[Out] && !bBlockedU[Out] && NavData)
+					// Доля отрезка In→Out до границы. Интерполировать дистанции
+					// можно ТОЛЬКО вдоль свободной прямой: поле 1-липшицево лишь
+					// там, где сосед достижим напрямую. Если прямой нет (стена или
+					// занятая клетка), сосед взят длинным обходом, скачок дистанции
+					// огромен — интерполяция прижала бы границу к внутреннему углу,
+					// и зона «съедалась» бы вокруг бойцов и стен, хотя клик туда
+					// проходит. В этом случае границу ставим ГЕОМЕТРИЧЕСКИ.
+					const FVector From = V[In];
+					const FVector To(V[Out].X, V[Out].Y, V[In].Z);
+					double T;
+					if (NavData && !HasClearLine(NavData, From, To))
 					{
-						// Снаружи — кромка навмеша (стена/обрыв): точное место даёт
-						// surface-raycast (интерполяция поля здесь пилила бы по сетке).
-						const FVector From = V[In];
-						const FVector To(V[Out].X, V[Out].Y, V[In].Z);
-						FVector HitLocation = To;
-						const bool bHit = ARecastNavMesh::NavMeshRaycast(
-							NavData, From, To, HitLocation, Filter, this);
 						const double FullLen = FVector::Dist2D(From, To);
-						T = (bHit && FullLen > 1.)
-							? FMath::Clamp(FVector::Dist2D(From, HitLocation) / FullLen, 0.05, 1.0)
-							: 1.0;
+						FVector HitLocation = To;
+						if (ARecastNavMesh::NavMeshRaycast(NavData, From, To, HitLocation, Filter, this) &&
+							FullLen > 1.)
+						{
+							// Мешает геометрия — режем по кромке навмеша.
+							T = FVector::Dist2D(From, HitLocation) / FullLen;
+						}
+						else
+						{
+							// Навмеш чист — значит мешает диск занятости: режем по
+							// его окружности, ровно там, где AdjustGoalOutOfUnits
+							// поставит цель клика. Нарисованное и кликаемое совпадают.
+							T = FindObstacleEntry(From, To);
+						}
+						T = FMath::Clamp(T, 0.05, 1.0);
 					}
 					else
 					{
@@ -507,8 +766,7 @@ void AMoveRangeVisualizer::BuildContourSection(int32 SectionIndex, double MinDis
 					uint8 Kind = 1;
 					if (MinDist > 0. && bReach[Out])
 					{
-						const FZoneSample& OutSample = Field[CornerY[Out] * FieldSamplesPerSide + CornerX[Out]];
-						const double OutDist = FMath::Min(OutSample.PathDist, UnreachableDist);
+						const double OutDist = SampleDistance(CornerY[Out] * FieldSamplesPerSide + CornerX[Out]);
 						if (OutDist < MinDist)
 						{
 							Kind = 2;
@@ -741,63 +999,26 @@ void AMoveRangeVisualizer::BuildZoneBorder(int32 SectionIndex, const TArray<TPai
 
 void AMoveRangeVisualizer::UpdatePathPreview(const FVector& GoalLocation)
 {
-	AUnitBase* Unit = CurrentUnit.Get();
-	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
-	ANavigationData* NavData = NavSys ? NavSys->GetDefaultNavDataInstance() : nullptr;
-	if (!Unit || !Unit->GetActionPoints() || !NavData)
+	const AUnitBase* Unit = CurrentUnit.Get();
+	const UActionPointsComponent* ActionPoints = Unit ? Unit->GetActionPoints() : nullptr;
+
+	// ЕДИНЫЙ план: превью показывает ровно то, что сделает клик, — и линию, и
+	// цену. Своего navmesh-запроса «для формы линии» здесь больше нет: он шёл
+	// своей дорогой (funnel не знает про диски занятости) и мог увести ленту
+	// далеко за нарисованную зону.
+	FMoveOrderPlan Plan;
+	if (!ActionPoints || !PlanMoveTo(GoalLocation, Plan))
 	{
 		HidePathPreview();
 		return;
-	}
-
-	const int32 ActionPoints = Unit->GetActionPoints()->CurrentActionPoints;
-	if (ActionPoints <= 0)
-	{
-		HidePathPreview();
-		return;
-	}
-
-	// Точка в диске занятости другого юнита: приказ туда не пройдёт — превью нет.
-	if (UTacticsCombatStatics::IsLocationBlockedByUnit(this, GoalLocation, Unit))
-	{
-		HidePathPreview();
-		return;
-	}
-
-	// Достижимость и стоимость — ПО ПОЛЮ (оно знает про обходы дисков), тем же
-	// запросом, что валидация приказа в контроллере: превью не может обещать
-	// того, что клик потом откажет, и наоборот.
-	const int32 Cost = GetMoveCostTo(GoalLocation);
-	if (Cost == 0)
-	{
-		HidePathPreview();
-		return;
-	}
-
-	// Геометрия ленты — обычный funnel-путь (форма линии, не источник правды
-	// о проходимости); частичный путь = цель недостижима.
-	FPathFindingQuery Query(Unit, *NavData, Unit->GetActorLocation(), GoalLocation);
-	Query.SetAllowPartialPaths(false);
-	const FPathFindingResult Result = NavSys->FindPathSync(Query);
-	if (!Result.IsSuccessful() || !Result.Path.IsValid() || Result.Path->IsPartial())
-	{
-		HidePathPreview();
-		return;
-	}
-
-	TArray<FVector> RawPoints;
-	RawPoints.Reserve(Result.Path->GetPathPoints().Num());
-	for (const FNavPathPoint& PathPoint : Result.Path->GetPathPoints())
-	{
-		RawPoints.Add(PathPoint.Location);
 	}
 
 	// Цвет: тратит ПОСЛЕДНИЙ AP («рывок») — жёлтый, иначе синий.
-	UMaterialInterface* Material = (Cost == ActionPoints)
+	UMaterialInterface* Material = (Plan.ActionPointCost == ActionPoints->CurrentActionPoints)
 		? (PathDashMaterial ? PathDashMaterial.Get() : ZoneTwoMaterial.Get())
 		: (PathOneMaterial ? PathOneMaterial.Get() : ZoneOneMaterial.Get());
 
-	BuildPathRibbon(RawPoints, Material);
+	BuildPathRibbon(Plan.PathPoints, Material);
 }
 
 void AMoveRangeVisualizer::HidePathPreview()

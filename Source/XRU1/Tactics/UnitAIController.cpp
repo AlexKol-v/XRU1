@@ -325,9 +325,110 @@ bool AUnitAIController::MoveWithBudget(AUnitBase* Unit, const FVector& Goal, flo
 	return false;
 }
 
+// --- Движение по ломаной маршрута ------------------------------------------------
+
+bool AUnitAIController::IsMoving() const
+{
+	// Выбывший боец никуда не идёт, чем бы ни кончился его приказ. Без этого
+	// падение посреди маршрута (реакция Overwatch по бегущему) оставляло бы
+	// bFollowingRoute висеть навсегда: юнит вечно «в пути», диск занятости не
+	// ставится, зона не перестраивается — залипание без выхода.
+	const APawn* ControlledPawn = GetPawn();
+	if (!ControlledPawn || !UTacticsCombatStatics::IsUnitAlive(ControlledPawn))
+	{
+		return false;
+	}
+	return bFollowingRoute || GetMoveStatus() != EPathFollowingStatus::Idle;
+}
+
+EPathFollowingRequestResult::Type AUnitAIController::MoveAlongRoute(const TArray<FVector>& RoutePoints,
+	float AcceptanceRadius)
+{
+	StopRoute();
+	if (RoutePoints.Num() < 2 || !GetPawn())
+	{
+		return EPathFollowingRequestResult::Failed;
+	}
+
+	RouteLegs = RoutePoints;
+	RouteLegIndex = 1; // [0] — точка старта, идём со второй вершины
+	RouteAcceptanceRadius = AcceptanceRadius;
+	bFollowingRoute = true;
+
+	if (!RequestNextRouteLeg())
+	{
+		StopRoute();
+		return EPathFollowingRequestResult::Failed;
+	}
+	return EPathFollowingRequestResult::RequestSuccessful;
+}
+
+bool AUnitAIController::RequestNextRouteLeg()
+{
+	const APawn* ControlledPawn = GetPawn();
+	if (!ControlledPawn)
+	{
+		return false;
+	}
+
+	// Синхронный ответ движка на наш же запрос не должен рекурсивно листать
+	// вершины — разбираем его здесь, в цикле.
+	TGuardValue<bool> ReentryGuard(bRequestingRouteLeg, true);
+
+	while (RouteLegs.IsValidIndex(RouteLegIndex))
+	{
+		const FVector Leg = RouteLegs[RouteLegIndex];
+		const bool bFinalLeg = (RouteLegIndex == RouteLegs.Num() - 1);
+		++RouteLegIndex;
+
+		// Промежуточные вершины проходим ТОЧНЕЕ финальной: радиус приёмки — это
+		// ровно то, на сколько path following срежет угол, а поворотные вершины
+		// стоят у занятых клеток с запасом всего ~26 см (см. RouteCornerAcceptance).
+		const float Acceptance = bFinalLeg ? RouteAcceptanceRadius : RouteCornerAcceptance;
+
+		// Вершина фактически уже пройдена (боец стартовал рядом с ней) — пропускаем,
+		// иначе получили бы приказ «идти туда, где стоим» и ложный финиш отрезка.
+		if (!bFinalLeg && FVector::Dist2D(ControlledPawn->GetActorLocation(), Leg) <= Acceptance)
+		{
+			continue;
+		}
+
+		if (MoveToLocation(Leg, Acceptance) == EPathFollowingRequestResult::RequestSuccessful)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void AUnitAIController::StopRoute()
+{
+	RouteLegs.Reset();
+	RouteLegIndex = 0;
+	bFollowingRoute = false;
+}
+
 void AUnitAIController::OnMoveCompleted(FAIRequestID RequestID, const FPathFollowingResult& Result)
 {
+	// Пришли ВНУТРЬ собственного запроса отрезка (движок ответил синхронно) —
+	// решение примет цикл RequestNextRouteLeg, здесь делать нечего.
+	if (bRequestingRouteLeg)
+	{
+		return;
+	}
+
 	Super::OnMoveCompleted(RequestID, Result);
+
+	// Дошли до промежуточной вершины маршрута — продолжаем ломаную. Ход НЕ
+	// завершён: ни AP, ни уведомления о финише здесь быть не должно.
+	if (bFollowingRoute)
+	{
+		if (Result.IsSuccess() && RequestNextRouteLeg())
+		{
+			return;
+		}
+		StopRoute(); // финальная вершина или срыв — дальше общий разбор финиша
+	}
 
 	// Юнит встал на новую позицию — пересчитать укрытие (и для приказов игрока тоже).
 	if (AUnitBase* Unit = Cast<AUnitBase>(GetPawn()))
