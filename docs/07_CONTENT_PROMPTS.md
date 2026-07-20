@@ -157,6 +157,8 @@ thin cyan outer glow, XCOM-style minimalism, no text: …"
 | Half cover | "half shield" / Full cover: "full shield" |
 | Классы (4) | helmet variants: heavy / hood+optic / cross / arrow |
 | Статусы | "downed: kneeling figure", "taunt aura", "hunker shield down" |
+| Завершить ход | "circular arrow around hourglass" |
+| Счётчик врагов | "minimal skull, front view" |
 
 Куда: `UI/Icons/T_Icon_<Name>`.
 

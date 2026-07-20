@@ -1,6 +1,7 @@
 #include "TacticalAbility.h"
 #include "ActionPointsComponent.h"
 #include "TurnManagerSubsystem.h"
+#include "UnitBase.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 
@@ -84,6 +85,15 @@ bool UTacticalAbility::CanActivateAbility(const FGameplayAbilitySpecHandle Handl
 	const AActor* Avatar = ActorInfo ? ActorInfo->AvatarActor.Get() : nullptr;
 	if (Avatar)
 	{
+		// Мёртвый/тяжелораненый/эвакуированный юнит ничего не активирует
+		// (страховка: HUD может запросить активацию до обновления серости кнопок).
+		if (const AUnitBase* Unit = Cast<AUnitBase>(Avatar))
+		{
+			if (Unit->IsDead() || Unit->IsDowned() || Unit->IsEvacuated())
+			{
+				return false;
+			}
+		}
 		if (const UWorld* World = Avatar->GetWorld())
 		{
 			if (const UTurnManagerSubsystem* TurnManager = World->GetSubsystem<UTurnManagerSubsystem>())

@@ -13,15 +13,19 @@ class UInputAction;
 struct FInputActionValue;
 class UMenuScreenBase;
 class UPrimaryGameLayout;
+class ABombObjective;
+class AEvacZone;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnSelectedUnitChanged, AUnitBase*, NewSelected);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnHoveredUnitChanged, AUnitBase*, NewHovered);
 
 /**
  * Контроллер игрока в тактическом бою (GDD §11): выбор юнита (ЛКМ/1–4/Tab),
  * приказ перемещения (ПКМ, бюджет по длине пути навмеша), атака (ЛКМ по врагу
- * → GameplayEvent Event.Attack), хоткеи действий (Y/X/Q/F/Backspace/Enter),
- * камера (WASD/QE/колесо) и пауза (Esc). Ввод — Enhanced Input (IMC задаётся
- * в BP-наследнике). В фазу врага приказы заблокированы.
+ * или кнопка «Огонь» → GameplayEvent Event.Attack), хоткеи действий
+ * (Y/X/R/F/Backspace/Enter), камера (WASD/QE/колесо) и пауза (Esc). Ввод —
+ * Enhanced Input (IMC задаётся в BP-наследнике). В фазу врага приказы
+ * заблокированы.
  *
  * Также владеет визуализатором зоны хода (AMoveRangeVisualizer) и поднимает
  * корневой UI-layout через UGameUIManagerSubsystem (как ACSTPlayerController).
@@ -58,6 +62,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Control")
 	void RequestEndTurn();
 
+	/**
+	 * Кнопка «Огонь» (GDD §6: атака доступна и кликом, и кнопкой): включает
+	 * режим прицеливания — следующий ЛКМ по врагу стреляет. Прямой ЛКМ по
+	 * врагу работает и без кнопки.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Control")
+	void RequestAttack();
+
 	/** Хоткей/кнопка Overwatch (Y). */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Control")
 	void RequestOverwatch();
@@ -66,7 +78,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Control")
 	void RequestHunkerDown();
 
-	/** Хоткей/кнопка способности класса (Q). Для медика включает режим выбора цели. */
+	/** Хоткей/кнопка способности класса (R). Для медика включает режим выбора цели. */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Control")
 	void RequestClassAbility();
 
@@ -82,12 +94,38 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Control")
 	void RequestPause();
 
+	/**
+	 * Юнит закончил перемещение (зовёт AUnitAIController из OnMoveCompleted).
+	 * Если это НЕ выбранный юнит — его диск занятости встал на новое место,
+	 * зона хода выбранного пересчитывается немедленно.
+	 */
+	void NotifyUnitMoveFinished(AUnitBase* Unit);
+
 	/** В режиме ли выбора цели способности (медик ждёт клика по союзнику). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Control")
 	bool IsTargetingAbility() const { return bAwaitingAbilityTarget; }
 
+	/** В режиме ли прицеливания атаки (нажата кнопка «Огонь», ждём клика по врагу). */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Control")
+	bool IsTargetingAttack() const { return bAwaitingAttackTarget; }
+
+	/** Юнит под курсором (с обводкой; nullptr — пусто). Для панели цели HUD. */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Control")
+	AUnitBase* GetHoveredUnit() const { return HoveredUnit.Get(); }
+
+	/**
+	 * Какая контекстная интеракция (F) доступна выбранному юниту прямо сейчас:
+	 * бомба рядом → эвакуация в зоне → ничего. Для текста/серости кнопки HUD.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Control")
+	EInteractionKind GetAvailableInteraction() const;
+
 	UPROPERTY(BlueprintAssignable, Category = "Tactics|Control")
 	FOnSelectedUnitChanged OnSelectedUnitChanged;
+
+	/** Смена юнита под курсором (показ/скрытие панели цели с шансом попадания). */
+	UPROPERTY(BlueprintAssignable, Category = "Tactics|Control")
+	FOnHoveredUnitChanged OnHoveredUnitChanged;
 
 protected:
 	virtual void BeginPlay() override;
@@ -113,6 +151,13 @@ protected:
 	/** Клик в режиме таргетинга способности (медик выбирает союзника). */
 	void HandleAbilityTargetClick(AActor* ClickedActor);
 
+	/**
+	 * ЕДИНСТВЕННОЕ место с приоритетом интеракций (бомба рядом → эвакуация в зоне):
+	 * возвращает вид и найденный объект. Зовут GetAvailableInteraction (для HUD)
+	 * и RequestInteract (исполнение) — порядок не может разъехаться.
+	 */
+	EInteractionKind FindAvailableInteraction(ABombObjective*& OutBomb, AEvacZone*& OutZone) const;
+
 	/** Сейчас фаза игрока и бой идёт (приказы разрешены). */
 	bool IsPlayerPhase() const;
 
@@ -122,15 +167,12 @@ protected:
 	/** Обновить видимость кольца выбранного юнита по текущей фазе. */
 	void RefreshSelectionHighlight();
 
-	/** Обновить зону хода под выбранного юнита (или спрятать). */
-	void RefreshMoveRange();
-
 	/**
-	 * Перестроить зону с задержкой: после снятия навмеш-выреза выбранного юнита
-	 * дыра под ним латается асинхронно (кадр-два) — мгновенная перестройка не
-	 * нашла бы старт волны. До срабатывания таймера зона прячется.
+	 * Обновить зону хода под выбранного юнита (или спрятать). Синхронно и сразу:
+	 * навмеш статичен, занятость юнитов — дисками на уровне запросов
+	 * (UTacticsCombatStatics::GetUnitObstacles), гонок с перестройкой тайлов нет.
 	 */
-	void ScheduleMoveRangeRefresh();
+	void RefreshMoveRange();
 
 	/** Превью пути к точке под курсором (лента; троттлинг по сдвигу курсора). */
 	void UpdatePathPreviewUnderCursor();
@@ -158,6 +200,10 @@ protected:
 	/** Колбэк трат AP выбранного юнита — перестроить зону хода. */
 	UFUNCTION()
 	void HandleSelectedUnitAPChanged(int32 NewCurrent, int32 Max);
+
+	/** Колбэк смены состояния выбранного юнита: погиб/эвакуирован — снять выбор. */
+	UFUNCTION()
+	void HandleSelectedUnitStateChanged();
 
 	// --- Настройки (BP-наследник) ----------------------------------------------
 
@@ -217,14 +263,15 @@ protected:
 	/** Ждём клик по цели способности (Event.Heal медика). */
 	bool bAwaitingAbilityTarget = false;
 
+	/** Ждём клик по цели атаки (нажата кнопка «Огонь»). */
+	bool bAwaitingAttackTarget = false;
+
 	/** Последняя точка превью пути (троттлинг перзапроса FindPath). */
 	FVector LastPathPreviewGoal = FVector(TNumericLimits<float>::Max());
 
 	/** Двигался ли выбранный юнит в прошлый тик (ловим остановку → перестроить зону). */
 	bool bSelectedUnitWasMoving = false;
 
-	/** Отложенная перестройка зоны (ждём перестройку навмеша после смены выреза). */
-	FTimerHandle MoveRangeRefreshTimer;
 
 	/** Стартовый фокус камеры на отряд уже выполнен (не повторять каждый ход). */
 	bool bInitialSquadFocusDone = false;

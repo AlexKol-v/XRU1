@@ -99,6 +99,10 @@ Plugins/**/Intermediate/*
 Plugins/**/Binaries/*
 Plugins/**/Saved/*
 
+# UnrealClaude: скрипты, которые плагин генерирует на диск при каждом execute_script
+# (аудит/отладка агента) — не контент проекта, шумят в диффах.
+Content/UnrealClaude/
+
 # Don't ignore icon files in Build
 !Build/**/*.ico
 

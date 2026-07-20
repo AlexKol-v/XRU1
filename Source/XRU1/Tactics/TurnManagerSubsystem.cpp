@@ -164,15 +164,9 @@ void UTurnManagerSubsystem::ProcessNextEnemyUnit()
 
 		if (Unit && AI && UTacticsCombatStatics::IsUnitAlive(Unit))
 		{
-			// Действующий юнит не вырезает навмеш под собой (иначе не построит
-			// свой путь); камера игрока летит к нему (подписан контроллер).
-			if (AUnitBase* UnitBase = Cast<AUnitBase>(Unit))
-			{
-				UnitBase->SetNavObstacleEnabled(false);
-			}
 			OnEnemyUnitActivated.Broadcast(Unit);
 
-			// Пауза перед действиями: навмеш латает дыру, камера долетает.
+			// Пауза перед действиями — камера игрока долетает до юнита (XCOM-темп).
 			GetWorld()->GetTimerManager().SetTimer(EnemyStepTimerHandle, this,
 				&UTurnManagerSubsystem::ActivateCurrentEnemyUnit, EnemyActivationDelay, false);
 			return;
@@ -208,14 +202,6 @@ void UTurnManagerSubsystem::ActivateCurrentEnemyUnit()
 
 void UTurnManagerSubsystem::HandleEnemyUnitFinished()
 {
-	// Юнит отходил — снова вырезает навмеш на новой позиции.
-	if (EnemySide.IsValidIndex(EnemyTurnIndex))
-	{
-		if (AUnitBase* UnitBase = Cast<AUnitBase>(EnemySide[EnemyTurnIndex].Get()))
-		{
-			UnitBase->SetNavObstacleEnabled(true);
-		}
-	}
 	++EnemyTurnIndex;
 	CheckCombatOutcome();
 	if (!bInCombat)
@@ -232,14 +218,6 @@ void UTurnManagerSubsystem::StopEnemyTurnProcessing()
 	if (UWorld* World = GetWorld())
 	{
 		World->GetTimerManager().ClearTimer(EnemyStepTimerHandle);
-	}
-	// Прерванный посреди хода юнит (конец боя) не должен остаться без выреза.
-	if (CurrentPhase == ETurnPhase::Enemy && EnemySide.IsValidIndex(EnemyTurnIndex))
-	{
-		if (AUnitBase* UnitBase = Cast<AUnitBase>(EnemySide[EnemyTurnIndex].Get()))
-		{
-			UnitBase->SetNavObstacleEnabled(true);
-		}
 	}
 	EnemyTurnIndex = 0;
 }
@@ -294,6 +272,43 @@ TArray<AActor*> UTurnManagerSubsystem::GetSideUnits(const AActor* Unit) const
 		}
 	}
 	return Result;
+}
+
+namespace
+{
+	// Сырая копия стороны (включая мёртвых) с отсевом null — общий код обоих геттеров.
+	TArray<AActor*> CopySideUnits(const TArray<TObjectPtr<AActor>>& Side)
+	{
+		TArray<AActor*> Result;
+		for (const TObjectPtr<AActor>& A : Side)
+		{
+			if (A) { Result.Add(A.Get()); }
+		}
+		return Result;
+	}
+}
+
+TArray<AActor*> UTurnManagerSubsystem::GetPlayerSideUnits() const
+{
+	return CopySideUnits(PlayerSide);
+}
+
+TArray<AActor*> UTurnManagerSubsystem::GetEnemySideUnits() const
+{
+	return CopySideUnits(EnemySide);
+}
+
+int32 UTurnManagerSubsystem::GetAliveEnemyCount() const
+{
+	int32 Alive = 0;
+	for (const TObjectPtr<AActor>& Unit : EnemySide)
+	{
+		if (Unit && UTacticsCombatStatics::IsUnitAlive(Unit))
+		{
+			++Alive;
+		}
+	}
+	return Alive;
 }
 
 TArray<AActor*> UTurnManagerSubsystem::GetOpposingUnits(const AActor* Unit) const

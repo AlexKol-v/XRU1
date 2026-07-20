@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "CommonActivatableWidget.h"
 #include "TacticsTypes.h"
+#include "CoverTypes.h"
 #include "TacticalHUDWidget.generated.h"
 
 class AUnitBase;
@@ -36,6 +37,17 @@ public:
 	UFUNCTION(BlueprintPure, Category = "HUD")
 	float GetHitChanceOnTarget(AActor* Target) const;
 
+	/**
+	 * Укрытие цели ПРОТИВ выбранного стрелка (None — открыт или фланкирован).
+	 * Для иконки щита в панели цели, как в XCOM 2. None и при пустом выборе.
+	 */
+	UFUNCTION(BlueprintPure, Category = "HUD")
+	ECoverType GetTargetCoverAgainstSelected(AActor* Target) const;
+
+	/** Живые враги на поле (счётчик в HUD). Обновлять по OnUnitsStateChanged. */
+	UFUNCTION(BlueprintPure, Category = "HUD")
+	int32 GetAliveEnemyCount() const;
+
 protected:
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
@@ -50,6 +62,17 @@ protected:
 	UFUNCTION(BlueprintImplementableEvent, Category = "HUD")
 	void OnSelectedUnitChanged(AUnitBase* Selected);
 
+	/** Смена юнита под курсором (панель цели: HP + «Попадание: N%»; nullptr — спрятать). */
+	UFUNCTION(BlueprintImplementableEvent, Category = "HUD")
+	void OnHoveredUnitChanged(AUnitBase* Hovered);
+
+	/**
+	 * Любой юнит боя сменил состояние (смерть/ранение/подъём/эвакуация).
+	 * Обновить портреты и счётчик врагов. Вызывается и один раз при старте.
+	 */
+	UFUNCTION(BlueprintImplementableEvent, Category = "HUD")
+	void OnUnitsStateChanged();
+
 	/** Бой окончен (спрятать панель действий). */
 	UFUNCTION(BlueprintImplementableEvent, Category = "HUD")
 	void OnCombatFinished(bool bPlayerWon);
@@ -63,4 +86,20 @@ private:
 
 	UFUNCTION()
 	void HandleSelectedUnitChanged(AUnitBase* Selected);
+
+	UFUNCTION()
+	void HandleHoveredUnitChanged(AUnitBase* Hovered);
+
+	UFUNCTION()
+	void HandleUnitStateChanged();
+
+	/**
+	 * Подписка на OnUnitStateChanged всех юнитов боя. Идемпотентна (уже
+	 * подписанные пропускаются) и зовётся на каждой смене фазы: HUD мог быть
+	 * создан до StartCombat, а юниты — добавлены в бой позже (подкрепления).
+	 */
+	void SubscribeToUnitStates();
+
+	/** Юниты обеих сторон, на чей OnUnitStateChanged мы подписаны (для отписки). */
+	TArray<TWeakObjectPtr<AUnitBase>> StateSubscribedUnits;
 };

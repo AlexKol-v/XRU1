@@ -78,4 +78,34 @@ public:
 	/** Длина пути по навмешу между точками (< 0 — путь не построился). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Combat", meta = (WorldContext = "WorldContextObject"))
 	static float GetNavPathLength(UObject* WorldContextObject, const FVector& Start, const FVector& Goal);
+
+	// --- Занятость: юниты НЕ мутируют навмеш (XCOM-подход) --------------------
+	//
+	// Навмеш статичен; «нельзя встать в юнита / зона огибает юнитов» решается
+	// на уровне ЗАПРОСОВ дисками занятости. Никаких асинхронных перестроек
+	// тайлов — зона хода и валидация приказов считаются синхронно и точно.
+
+	/** Радиус диска занятости стоящего юнита (см): капсула + зазор. */
+	static constexpr float UnitObstacleRadius = 60.f;
+
+	/**
+	 * Позиции дисков занятости: живые неэвакуированные юниты обеих сторон,
+	 * кроме Ignored (сам ходящий) и кроме БЕГУЩИХ (их позиция переходная —
+	 * диск встанет по финишу, AIController дёрнет перестройку зоны).
+	 */
+	static void GetUnitObstacles(UWorld* World, const AActor* Ignored, TArray<FVector>& OutPositions);
+
+	/**
+	 * Точка занята чужим юнитом? (в пределах UnitObstacleRadius от диска).
+	 * Для валидации точки приказа и превью пути.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Combat", meta = (WorldContext = "WorldContextObject"))
+	static bool IsLocationBlockedByUnit(UObject* WorldContextObject, const FVector& Location, const AActor* Ignored);
+
+	/**
+	 * Выталкивает цель перемещения из диска занятости на его край (клик «в»
+	 * стоящего юнита или впритык). false — вытолкнуть некуда (цель остаётся
+	 * заблокированной), приказ стоит отклонить.
+	 */
+	static bool AdjustGoalOutOfUnits(UWorld* World, const AActor* Mover, FVector& InOutGoal);
 };

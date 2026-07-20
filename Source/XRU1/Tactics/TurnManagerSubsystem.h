@@ -69,6 +69,18 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Tactics|Turns")
 	TArray<AActor*> GetSideUnits(const AActor* Unit) const;
 
+	/** Юниты стороны игрока как есть (включая мёртвых/эвакуированных). Для подписок HUD. */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Turns")
+	TArray<AActor*> GetPlayerSideUnits() const;
+
+	/** Юниты вражеской стороны как есть (включая мёртвых). Для подписок и счётчика HUD. */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Turns")
+	TArray<AActor*> GetEnemySideUnits() const;
+
+	/** Живые враги на поле (критерий «жив» общий с CheckCombatOutcome). Для HUD/результата. */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Turns")
+	int32 GetAliveEnemyCount() const;
+
 	// --- Таймер ходов (бомба миссии; GDD §5.7) -------------------------------
 
 	/**
@@ -123,8 +135,7 @@ protected:
 
 	/**
 	 * Запускает ExecuteUnitTurn текущего юнита. Отделено от ProcessNextEnemyUnit
-	 * паузой: за неё асинхронно латается навмеш-вырез под юнитом (иначе AI не
-	 * построит путь из «дыры») и камера игрока долетает до действующего врага.
+	 * паузой, за которую камера игрока долетает до действующего врага (XCOM-темп).
 	 */
 	void ActivateCurrentEnemyUnit();
 
@@ -153,7 +164,7 @@ protected:
 	/** Пауза между действиями вражеских юнитов — чтобы игрок успевал читать ход. */
 	float EnemyStepInterval = 0.5f;
 
-	/** Пауза между «камера полетела к юниту» и его действиями (латание навмеша + полёт). */
+	/** Пауза между «камера полетела к юниту» и его действиями (полёт камеры). */
 	float EnemyActivationDelay = 0.35f;
 
 	FTimerHandle EnemyStepTimerHandle;

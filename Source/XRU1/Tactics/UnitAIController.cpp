@@ -1,5 +1,6 @@
 #include "UnitAIController.h"
 #include "UnitBase.h"
+#include "TacticalPlayerController.h"
 #include "ActionPointsComponent.h"
 #include "CoverDetectionComponent.h"
 #include "TacticsCombatStatics.h"
@@ -12,10 +13,15 @@
 #include "Perception/AISenseConfig_Sight.h"
 #include "Perception/AISense_Sight.h"
 #include "Navigation/PathFollowingComponent.h"
+#include "Navigation/CrowdFollowingComponent.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
 
-AUnitAIController::AUnitAIController()
+AUnitAIController::AUnitAIController(const FObjectInitializer& ObjectInitializer)
+	// Detour Crowd вместо стокового path following: агенты знают друг о друге
+	// и бегущий огибает стоящих (обход юнитов в ДВИЖЕНИИ; занятость точек —
+	// дисками в UTacticsCombatStatics).
+	: Super(ObjectInitializer.SetDefaultSubobjectClass<UCrowdFollowingComponent>(TEXT("PathFollowingComponent")))
 {
 	Perception = CreateDefaultSubobject<UAIPerceptionComponent>(TEXT("Perception"));
 	SightConfig = CreateDefaultSubobject<UAISenseConfig_Sight>(TEXT("SightConfig"));
@@ -37,6 +43,14 @@ AUnitAIController::AUnitAIController()
 void AUnitAIController::BeginPlay()
 {
 	Super::BeginPlay();
+
+	// Качество объезда повыше: юнитов мало, стоимость незаметна, а обход
+	// стоящих капсул становится заметно плавнее.
+	if (UCrowdFollowingComponent* Crowd = Cast<UCrowdFollowingComponent>(GetPathFollowingComponent()))
+	{
+		Crowd->SetCrowdAvoidanceQuality(ECrowdAvoidanceQuality::High);
+		Crowd->SetCrowdCollisionQueryRange(600.f);
+	}
 
 	if (Perception)
 	{
@@ -224,6 +238,12 @@ bool AUnitAIController::MoveWithBudget(AUnitBase* Unit, const FVector& Goal, flo
 		return false;
 	}
 
+	// Не вставать в диск занятости другого юнита (замена навмеш-вырезов).
+	if (!UTacticsCombatStatics::AdjustGoalOutOfUnits(GetWorld(), Unit, BudgetedGoal))
+	{
+		return false;
+	}
+
 	// Бюджетная точка совпадает с текущей позицией — двигаться некуда.
 	if (FVector::Dist2D(Unit->GetActorLocation(), BudgetedGoal) <= 50.f)
 	{
@@ -256,6 +276,14 @@ void AUnitAIController::OnMoveCompleted(FAIRequestID RequestID, const FPathFollo
 		if (UCoverDetectionComponent* Cover = Unit->GetCoverDetection())
 		{
 			Cover->EvaluateSurroundings();
+		}
+
+		// Диск занятости юнита встал на новую позицию — контроллер игрока
+		// пересчитает зону хода выбранного бойца (синхронно, без задержек).
+		if (ATacticalPlayerController* PlayerController =
+			Cast<ATacticalPlayerController>(GetWorld()->GetFirstPlayerController()))
+		{
+			PlayerController->NotifyUnitMoveFinished(Unit);
 		}
 	}
 

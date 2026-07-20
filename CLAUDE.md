@@ -19,23 +19,34 @@ GDD с правилами боя и числами (`01_GDD.md`), лор и сц
 сначала фиксируется в GDD.
 
 ## Ключевые факты для агента
-- **Движок:** UE **5.7** — `D:/UE5/UE_5.7`. Собирать только на 5.7.
+- **Разработка идёт на ДВУХ машинах** (общий git-репозиторий) — пути НЕ хардкодить,
+  всегда определять относительно корня проекта / через реестр:
+  | | Машина 1 | Машина 2 |
+  |---|---|---|
+  | Проект | `D:/UE5/UnrealProjects/XRU1` | `D:/Unrial_Projects/XRU1` |
+  | Движок UE 5.7 | `D:/UE5/UE_5.7` | `D:/Program Files/Epic Games/UE_5.7` |
+  | Донор | `D:/UE5/UnrealProjects/cst-3d-gubkin-2026-04` | `D:/Unrial_Projects/cst-3d-gubkin-2026-04` |
+
+  Движок ищется по реестру `HKLM:\SOFTWARE\EpicGames\Unreal Engine\5.7`
+  (`InstalledDirectory`) — так делает `Build-XRU1.ps1`. Собирать только на 5.7.
 - **Игровой модуль:** `XRU1` (Runtime). Include-пути и зависимости — в
   `Source/XRU1/XRU1.Build.cs`.
-- **Донор (только чтение!):** `D:/UE5/UnrealProjects/cst-3d-gubkin-2026-04`
-  (`TopDownCST.uproject`). Не изменять — это чужой git-репозиторий, источник для копирования.
-  Его полный аудит — в `cst-3d-gubkin-2026-04/AUDIT.md`.
+- **Донор (только чтение!):** `cst-3d-gubkin-2026-04` (`TopDownCST.uproject`), лежит
+  рядом с проектом (см. таблицу). Не изменять — это чужой git-репозиторий, источник
+  для копирования. Его полный аудит — в `cst-3d-gubkin-2026-04/AUDIT.md`.
 
 ## Команда сборки (редактор ДОЛЖЕН быть закрыт)
 ```
-D:/UE5/UE_5.7/Engine/Build/BatchFiles/Build.bat XRU1Editor Win64 Development \
-  -project="D:/UE5/UnrealProjects/XRU1/XRU1.uproject" -waitmutex
+.\Build-XRU1.ps1              # из корня проекта; сам найдёт движок и проект
+.\Build-XRU1.ps1 -StopEditor  # закроет редактор и соберёт
+```
+Фолбэк, если обёртка не сработала (подставить путь движка своей машины):
+```
+& "<ENGINE>/Engine/Build/BatchFiles/Build.bat" XRU1Editor Win64 Development `
+  -project="<PROJECT>/XRU1.uproject" -waitmutex
 ```
 Если сборка падает с `Unable to build while Live Coding is active` — открыт редактор
 Unreal. Закрыть его (или собирать через Live Coding: Ctrl+Alt+F11 в редакторе).
-
-Удобная обёртка одной командой: `.\Build-XRU1.ps1` (предупредит, если открыт редактор) или
-`.\Build-XRU1.ps1 -StopEditor` (закроет редактор и соберёт).
 
 ## Структура Source/XRU1
 - `Characters/`, `UI/`, `Interaction/`, `PCG/` — **перенесено из донора** (иерархия юнита на
@@ -51,6 +62,17 @@ Unreal. Закрыть его (или собирать через Live Coding: C
 `STQuestSystem` (туториал-подсказки, mission-select), `TeamManager` (фракции отряд/враги),
 `GameplayMessageRouter` (обязателен: от него зависит STQuestSystem). Включены в
 `XRU1.uproject` вместе с движковыми `GameplayAbilities`, `CommonUI`, `PCG`.
+
+Отдельно: **UnrealClaude** (Editor-плагин, https://github.com/Natfii/UnrealClaude,
+установлен 2026-07-18) — MCP-мост к редактору для агентов: чтение/правка BP и WBP
+графов (`unreal_blueprint_query`/`unreal_blueprint_modify`), ассеты, акторы,
+Enhanced Input, скриншот вьюпорта. Работает ТОЛЬКО при открытом редакторе:
+плагин поднимает HTTP-сервер `localhost:3000`, stdio-мост — `Plugins/UnrealClaude/
+Resources/mcp-bridge/index.js` (нужен `npm install` там после клона; конфиг —
+`.mcp.json` в корне, общий для обеих машин). Новая сессия Claude Code подхватит
+MCP сама; в текущей (без перезапуска) сервер можно дёргать напрямую:
+`curl http://localhost:3000/mcp/status`. Blueprint-правки плагина местами сырые
+(«don't rely on fully») — после каждой правки графа верифицировать чтением.
 
 ## Соглашения
 Полные конвенции — `docs/06_CONVENTIONS.md`. Кратко:
@@ -87,8 +109,10 @@ Unreal. Закрыть его (или собирать через Live Coding: C
     Отдельного «проектного» MCP-конфига нет и не нужно. «Подключить проект» = **проиндексировать**
     его: `index_repository` (repo_path = корень проекта). Индексируется только код —
     `.cbmignore` исключает `Content/`, `Binaries/`, `Intermediate/` и пр.
-  - **Проверка:** `/mcp` в Claude Code должен показывать `codebase-memory-mcp`. Индекс проекта
-    `D-UE5-UnrealProjects-XRU1` уже построен. Если правил C++ — переиндексируй (`index_repository`).
+  - **Проверка:** `/mcp` в Claude Code должен показывать `codebase-memory-mcp`. Индекс
+    локальный и привязан к пути проекта, т.е. **на каждой машине свой** (машина 1:
+    `D-UE5-UnrealProjects-XRU1`). Если MCP/CLI на машине не установлен — работать
+    обычными Grep/Glob/Read, это не блокер. Если правил C++ — переиндексируй (`index_repository`).
   - **Как использовать:** вместо чтения множества файлов сначала спрашивай граф — экономит токены.
   - **CLI-фолбэк** (без MCP): `& "$env:USERPROFILE\.local\bin\codebase-memory-mcp.exe" cli index_repository '{"repo_path":"D:/UE5/UnrealProjects/XRU1","mode":"full"}'`
 - **Разрешения** (`.claude/settings.json`): allowlist на build/copy/MCP; запись в донора

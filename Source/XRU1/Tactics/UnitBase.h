@@ -34,6 +34,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Tactics|Unit")
 	EUnitRole GetUnitRole() const { return UnitRole; }
 
+	/** Позывной для HUD (портреты, панель цели): «Шприц», «Оса», «Клин», «Молот»… */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|Unit")
+	FText UnitDisplayName;
+
 	UFUNCTION(BlueprintPure, Category = "Tactics|Unit")
 	UActionPointsComponent* GetActionPoints() const { return ActionPoints; }
 
@@ -120,18 +124,16 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|State")
 	void Evacuate();
 
-	/**
-	 * Включает/выключает вырез навмеша под юнитом (капсула — динамическое
-	 * препятствие: чужие пути и зоны хода огибают юнита). У ДЕЙСТВУЮЩЕГО юнита
-	 * (выбран игроком / ходит по приказу AI) вырез выключается, иначе он не
-	 * сможет построить путь из «дыры» под собственными ногами.
-	 */
-	UFUNCTION(BlueprintCallable, Category = "Tactics|Unit")
-	void SetNavObstacleEnabled(bool bEnabled);
-
 	/** Смена состояния (смерть/ранение/подъём/эвакуация) — для HUD. */
 	UPROPERTY(BlueprintAssignable, Category = "Tactics|State")
 	FOnUnitStateChanged OnUnitStateChanged;
+
+	/**
+	 * Остаток применений способности за миссию (для серости кнопки HUD).
+	 * -1 = без лимита или способность юниту не выдана.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Abilities")
+	int32 GetAbilityUsesRemaining(TSubclassOf<UTacticalAbility> AbilityClass) const;
 
 	// --- Подсветка выбора/наведения (зовёт ATacticalPlayerController) --------
 

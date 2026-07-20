@@ -1,6 +1,7 @@
 #include "MoveRangeVisualizer.h"
 #include "UnitBase.h"
 #include "ActionPointsComponent.h"
+#include "TacticsCombatStatics.h"
 #include "ProceduralMeshComponent.h"
 #include "NavigationSystem.h"
 #include "NavigationData.h"
@@ -17,19 +18,19 @@ AMoveRangeVisualizer::AMoveRangeVisualizer()
 	ZoneMesh->SetCastShadow(false);
 }
 
-void AMoveRangeVisualizer::ShowForUnit(AUnitBase* Unit)
+bool AMoveRangeVisualizer::ShowForUnit(AUnitBase* Unit)
 {
 	Hide();
 	CurrentUnit = Unit;
 	if (!Unit || !Unit->GetActionPoints())
 	{
-		return;
+		return true; // показывать нечего по правилам — не повод для ретраев
 	}
 
 	const int32 ActionPoints = Unit->GetActionPoints()->CurrentActionPoints;
 	if (ActionPoints <= 0)
 	{
-		return;
+		return true;
 	}
 
 	// Бюджеты по ДЛИНЕ ПУТИ: 1 AP = MoveRange, 2 AP = 2×MoveRange (GDD §5.3).
@@ -38,22 +39,28 @@ void AMoveRangeVisualizer::ShowForUnit(AUnitBase* Unit)
 
 	if (!BuildDistanceField(Unit, BudgetOne, BudgetMax))
 	{
-		return;
+		return false; // навмеш не готов (дыра под юнитом) — контроллер ретраит
 	}
+
+	UMaterialInterface* BorderOne = BorderOneMaterial ? BorderOneMaterial.Get()
+		: (PathOneMaterial ? PathOneMaterial.Get() : ZoneOneMaterial.Get());
+	UMaterialInterface* BorderTwo = BorderTwoMaterial ? BorderTwoMaterial.Get()
+		: (PathDashMaterial ? PathDashMaterial.Get() : ZoneTwoMaterial.Get());
 
 	if (ActionPoints >= 2)
 	{
 		// Синяя зона (после хода останется действие) + жёлтое кольцо «рывка».
-		BuildContourSection(0, -1.0e9, BudgetOne, ZoneOneMaterial);
-		BuildContourSection(1, BudgetOne, BudgetMax, ZoneTwoMaterial);
+		BuildContourSection(0, -1.0e9, BudgetOne, ZoneOneMaterial, 4, BorderOne);
+		BuildContourSection(1, BudgetOne, BudgetMax, ZoneTwoMaterial, 5, BorderTwo);
 	}
 	else
 	{
 		// Последний AP: любой ход завершает активацию юнита — вся зона жёлтая.
-		BuildContourSection(0, -1.0e9, BudgetOne, ZoneTwoMaterial);
+		BuildContourSection(0, -1.0e9, BudgetOne, ZoneTwoMaterial, 4, BorderTwo);
 	}
 
 	SetActorHiddenInGame(false);
+	return true;
 }
 
 void AMoveRangeVisualizer::Hide()
@@ -79,6 +86,23 @@ bool AMoveRangeVisualizer::BuildDistanceField(const AUnitBase* Unit, double Budg
 	}
 
 	const FVector Origin = Unit->GetActorLocation();
+
+	// Диски занятости ДРУГИХ юнитов (навмеш статичен и о юнитах не знает —
+	// XCOM-подход «занятые клетки»): волна в диск не заходит.
+	TArray<FVector> UnitObstacles;
+	UTacticsCombatStatics::GetUnitObstacles(GetWorld(), Unit, UnitObstacles);
+	const double BlockRadiusSq = FMath::Square(static_cast<double>(UTacticsCombatStatics::UnitObstacleRadius));
+	auto IsBlockedByUnit = [&UnitObstacles, BlockRadiusSq](const FVector& Position)
+	{
+		for (const FVector& Obstacle : UnitObstacles)
+		{
+			if (FVector::DistSquared2D(Obstacle, Position) < BlockRadiusSq)
+			{
+				return true;
+			}
+		}
+		return false;
+	};
 
 	// ВОЛНОВОЙ Dijkstra ПО СЕТКЕ СЭМПЛОВ (не по полигонам!): метрика октильная
 	// (8 соседей, завышение ≤ ~8% и не зависит от размера полигонов Recast —
@@ -188,6 +212,17 @@ bool AMoveRangeVisualizer::BuildDistanceField(const AUnitBase* Unit, double Budg
 				continue; // вне навмеша
 			}
 
+			// Клетка занята другим юнитом: волна не заходит; помечаем особо —
+			// контур на границе диска интерполируется, а не ищется raycast'ом.
+			if (!Field[NIdx].bBlockedByUnit && !Field[NIdx].bReachable && IsBlockedByUnit(SamplePositions[NIdx]))
+			{
+				Field[NIdx].bBlockedByUnit = true;
+			}
+			if (Field[NIdx].bBlockedByUnit)
+			{
+				continue;
+			}
+
 			const double NewDist = Top.Dist + FVector::Dist(CurrentPos, SamplePositions[NIdx]);
 			if (NewDist > ExpandLimit || NewDist + UE_KINDA_SMALL_NUMBER >= Field[NIdx].PathDist)
 			{
@@ -255,7 +290,7 @@ bool AMoveRangeVisualizer::BuildDistanceField(const AUnitBase* Unit, double Budg
 // --- Marching squares ---------------------------------------------------------------
 
 void AMoveRangeVisualizer::BuildContourSection(int32 SectionIndex, double MinDist, double MaxDist,
-	UMaterialInterface* Material)
+	UMaterialInterface* Material, int32 BorderSectionIndex, UMaterialInterface* BorderMaterial)
 {
 	if (FieldSamplesPerSide < 2)
 	{
@@ -288,6 +323,9 @@ void AMoveRangeVisualizer::BuildContourSection(int32 SectionIndex, double MinDis
 	TArray<int32> Triangles;
 	const FVector MeshOffset = FVector(0, 0, SurfaceOffset) - GetActorLocation();
 
+	// Хорды внешней границы области (мировые координаты) — сырьё для каймы.
+	TArray<TPair<FVector, FVector>> BorderChords;
+
 	// Обход ячеек: полигон ячейки = внутренние углы + точки пересечения контура
 	// с рёбрами (в порядке обхода) — покрывает все 16 случаев marching squares.
 	for (int32 CY = 0; CY + 1 < FieldSamplesPerSide; ++CY)
@@ -301,6 +339,7 @@ void AMoveRangeVisualizer::BuildContourSection(int32 SectionIndex, double MinDis
 			double F[4];
 			FVector V[4];
 			bool bReach[4];
+			bool bBlockedU[4];
 			int32 NumInside = 0;
 			double MinZ = TNumericLimits<double>::Max();
 			double MaxZ = -TNumericLimits<double>::Max();
@@ -309,6 +348,7 @@ void AMoveRangeVisualizer::BuildContourSection(int32 SectionIndex, double MinDis
 				F[i] = Inside(CornerX[i], CornerY[i]);
 				V[i] = SamplePos(CornerX[i], CornerY[i]);
 				bReach[i] = Field[CornerY[i] * FieldSamplesPerSide + CornerX[i]].bReachable;
+				bBlockedU[i] = Field[CornerY[i] * FieldSamplesPerSide + CornerX[i]].bBlockedByUnit;
 				NumInside += (F[i] >= 0.);
 				if (bReach[i])
 				{
@@ -327,13 +367,18 @@ void AMoveRangeVisualizer::BuildContourSection(int32 SectionIndex, double MinDis
 				continue;
 			}
 
+			// Вершины полигона ячейки + тип каждой: 0 — угол сетки, 1 — точка
+			// внешней границы, 2 — точка внутреннего порога кольца (кайма её
+			// пропускает: линию порога уже рисует кайма внутренней зоны).
 			TArray<FVector, TInlineAllocator<8>> CellPoly;
+			TArray<uint8, TInlineAllocator<8>> CellKind;
 			for (int32 i = 0; i < 4; ++i)
 			{
 				const int32 j = (i + 1) % 4;
 				if (F[i] >= 0.)
 				{
 					CellPoly.Add(V[i]);
+					CellKind.Add(0);
 				}
 				if ((F[i] >= 0.) != (F[j] >= 0.))
 				{
@@ -341,7 +386,9 @@ void AMoveRangeVisualizer::BuildContourSection(int32 SectionIndex, double MinDis
 					const int32 Out = (In == i) ? j : i;      // внешний угол
 
 					double T; // доля отрезка In→Out до границы
-					if (!bReach[Out] && NavData)
+					// Диск занятости юнита — НЕ кромка навмеша: raycast прошёл бы
+					// его насквозь до настоящей стены, поэтому для диска — интерп.
+					if (!bReach[Out] && !bBlockedU[Out] && NavData)
 					{
 						// Снаружи — кромка навмеша (стена/обрыв): точное место даёт
 						// surface-raycast (интерполяция поля здесь пилила бы по сетке).
@@ -366,12 +413,38 @@ void AMoveRangeVisualizer::BuildContourSection(int32 SectionIndex, double MinDis
 					{
 						Cross.Z = V[In].Z;
 					}
+
+					// Классификация порога: пересечение внутренней границы кольца
+					// (внешний угол ещё ДОСТИЖИМ, но ближе MinDist) — тип 2.
+					uint8 Kind = 1;
+					if (MinDist > 0. && bReach[Out])
+					{
+						const FZoneSample& OutSample = Field[CornerY[Out] * FieldSamplesPerSide + CornerX[Out]];
+						const double OutDist = FMath::Min(OutSample.PathDist, UnreachableDist);
+						if (OutDist < MinDist)
+						{
+							Kind = 2;
+						}
+					}
 					CellPoly.Add(Cross);
+					CellKind.Add(Kind);
 				}
 			}
 			if (CellPoly.Num() < 3)
 			{
 				continue;
+			}
+
+			// Хорды границы: соседние (по обходу полигона) точки-пересечения.
+			// Пара с точкой внутреннего порога (тип 2) пропускается.
+			for (int32 i = 0; i < CellPoly.Num(); ++i)
+			{
+				const int32 j = (i + 1) % CellPoly.Num();
+				if (CellKind[i] == 1 && CellKind[j] == 1
+					&& FVector::DistSquared2D(CellPoly[i], CellPoly[j]) > 1.)
+				{
+					BorderChords.Emplace(CellPoly[i], CellPoly[j]);
+				}
 			}
 
 			const int32 Base = Vertices.Num();
@@ -386,6 +459,180 @@ void AMoveRangeVisualizer::BuildContourSection(int32 SectionIndex, double MinDis
 				Triangles.Add(Base + i + 1);
 			}
 		}
+	}
+
+	// Кайма по внешней границе (сглаженная линия — XCOM-обводка зоны).
+	if (BorderWidth > 0.f)
+	{
+		BuildZoneBorder(BorderSectionIndex, BorderChords, BorderMaterial);
+	}
+
+	if (Triangles.Num() == 0)
+	{
+		return;
+	}
+
+	ZoneMesh->CreateMeshSection(SectionIndex, Vertices, Triangles,
+		TArray<FVector>(), TArray<FVector2D>(), TArray<FColor>(), TArray<FProcMeshTangent>(),
+		/*bCreateCollision=*/false);
+	if (Material)
+	{
+		ZoneMesh->SetMaterial(SectionIndex, Material);
+	}
+}
+
+void AMoveRangeVisualizer::BuildZoneBorder(int32 SectionIndex, const TArray<TPair<FVector, FVector>>& Segments,
+	UMaterialInterface* Material)
+{
+	ZoneMesh->ClearMeshSection(SectionIndex);
+	if (Segments.Num() == 0)
+	{
+		return;
+	}
+
+	// --- Сшивка хорд в полилинии: концы совпадают на общих рёбрах ячеек
+	// (одинаковая арифметика в соседних ячейках), квантование до сантиметра.
+	auto KeyOf = [](const FVector& P) { return FIntPoint(FMath::RoundToInt(P.X), FMath::RoundToInt(P.Y)); };
+
+	TMultiMap<FIntPoint, int32> SegmentsByEnd;
+	for (int32 i = 0; i < Segments.Num(); ++i)
+	{
+		SegmentsByEnd.Add(KeyOf(Segments[i].Key), i);
+		SegmentsByEnd.Add(KeyOf(Segments[i].Value), i);
+	}
+
+	TArray<bool> Used;
+	Used.Init(false, Segments.Num());
+
+	TArray<FVector> Vertices;
+	TArray<int32> Triangles;
+	// Кайма выше заливки, но ниже ленты пути (+4), чтобы путь читался поверх.
+	const FVector MeshOffset = FVector(0, 0, SurfaceOffset + 2.f) - GetActorLocation();
+	const float HalfWidth = BorderWidth * 0.5f;
+
+	// Лента вдоль полилинии (митра на изломах — как у ленты пути).
+	auto EmitPolyline = [&](const TArray<FVector>& Points, bool bClosed)
+	{
+		if (Points.Num() < 2)
+		{
+			return;
+		}
+		const int32 Base = Vertices.Num();
+		const int32 Num = Points.Num();
+		for (int32 i = 0; i < Num; ++i)
+		{
+			const FVector& Prev = Points[bClosed ? (i + Num - 1) % Num : FMath::Max(i - 1, 0)];
+			const FVector& Next = Points[bClosed ? (i + 1) % Num : FMath::Min(i + 1, Num - 1)];
+			FVector Dir = Next - Prev;
+			Dir.Z = 0.f;
+			if (!Dir.Normalize())
+			{
+				Dir = FVector::ForwardVector;
+			}
+			const FVector Side(-Dir.Y * HalfWidth, Dir.X * HalfWidth, 0.f);
+			Vertices.Add(Points[i] - Side + MeshOffset);
+			Vertices.Add(Points[i] + Side + MeshOffset);
+		}
+		const int32 QuadCount = bClosed ? Num : Num - 1;
+		for (int32 i = 0; i < QuadCount; ++i)
+		{
+			const int32 A = Base + i * 2;
+			const int32 B = Base + ((i + 1) % Num) * 2;
+			Triangles.Add(A); Triangles.Add(B); Triangles.Add(A + 1);
+			Triangles.Add(A + 1); Triangles.Add(B); Triangles.Add(B + 1);
+		}
+	};
+
+	for (int32 SeedIndex = 0; SeedIndex < Segments.Num(); ++SeedIndex)
+	{
+		if (Used[SeedIndex])
+		{
+			continue;
+		}
+		Used[SeedIndex] = true;
+
+		TArray<FVector> Chain;
+		Chain.Add(Segments[SeedIndex].Key);
+		Chain.Add(Segments[SeedIndex].Value);
+
+		// Наращивание цепочки: сначала вперёд от хвоста, затем назад от головы.
+		for (int32 Pass = 0; Pass < 2; ++Pass)
+		{
+			bool bExtended = true;
+			while (bExtended)
+			{
+				bExtended = false;
+				const FVector Tip = (Pass == 0) ? Chain.Last() : Chain[0];
+				TArray<int32> Candidates;
+				SegmentsByEnd.MultiFind(KeyOf(Tip), Candidates);
+				for (const int32 CandIndex : Candidates)
+				{
+					if (Used[CandIndex])
+					{
+						continue;
+					}
+					const FVector& A = Segments[CandIndex].Key;
+					const FVector& B = Segments[CandIndex].Value;
+					const bool bFromA = FVector::DistSquared2D(A, Tip) < 4.;
+					const bool bFromB = !bFromA && FVector::DistSquared2D(B, Tip) < 4.;
+					if (!bFromA && !bFromB)
+					{
+						continue;
+					}
+					Used[CandIndex] = true;
+					const FVector& NextPoint = bFromA ? B : A;
+					if (Pass == 0)
+					{
+						Chain.Add(NextPoint);
+					}
+					else
+					{
+						Chain.Insert(NextPoint, 0);
+					}
+					bExtended = true;
+					break;
+				}
+			}
+		}
+
+		const bool bClosed = Chain.Num() > 3
+			&& FVector::DistSquared2D(Chain[0], Chain.Last()) < 4.;
+		if (bClosed)
+		{
+			Chain.Pop(); // замкнутый контур: последняя точка дублирует первую
+		}
+		if (Chain.Num() < (bClosed ? 3 : 2))
+		{
+			continue; // мусорные обрывки
+		}
+
+		// Сглаживание Chaikin (срез углов): пиксельная «лесенка» сетки уходит,
+		// кайма течёт плавной линией. Открытые цепочки сохраняют концы.
+		for (int32 Iter = 0; Iter < BorderSmoothIterations && Chain.Num() >= 3; ++Iter)
+		{
+			TArray<FVector> Smoothed;
+			Smoothed.Reserve(Chain.Num() * 2 + 2);
+			const int32 Num = Chain.Num();
+			if (!bClosed)
+			{
+				Smoothed.Add(Chain[0]);
+			}
+			const int32 EdgeCount = bClosed ? Num : Num - 1;
+			for (int32 i = 0; i < EdgeCount; ++i)
+			{
+				const FVector& P = Chain[i];
+				const FVector& Q = Chain[(i + 1) % Num];
+				Smoothed.Add(P * 0.75f + Q * 0.25f);
+				Smoothed.Add(P * 0.25f + Q * 0.75f);
+			}
+			if (!bClosed)
+			{
+				Smoothed.Add(Chain.Last());
+			}
+			Chain = MoveTemp(Smoothed);
+		}
+
+		EmitPolyline(Chain, bClosed);
 	}
 
 	if (Triangles.Num() == 0)
@@ -417,6 +664,13 @@ void AMoveRangeVisualizer::UpdatePathPreview(const FVector& GoalLocation)
 
 	const int32 ActionPoints = Unit->GetActionPoints()->CurrentActionPoints;
 	if (ActionPoints <= 0)
+	{
+		HidePathPreview();
+		return;
+	}
+
+	// Точка в диске занятости другого юнита: приказ туда не пройдёт — превью нет.
+	if (UTacticsCombatStatics::IsLocationBlockedByUnit(this, GoalLocation, Unit))
 	{
 		HidePathPreview();
 		return;

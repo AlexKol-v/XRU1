@@ -49,6 +49,14 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|MoveRange")
 	TObjectPtr<UMaterialInterface> PathDashMaterial;
 
+	/** Материал каймы зоны 1 AP (если пусто — PathOneMaterial → ZoneOneMaterial). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|MoveRange")
+	TObjectPtr<UMaterialInterface> BorderOneMaterial;
+
+	/** Материал каймы внешнего края 2 AP (если пусто — PathDashMaterial → ZoneTwoMaterial). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|MoveRange")
+	TObjectPtr<UMaterialInterface> BorderTwoMaterial;
+
 	// --- Дизайнерские параметры ----------------------------------------------
 
 	/** Шаг сетки сэмплирования поля дистанций (см). Меньше = глаже контур, дороже перестройка. */
@@ -63,11 +71,24 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|MoveRange", meta = (ClampMin = "4"))
 	float PathWidth = 14.f;
 
+	/** Ширина каймы по краю зоны (см). 0 — кайму не рисовать. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|MoveRange", meta = (ClampMin = "0", ClampMax = "40"))
+	float BorderWidth = 10.f;
+
+	/** Итерации сглаживания каймы (Chaikin corner-cutting). 0 — без сглаживания. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|MoveRange", meta = (ClampMin = "0", ClampMax = "4"))
+	int32 BorderSmoothIterations = 2;
+
 	// --- API -------------------------------------------------------------------
 
-	/** Перестраивает зону под юнита: 1 AP = MoveRange, 2 AP = 2×MoveRange по пути. */
+	/**
+	 * Перестраивает зону под юнита: 1 AP = MoveRange, 2 AP = 2×MoveRange по пути.
+	 * Другие юниты — диски занятости на уровне запроса (навмеш статичен), зона
+	 * строится синхронно. false — юнит стоит вне навмеша (нештатная ситуация
+	 * уровня); «нечего показывать по правилам» (нет AP) — это true.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|MoveRange")
-	void ShowForUnit(AUnitBase* Unit);
+	bool ShowForUnit(AUnitBase* Unit);
 
 	/** Прячет зону и путь (юнит снят с выбора / чужая фаза). */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|MoveRange")
@@ -88,6 +109,9 @@ protected:
 		double PathDist = TNumericLimits<double>::Max(); // недостижимо
 		double Z = 0.;
 		bool bReachable = false;
+		/** Недостижим из-за диска занятости юнита (не кромки навмеша): контур
+		 *  на границе интерполируется, а не ищется raycast'ом до стены. */
+		bool bBlockedByUnit = false;
 	};
 
 	/**
@@ -100,8 +124,19 @@ protected:
 	/**
 	 * Marching squares: секция-заливка области MinDist < дистанция ≤ MaxDist.
 	 * Для сплошной зоны MinDist < 0; для кольца 2 AP MinDist = бюджет 1 AP.
+	 * Попутно собирает хорды ВНЕШНЕЙ границы области (внутренний порог кольца
+	 * пропускается — эту линию уже нарисовала кайма синей зоны) и строит по ним
+	 * сглаженную кайму в секции BorderSectionIndex.
 	 */
-	void BuildContourSection(int32 SectionIndex, double MinDist, double MaxDist, UMaterialInterface* Material);
+	void BuildContourSection(int32 SectionIndex, double MinDist, double MaxDist, UMaterialInterface* Material,
+		int32 BorderSectionIndex, UMaterialInterface* BorderMaterial);
+
+	/**
+	 * Кайма зоны: сшивает хорды границы в полилинии, сглаживает (Chaikin) и
+	 * строит ленту шириной BorderWidth в указанной секции меша.
+	 */
+	void BuildZoneBorder(int32 SectionIndex, const TArray<TPair<FVector, FVector>>& Segments,
+		UMaterialInterface* Material);
 
 	/** Лента по точкам пути + кружок-маркер в конце (секции 2 и 3). */
 	void BuildPathRibbon(const TArray<FVector>& PathPoints, UMaterialInterface* Material);

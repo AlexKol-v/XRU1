@@ -20,6 +20,17 @@ void UUnitAttributeWidget::ApplyStyle(const FVector2D& InSize, const FLinearColo
     BaseColor = InColor;
 }
 
+AActor* UUnitAttributeWidget::ResolveAvatarActor() const
+{
+    UAbilitySystemComponent* C = ASC.Get();
+    if (!C)
+    {
+        return nullptr;
+    }
+    AActor* Avatar = C->GetAvatarActor();
+    return Avatar ? Avatar : C->GetOwnerActor();
+}
+
 void UUnitAttributeWidget::NativeDestruct()
 {
     UnbindDelegates();

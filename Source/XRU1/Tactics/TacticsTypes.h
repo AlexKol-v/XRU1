@@ -30,3 +30,12 @@ enum class ETurnPhase : uint8
 	Player  UMETA(DisplayName = "Player Turn"),
 	Enemy   UMETA(DisplayName = "Enemy Turn")
 };
+
+/** Какая контекстная интеракция (клавиша F) доступна выбранному юниту. Для кнопки HUD. */
+UENUM(BlueprintType)
+enum class EInteractionKind : uint8
+{
+	None       UMETA(DisplayName = "Недоступна"),
+	DefuseBomb UMETA(DisplayName = "Обезвредить заряд"),
+	Evacuate   UMETA(DisplayName = "Эвакуация")
+};

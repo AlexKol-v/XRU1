@@ -4,6 +4,9 @@
 #   .\Build-XRU1.ps1 -StopEditor  # закрыть Unreal и собрать
 #
 # UBT не может пересобрать модули, пока открыт редактор (Live Coding).
+#
+# Пути не хардкодим: проект — рядом со скриптом, движок 5.7 — из реестра
+# (скрипт работает на любой машине, где UE 5.7 установлен лаунчером).
 
 param(
     [switch]$StopEditor,
@@ -11,9 +14,28 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Engine  = "D:/UE5/UE_5.7"
-$Project = "D:/UE5/UnrealProjects/XRU1/XRU1.uproject"
-$Build   = Join-Path $Engine "Engine/Build/BatchFiles/Build.bat"
+
+# Проект — *.uproject рядом с этим скриптом.
+$Project = Join-Path $PSScriptRoot "XRU1.uproject"
+if (-not (Test-Path $Project)) {
+    Write-Host "Не найден $Project — скрипт должен лежать в корне проекта." -ForegroundColor Red
+    exit 1
+}
+
+# Движок: реестр лаунчера → известные пути по машинам.
+$Engine = $null
+$reg = Get-ItemProperty 'HKLM:\SOFTWARE\EpicGames\Unreal Engine\5.7' -ErrorAction SilentlyContinue
+if ($reg -and $reg.InstalledDirectory -and (Test-Path $reg.InstalledDirectory)) { $Engine = $reg.InstalledDirectory }
+if (-not $Engine) {
+    foreach ($candidate in @("D:\Program Files\Epic Games\UE_5.7", "D:\UE5\UE_5.7", "C:\Program Files\Epic Games\UE_5.7")) {
+        if (Test-Path $candidate) { $Engine = $candidate; break }
+    }
+}
+if (-not $Engine) {
+    Write-Host "UE 5.7 не найден (ни в реестре, ни по известным путям)." -ForegroundColor Red
+    exit 1
+}
+$Build = Join-Path $Engine "Engine\Build\BatchFiles\Build.bat"
 
 $editor = Get-Process -Name UnrealEditor -ErrorAction SilentlyContinue
 if ($editor) {
@@ -30,5 +52,7 @@ if ($editor) {
     }
 }
 
+Write-Host "Движок: $Engine" -ForegroundColor DarkGray
+Write-Host "Проект: $Project" -ForegroundColor DarkGray
 & $Build XRU1Editor Win64 $Config -project="$Project" -waitmutex
 exit $LASTEXITCODE

@@ -42,7 +42,13 @@ class XRU1_API AUnitAIController : public AAIController
 	GENERATED_BODY()
 
 public:
-	AUnitAIController();
+	/**
+	 * ObjectInitializer-конструктор: подменяет PathFollowingComponent на
+	 * UCrowdFollowingComponent (Detour Crowd) — бегущие юниты локально
+	 * объезжают стоящих, не застревая в их капсулах (навмеш статичен и о
+	 * юнитах не знает; см. занятость в UTacticsCombatStatics).
+	 */
+	explicit AUnitAIController(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 
 	UAIPerceptionComponent* GetUnitPerception() const { return Perception; }
 

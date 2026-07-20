@@ -16,14 +16,22 @@
       "Read(//D/UE5/UnrealProjects/cst-3d-gubkin-2026-04/**)",
       "Grep(//D/UE5/UnrealProjects/cst-3d-gubkin-2026-04/**)",
       "Glob(//D/UE5/UnrealProjects/cst-3d-gubkin-2026-04/**)",
+      "Read(//D/Unrial_Projects/cst-3d-gubkin-2026-04/**)",
+      "Grep(//D/Unrial_Projects/cst-3d-gubkin-2026-04/**)",
+      "Glob(//D/Unrial_Projects/cst-3d-gubkin-2026-04/**)",
+      "PowerShell(& 'D:/Program Files/Epic Games/UE_5.7/Engine/Build/BatchFiles/Build.bat':*)",
       "mcp__codebase-memory",
       "Bash(npm view:*)",
       "Bash(npx:*)",
-      "PowerShell(& 'D:/UE5/UnrealProjects/XRU1/Build-XRU1.ps1':*)"
+      "PowerShell(& 'D:/UE5/UnrealProjects/XRU1/Build-XRU1.ps1':*)",
+      "PowerShell(& 'D:/Unrial_Projects/XRU1/Build-XRU1.ps1':*)",
+      "PowerShell(.\\Build-XRU1.ps1:*)"
     ],
     "deny": [
       "Write(//D/UE5/UnrealProjects/cst-3d-gubkin-2026-04/**)",
-      "Edit(//D/UE5/UnrealProjects/cst-3d-gubkin-2026-04/**)"
+      "Edit(//D/UE5/UnrealProjects/cst-3d-gubkin-2026-04/**)",
+      "Write(//D/Unrial_Projects/cst-3d-gubkin-2026-04/**)",
+      "Edit(//D/Unrial_Projects/cst-3d-gubkin-2026-04/**)"
     ]
   }
 }

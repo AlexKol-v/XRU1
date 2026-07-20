@@ -11,7 +11,6 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
-#include "NavAreas/NavArea_Null.h"
 
 AUnitBase::AUnitBase()
 {
@@ -38,24 +37,40 @@ AUnitBase::AUnitBase()
 		Movement->GetNavMovementProperties()->bUseAccelerationForPaths = true;
 	}
 
-	// Юнит — динамическое препятствие навмеша (NavArea_Null = полный вырез):
-	// чужие пути, зоны хода и превью огибают стоящих юнитов, встать «в» юнита
-	// нельзя. Требует Runtime Generation = Dynamic (см. DefaultEngine.ini).
-	// У действующего юнита вырез временно снимается (SetNavObstacleEnabled).
+	// Навмеш юниты НЕ трогают (никаких вырезов/динамических препятствий):
+	// занятость решается на уровне запросов дисками UnitObstacleRadius
+	// (см. UTacticsCombatStatics::GetUnitObstacles) — как клетки-occupancy
+	// в XCOM. Капсула навигацию не затрагивает вовсе.
 	if (UCapsuleComponent* Capsule = GetCapsuleComponent())
 	{
-		Capsule->SetCanEverAffectNavigation(true);
-		Capsule->bDynamicObstacle = true;
-		Capsule->SetAreaClassOverride(UNavArea_Null::StaticClass()); // сам сбросит bUseSystemDefaultObstacleAreaClass
+		Capsule->SetCanEverAffectNavigation(false);
 	}
 }
 
-void AUnitBase::SetNavObstacleEnabled(bool bEnabled)
+int32 AUnitBase::GetAbilityUsesRemaining(TSubclassOf<UTacticalAbility> AbilityClass) const
 {
-	if (UCapsuleComponent* Capsule = GetCapsuleComponent())
+	UAbilitySystemComponent* ASC = GetAbilitySystemComponent();
+	if (!ASC || !AbilityClass)
 	{
-		Capsule->SetCanEverAffectNavigation(bEnabled);
+		return -1;
 	}
+
+	// InstancedPerActor: остаток применений живёт на primary-инстансе способности.
+	// Фолбэк на Spec->Ability (CDO): если BP переопределил политику инстансинга,
+	// ApplyCost пишет UsesRemaining именно туда — не путаем «нет инстанса» с «без лимита».
+	if (const FGameplayAbilitySpec* Spec = ASC->FindAbilitySpecFromClass(AbilityClass))
+	{
+		const UTacticalAbility* Instance = Cast<UTacticalAbility>(Spec->GetPrimaryInstance());
+		if (!Instance)
+		{
+			Instance = Cast<UTacticalAbility>(Spec->Ability.Get());
+		}
+		if (Instance)
+		{
+			return Instance->GetUsesRemaining();
+		}
+	}
+	return -1;
 }
 
 // --- Подсветка выбора/наведения ---------------------------------------------
@@ -205,12 +220,6 @@ void AUnitBase::SetDowned(bool bNewDowned, float ReviveHealth)
 		}
 	}
 
-	// До анимаций/HUD состояние иначе не видно: ранение «тихое» — юнит стоит,
-	// но выпадает из выбора Tab/слотами (не «жив») и не принимает приказы.
-	UE_LOG(LogTemp, Warning, TEXT("[Unit] %s %s"), *GetName(),
-		bIsDowned ? TEXT("ТЯЖЕЛО РАНЕН (Downed: без действий, лечится медиком)")
-		          : TEXT("поднят на ноги"));
-
 	OnDownedChanged(bIsDowned);
 	OnUnitStateChanged.Broadcast();
 }
@@ -236,13 +245,11 @@ void AUnitBase::Die()
 	{
 		Capsule->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	}
-	SetNavObstacleEnabled(false); // и навмеш под трупом возвращается
 	if (AController* C = GetController())
 	{
 		C->StopMovement();
 	}
 
-	UE_LOG(LogTemp, Warning, TEXT("[Unit] %s ПОГИБ (выбывает из отряда/очереди)"), *GetName());
 	OnDied();
 	OnUnitStateChanged.Broadcast();
 }
@@ -264,7 +271,6 @@ void AUnitBase::Evacuate()
 	}
 	SetActorEnableCollision(false);
 	SetActorHiddenInGame(true);
-	SetNavObstacleEnabled(false); // место эвакуации не остаётся «занятым»
 	if (AController* C = GetController())
 	{
 		C->StopMovement();

@@ -246,6 +246,7 @@ void ATacticalPlayerController::UpdateHoverHighlight()
 		NewHovered->SetHoverHighlight(true);
 	}
 	HoveredUnit = NewHovered;
+	OnHoveredUnitChanged.Broadcast(NewHovered);
 }
 
 bool ATacticalPlayerController::IsSelectedUnitMoving() const
@@ -296,23 +297,30 @@ void ATacticalPlayerController::UpdatePathPreviewUnderCursor()
 
 void ATacticalPlayerController::SelectUnit(AUnitBase* Unit)
 {
+	// Труп/эвакуированного выбрать нельзя (клик по портрету погибшего в HUD).
+	// Downed выбирать можно: посмотреть, где лежит; кнопки погасит RefreshButtons.
+	if (Unit && (Unit->IsDead() || Unit->IsEvacuated()))
+	{
+		return;
+	}
 	if (SelectedUnit == Unit)
 	{
 		return;
 	}
 
-	// Отписка от AP предыдущего выбранного + погасить его кольцо + вернуть вырез навмеша.
+	// Отписка от AP/состояния предыдущего выбранного + погасить его кольцо.
 	if (SelectedUnit)
 	{
 		if (UActionPointsComponent* OldAP = SelectedUnit->GetActionPoints())
 		{
 			OldAP->OnActionPointsChanged.RemoveDynamic(this, &ATacticalPlayerController::HandleSelectedUnitAPChanged);
 		}
+		SelectedUnit->OnUnitStateChanged.RemoveDynamic(this, &ATacticalPlayerController::HandleSelectedUnitStateChanged);
 		SelectedUnit->SetSelectionHighlight(false);
-		SelectedUnit->SetNavObstacleEnabled(true);
 	}
 
 	bAwaitingAbilityTarget = false;
+	bAwaitingAttackTarget = false;
 	SelectedUnit = Unit;
 
 	if (SelectedUnit)
@@ -321,31 +329,26 @@ void ATacticalPlayerController::SelectUnit(AUnitBase* Unit)
 		{
 			NewAP->OnActionPointsChanged.AddDynamic(this, &ATacticalPlayerController::HandleSelectedUnitAPChanged);
 		}
+		SelectedUnit->OnUnitStateChanged.AddDynamic(this, &ATacticalPlayerController::HandleSelectedUnitStateChanged);
 		if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
 		{
 			Camera->FocusOnActor(SelectedUnit);
 		}
 		SelectedUnit->SetSelectionHighlight(!IsEnemyPhaseNow());
-		// Действующий юнит не должен вырезать навмеш под собой (иначе не построит
-		// свой путь/зону); чужие вырезы остаются — пути огибают других юнитов.
-		SelectedUnit->SetNavObstacleEnabled(false);
 	}
 
-	ScheduleMoveRangeRefresh();
+	// Навмеш статичен, занятость — дисками: зона строится сразу, без задержек.
+	RefreshMoveRange();
 	OnSelectedUnitChanged.Broadcast(SelectedUnit);
 }
 
-void ATacticalPlayerController::ScheduleMoveRangeRefresh()
+void ATacticalPlayerController::NotifyUnitMoveFinished(AUnitBase* Unit)
 {
-	if (MoveRangeVisualizer)
+	// Финишировал ДРУГОЙ юнит: его диск занятости встал на новую позицию —
+	// зона выбранного юнита пересчитывается сразу (всё синхронно, без задержек).
+	if (Unit && Unit != SelectedUnit && SelectedUnit && IsPlayerPhase())
 	{
-		MoveRangeVisualizer->Hide();
-	}
-	GetWorldTimerManager().ClearTimer(MoveRangeRefreshTimer);
-	if (SelectedUnit)
-	{
-		GetWorldTimerManager().SetTimer(MoveRangeRefreshTimer, this,
-			&ATacticalPlayerController::RefreshMoveRange, 0.25f, false);
+		RefreshMoveRange();
 	}
 }
 
@@ -366,12 +369,14 @@ void ATacticalPlayerController::SelectNextUnit()
 		return;
 	}
 
-	// Со следующего после текущего — первый юнит с оставшимися AP.
+	// Со следующего после текущего — первый ЖИВОЙ юнит с оставшимися AP
+	// (GetSquad теперь отдаёт и мёртвых/раненых: их Tab пропускает).
 	const int32 StartIndex = FMath::Max(0, Squad.IndexOfByKey(SelectedUnit));
 	for (int32 Offset = 1; Offset <= Squad.Num(); ++Offset)
 	{
 		AUnitBase* Candidate = Squad[(StartIndex + Offset) % Squad.Num()];
-		if (Candidate && Candidate->GetActionPoints() && Candidate->GetActionPoints()->HasActionsLeft())
+		if (Candidate && UTacticsCombatStatics::IsUnitAlive(Candidate) &&
+			Candidate->GetActionPoints() && Candidate->GetActionPoints()->HasActionsLeft())
 		{
 			SelectUnit(Candidate);
 			return;
@@ -381,26 +386,15 @@ void ATacticalPlayerController::SelectNextUnit()
 
 TArray<AUnitBase*> ATacticalPlayerController::GetSquad() const
 {
+	// Отряд = сторона игрока «как есть», включая мёртвых/раненых/эвакуированных:
+	// портреты HUD стабильны, слоты 1–4 не переиндексируются при потерях,
+	// заскриптованный Downed-союзник туториала получает портрет. Живость
+	// фильтруют места использования (SelectUnit, SelectNextUnit).
 	TArray<AUnitBase*> Squad;
 	const UTurnManagerSubsystem* TurnManager = GetWorld() ? GetWorld()->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
-	if (!TurnManager)
+	if (TurnManager)
 	{
-		return Squad;
-	}
-
-	// Отряд = юниты стороны игрока. До начала боя список пуст — собираем по TeamId.
-	if (TurnManager->IsInCombat())
-	{
-		AUnitBase* AnyPlayerUnit = nullptr;
-		for (TActorIterator<AUnitBase> It(GetWorld()); It; ++It)
-		{
-			if (It->GetGenericTeamId().GetId() == 1)
-			{
-				AnyPlayerUnit = *It;
-				break;
-			}
-		}
-		for (AActor* Unit : TurnManager->GetSideUnits(AnyPlayerUnit))
+		for (AActor* Unit : TurnManager->GetPlayerSideUnits())
 		{
 			if (AUnitBase* UnitBase = Cast<AUnitBase>(Unit))
 			{
@@ -434,6 +428,21 @@ void ATacticalPlayerController::HandleSelectPressed()
 		return;
 	}
 
+	// Режим прицеливания атаки (кнопка «Огонь»): клик по врагу — выстрел;
+	// любой другой клик снимает режим и обрабатывается как обычно.
+	if (bAwaitingAttackTarget)
+	{
+		bAwaitingAttackTarget = false;
+		if (AUnitBase* AttackTarget = Cast<AUnitBase>(Clicked))
+		{
+			if (AttackTarget->GetGenericTeamId().GetId() != 1)
+			{
+				TryAttackTarget(AttackTarget);
+				return;
+			}
+		}
+	}
+
 	if (AUnitBase* ClickedUnit = Cast<AUnitBase>(Clicked))
 	{
 		const bool bOwnUnit = ClickedUnit->GetGenericTeamId().GetId() == 1;
@@ -456,6 +465,7 @@ void ATacticalPlayerController::HandleSelectPressed()
 void ATacticalPlayerController::HandleCommandPressed()
 {
 	bAwaitingAbilityTarget = false;
+	bAwaitingAttackTarget = false;
 
 	FHitResult Hit;
 	if (GetHitResultUnderCursor(ECC_Visibility, false, Hit) && Hit.bBlockingHit)
@@ -500,9 +510,17 @@ void ATacticalPlayerController::TryMoveSelectedUnit(const FVector& Goal)
 		return;
 	}
 
+	// Точка в диске занятости другого юнита — выталкиваем на край (клик «в»
+	// стоящего бойца); не вытолкнулась (толпа) — приказ отклоняется.
+	FVector AdjustedGoal = Goal;
+	if (!UTacticsCombatStatics::AdjustGoalOutOfUnits(GetWorld(), SelectedUnit, AdjustedGoal))
+	{
+		return;
+	}
+
 	// Бюджет по ДЛИНЕ ПУТИ (не радиусу): 1 AP = MoveRange, 2 AP = 2×MoveRange.
 	const float PathLength = UTacticsCombatStatics::GetNavPathLength(
-		this, SelectedUnit->GetActorLocation(), Goal);
+		this, SelectedUnit->GetActorLocation(), AdjustedGoal);
 	if (PathLength < 0.f)
 	{
 		return; // путь не построился
@@ -528,7 +546,7 @@ void ATacticalPlayerController::TryMoveSelectedUnit(const FVector& Goal)
 		return;
 	}
 
-	if (UnitAI->MoveToLocation(Goal, /*AcceptanceRadius=*/50.f) == EPathFollowingRequestResult::RequestSuccessful)
+	if (UnitAI->MoveToLocation(AdjustedGoal, /*AcceptanceRadius=*/50.f) == EPathFollowingRequestResult::RequestSuccessful)
 	{
 		// AP списываем сразу (как XCOM), укрытие пересчитается в OnMoveCompleted.
 		ActionPoints->TrySpendActionPoint(Cost);
@@ -580,6 +598,18 @@ void ATacticalPlayerController::RequestEndTurn()
 		{
 			TurnManager->EndTurn();
 		}
+	}
+}
+
+void ATacticalPlayerController::RequestAttack()
+{
+	// Кнопка «Огонь» (GDD §6): включаем режим прицеливания — следующий ЛКМ
+	// по врагу стреляет. Сама валидация цели/AP — в GA_Attack по клику.
+	if (IsPlayerPhase() && SelectedUnit && !SelectedUnit->IsDowned() &&
+		SelectedUnit->GetActionPoints() && SelectedUnit->GetActionPoints()->HasActionsLeft())
+	{
+		bAwaitingAbilityTarget = false;
+		bAwaitingAttackTarget = true;
 	}
 }
 
@@ -637,29 +667,61 @@ void ATacticalPlayerController::RequestSkipUnitTurn()
 	}
 }
 
-void ATacticalPlayerController::RequestInteract()
+EInteractionKind ATacticalPlayerController::FindAvailableInteraction(
+	ABombObjective*& OutBomb, AEvacZone*& OutZone) const
 {
+	OutBomb = nullptr;
+	OutZone = nullptr;
+
 	if (!IsPlayerPhase() || !SelectedUnit || SelectedUnit->IsDowned())
 	{
-		return;
+		return EInteractionKind::None;
 	}
 
-	// Приоритет: бомба рядом → эвакуация в зоне.
 	for (TActorIterator<ABombObjective> It(GetWorld()); It; ++It)
 	{
-		if (It->TryDefuse(SelectedUnit))
+		if (It->CanDefuse(SelectedUnit))
 		{
-			return;
+			OutBomb = *It;
+			return EInteractionKind::DefuseBomb;
 		}
 	}
 	for (TActorIterator<AEvacZone> It(GetWorld()); It; ++It)
 	{
-		if (It->TryEvacuate(SelectedUnit))
+		if (It->CanEvacuate(SelectedUnit))
+		{
+			OutZone = *It;
+			return EInteractionKind::Evacuate;
+		}
+	}
+	return EInteractionKind::None;
+}
+
+EInteractionKind ATacticalPlayerController::GetAvailableInteraction() const
+{
+	ABombObjective* Bomb = nullptr;
+	AEvacZone* Zone = nullptr;
+	return FindAvailableInteraction(Bomb, Zone);
+}
+
+void ATacticalPlayerController::RequestInteract()
+{
+	ABombObjective* Bomb = nullptr;
+	AEvacZone* Zone = nullptr;
+	switch (FindAvailableInteraction(Bomb, Zone))
+	{
+	case EInteractionKind::DefuseBomb:
+		Bomb->TryDefuse(SelectedUnit);
+		break;
+	case EInteractionKind::Evacuate:
+		if (Zone->TryEvacuate(SelectedUnit))
 		{
 			// Эвакуированный выбор не имеет смысла — перейти к следующему бойцу.
 			SelectNextUnit();
-			return;
 		}
+		break;
+	default:
+		break;
 	}
 }
 
@@ -715,20 +777,27 @@ void ATacticalPlayerController::RefreshMoveRange()
 
 	// Во время выполнения приказа зона прячется: она устарела (юнит уже не там)
 	// и перестроится по остановке (PlayerTick ловит конец перемещения).
-	if (SelectedUnit && IsPlayerPhase() && !SelectedUnit->IsDowned() && !SelectedUnit->IsEvacuated()
-		&& !IsSelectedUnitMoving())
-	{
-		MoveRangeVisualizer->ShowForUnit(SelectedUnit);
-	}
-	else
+	const bool bShouldShow = SelectedUnit && IsPlayerPhase() && !SelectedUnit->IsDowned()
+		&& !SelectedUnit->IsEvacuated() && !IsSelectedUnitMoving();
+	if (!bShouldShow)
 	{
 		MoveRangeVisualizer->Hide();
+		return;
+	}
+
+	// Навмеш статичен — построение синхронное. false = юнит вне навмеша
+	// (нештатная ситуация уровня, а не гонка) — просто логируем.
+	if (!MoveRangeVisualizer->ShowForUnit(SelectedUnit))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[MoveRange] Зона не построилась: %s стоит вне навмеша"),
+			*GetNameSafe(SelectedUnit));
 	}
 }
 
 void ATacticalPlayerController::HandleTurnStarted(ETurnPhase Phase)
 {
 	bAwaitingAbilityTarget = false;
+	bAwaitingAttackTarget = false;
 
 	// Смена фазы: камера бросает сопровождение (нового скажет следующий делегат).
 	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
@@ -757,14 +826,7 @@ void ATacticalPlayerController::HandleTurnStarted(ETurnPhase Phase)
 		bInitialSquadFocusDone = true;
 	}
 
-	// Вырез навмеша выбранного бойца: в ход врага возвращаем (иначе вражеские
-	// пути пройдут сквозь него), в свою фазу снова снимаем — он действующий.
-	if (SelectedUnit)
-	{
-		SelectedUnit->SetNavObstacleEnabled(Phase != ETurnPhase::Player);
-	}
-
-	ScheduleMoveRangeRefresh();
+	RefreshMoveRange();
 	RefreshSelectionHighlight(); // кольцо: показать в свою фазу, скрыть в ход врага
 }
 
@@ -818,4 +880,14 @@ void ATacticalPlayerController::FocusCameraOnSquad(bool bInstant)
 void ATacticalPlayerController::HandleSelectedUnitAPChanged(int32 /*NewCurrent*/, int32 /*Max*/)
 {
 	RefreshMoveRange();
+}
+
+void ATacticalPlayerController::HandleSelectedUnitStateChanged()
+{
+	// Выбранный погиб или эвакуирован — выбор снимается: труп не принимает
+	// приказов, зона хода и кнопки не должны работать от его имени.
+	if (SelectedUnit && (SelectedUnit->IsDead() || SelectedUnit->IsEvacuated()))
+	{
+		SelectUnit(nullptr);
+	}
 }

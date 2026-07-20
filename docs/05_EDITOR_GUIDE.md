@@ -207,6 +207,10 @@ Manny с тёмным материалом, статы: BaseAim 65 / ShotDamage 
    Для ленты превью пути — `PathOneMaterial`/`PathDashMaterial` (те же цвета,
    но плотнее, ~0.8 альфы; пусто = возьмёт материалы зон). Параметры `CellSize`
    (шаг сетки, 50 см — меньше = глаже/дороже) и `PathWidth` — там же в дефолтах.
+   **Кайма зоны** (сглаженная XCOM-обводка по краю): рисуется автоматически;
+   ширина `BorderWidth` (10 см; 0 = выключить), сглаживание
+   `BorderSmoothIterations` (2), материалы `BorderOneMaterial`/`BorderTwoMaterial`
+   (пусто = материалы пути → зон; для чёткой линии сделай непрозрачные MI).
    Зона строится волновым Dijkstra по сетке сэмплов и рисуется гладким контуром
    (marching squares), путь — лентой по рельефу; всё по метрике валидации приказа.
 5. **GM_Tactics** от `ATacticsGameMode`: PlayerController = BP_TacticalPlayerController,

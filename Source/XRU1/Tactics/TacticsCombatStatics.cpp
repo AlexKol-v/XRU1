@@ -10,6 +10,7 @@
 #include "GenericTeamAgentInterface.h"
 #include "NavigationSystem.h"
 #include "NavigationPath.h"
+#include "EngineUtils.h"
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
 
@@ -270,4 +271,90 @@ float UTacticsCombatStatics::GetNavPathLength(UObject* WorldContextObject, const
 		return -1.f;
 	}
 	return Path->GetPathLength();
+}
+
+// --- Занятость (диски юнитов вместо мутаций навмеша) ---------------------------
+
+void UTacticsCombatStatics::GetUnitObstacles(UWorld* World, const AActor* Ignored, TArray<FVector>& OutPositions)
+{
+	OutPositions.Reset();
+	if (!World)
+	{
+		return;
+	}
+
+	for (TActorIterator<AUnitBase> It(World); It; ++It)
+	{
+		AUnitBase* Unit = *It;
+		if (Unit == Ignored || !IsUnitAlive(Unit))
+		{
+			continue;
+		}
+		// Бегущий юнит — переходное состояние: диск не ставим, по финишу
+		// AIController уведомит контроллер игрока и зона перестроится.
+		if (Unit->GetVelocity().SizeSquared2D() > 100.f)
+		{
+			continue;
+		}
+		OutPositions.Add(Unit->GetActorLocation());
+	}
+}
+
+bool UTacticsCombatStatics::IsLocationBlockedByUnit(UObject* WorldContextObject, const FVector& Location,
+	const AActor* Ignored)
+{
+	UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull) : nullptr;
+	TArray<FVector> Obstacles;
+	GetUnitObstacles(World, Ignored, Obstacles);
+	for (const FVector& Position : Obstacles)
+	{
+		if (FVector::DistSquared2D(Position, Location) < FMath::Square(UnitObstacleRadius))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool UTacticsCombatStatics::AdjustGoalOutOfUnits(UWorld* World, const AActor* Mover, FVector& InOutGoal)
+{
+	TArray<FVector> Obstacles;
+	GetUnitObstacles(World, Mover, Obstacles);
+
+	// Пара итераций: выталкивание из одного диска может вдавить в соседний.
+	for (int32 Iteration = 0; Iteration < 3; ++Iteration)
+	{
+		bool bMoved = false;
+		for (const FVector& Position : Obstacles)
+		{
+			const double Dist = FVector::Dist2D(Position, InOutGoal);
+			if (Dist >= UnitObstacleRadius)
+			{
+				continue;
+			}
+			// На край диска с зазором; клик точно в центр — в сторону ходящего.
+			FVector Away = InOutGoal - Position;
+			Away.Z = 0.;
+			if (!Away.Normalize())
+			{
+				Away = Mover ? (Mover->GetActorLocation() - Position).GetSafeNormal2D() : FVector::ForwardVector;
+			}
+			InOutGoal = Position + Away * (UnitObstacleRadius + 15.f);
+			bMoved = true;
+		}
+		if (!bMoved)
+		{
+			return true; // цель вне всех дисков
+		}
+	}
+
+	// Не разрулилось (плотная толпа) — проверяем финально.
+	for (const FVector& Position : Obstacles)
+	{
+		if (FVector::Dist2D(Position, InOutGoal) < UnitObstacleRadius)
+		{
+			return false;
+		}
+	}
+	return true;
 }

@@ -35,6 +35,13 @@ public:
 protected:
     virtual void NativeDestruct() override;
 
+    /**
+     * Актор-владелец HUD'а: аватар ASC, а до PossessedBy (аватар ещё не назначен) —
+     * владелец компонента. Единая точка для наследников, которым нужны компоненты
+     * юнита (AP, укрытие), а не атрибуты ASC. nullptr — ASC не привязан.
+     */
+    AActor* ResolveAvatarActor() const;
+
     /** Подписывается на изменения нужных атрибутов. Переопределяется наследниками. */
     virtual void BindDelegates() {}
 
