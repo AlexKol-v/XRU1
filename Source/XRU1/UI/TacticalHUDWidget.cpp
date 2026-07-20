@@ -243,6 +243,18 @@ void UTacticalHUDWidget::UpdateTargetPanel(AUnitBase* Hovered)
 	// нельзя, значит показывать огневое решение (шанс/укрытие) нечестно.
 	const ATacticalPlayerController* Controller = GetTacticalController();
 	const AUnitBase* Shooter = Controller ? Controller->GetSelectedUnit() : nullptr;
+
+	// В режиме прицеливания панель ведёт ВЗЯТАЯ НА ПРИЦЕЛ цель (Tab/клик), а не
+	// случайный ховер: как в XCOM, где решение по стрельбе привязано к выбранной
+	// цели, а не к тому, над чем сейчас мышь.
+	if (Controller && Controller->IsTargetingAttack())
+	{
+		if (AUnitBase* Aimed = Controller->GetCurrentAttackTarget())
+		{
+			Hovered = Aimed;
+		}
+	}
+
 	const bool bEnemyHovered = Hovered && Shooter && Controller->IsPlayerPhase() &&
 		!GetSquad().Contains(Hovered);
 	if (!bEnemyHovered)
@@ -307,6 +319,19 @@ void UTacticalHUDWidget::UpdateTargetPanel(AUnitBase* Hovered)
 
 	// HitTestInvisible: панель информационная, клики мыши по миру не перехватывает.
 	TargetPanel->SetVisibility(ESlateVisibility::HitTestInvisible);
+}
+
+void UTacticalHUDWidget::UpdateTargetingBanner()
+{
+	const ATacticalPlayerController* Controller = GetTacticalController();
+	const bool bTargeting = Controller && Controller->IsTargetingAttack();
+
+	if (TargetingBanner)
+	{
+		TargetingBanner->SetVisibility(bTargeting
+			? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+	}
+	OnTargetingModeChanged(bTargeting);
 }
 
 // --- Карточки отряда (XCOM-стиль) -------------------------------------------------
@@ -474,6 +499,8 @@ void UTacticalHUDWidget::HandleTurnStarted(ETurnPhase Phase)
 
 	// Смена фазы меняет и право стрелять: панель цели под курсором должна
 	// исчезнуть на ход врага и вернуться в наш (курсор мог не двигаться).
+	// Прицеливание фаза тоже сбрасывает — баннер обязан погаснуть.
+	UpdateTargetingBanner();
 	if (const ATacticalPlayerController* Controller = GetTacticalController())
 	{
 		UpdateTargetPanel(Controller->GetHoveredUnit());
@@ -531,8 +558,10 @@ void UTacticalHUDWidget::HandleTurnLimitChanged()
 void UTacticalHUDWidget::HandleAvailableActionsChanged()
 {
 	// Боец добежал: у бомбы/зоны эвакуации ожила кнопка F, а шанс попадания
-	// по цели под курсором считается уже с новой позиции.
+	// по цели под курсором считается уже с новой позиции. Этот же сигнал шлёт
+	// контроллер при входе/смене/выходе прицеливания — обновляем баннер и панель.
 	RefreshActionButtons();
+	UpdateTargetingBanner();
 	if (const ATacticalPlayerController* Controller = GetTacticalController())
 	{
 		UpdateTargetPanel(Controller->GetHoveredUnit());

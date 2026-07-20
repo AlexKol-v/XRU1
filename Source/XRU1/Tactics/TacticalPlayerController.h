@@ -137,6 +137,46 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Tactics|Control")
 	AUnitBase* GetHoveredUnit() const { return HoveredUnit.Get(); }
 
+	// --- Прицеливание по-XCOM'овски: список целей, Tab, кадр камеры -----------
+
+	/**
+	 * Враги, по которым выбранный боец МОЖЕТ выстрелить прямо сейчас
+	 * (`UGA_Attack::CanTargetActor` — дальность + LOS/Squadsight), отсортированы
+	 * по дальности. Ровно этот список листает Tab и показывает HUD.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Control")
+	TArray<AUnitBase*> GetAttackTargets() const;
+
+	/**
+	 * Взятая на прицел цель (в режиме «Огонь»). HUD показывает шанс именно по
+	 * ней, а не по случайному наведению мышью, — как в XCOM, где панель цели
+	 * привязана к ВЫБРАННОЙ цели, а не к курсору.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Control")
+	AUnitBase* GetCurrentAttackTarget() const { return CurrentAttackTarget.Get(); }
+
+	/**
+	 * Переключить цель (Tab / Q-E): Direction > 0 — следующая, < 0 — предыдущая.
+	 * Камера берёт новую цель в кадр. Вне режима прицеливания ничего не делает.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Control")
+	void CycleAttackTarget(int32 Direction = 1);
+
+	/** Выйти из режима прицеливания (ПКМ/Esc/клик мимо) и вернуть камеру бойцу. */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Control")
+	void CancelTargeting();
+
+	/** Выстрелить по взятой на прицел цели (подтверждение: ЛКМ по ней или Enter). */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Control")
+	void ConfirmAttack();
+
+	/**
+	 * Показать выстрел камерой (кадр «из-за плеча» на время выстрела). Зовут и
+	 * атака игрока, и AI врага — иначе игрок не видит, в кого стреляет враг.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Control")
+	void NotifyShotFired(AActor* Shooter, AActor* Target);
+
 	/**
 	 * Какая контекстная интеракция (F) доступна выбранному юниту прямо сейчас:
 	 * бомба рядом → эвакуация в зоне → ничего. Для текста/серости кнопки HUD.
@@ -285,6 +325,14 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Tactics|Control")
 	bool bAutoSelectUnits = true;
 
+	/**
+	 * Автоматически завершать ход игрока, когда AP не осталось НИ У КОГО из
+	 * отряда (XCOM-темп: не заставляем жать «Завершить ход» вручную). Выключить
+	 * в BP, если нужен явный контроль конца хода.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|Control")
+	bool bAutoEndTurnWhenExhausted = true;
+
 	/** Ширина зоны edge scroll от края вьюпорта, px. */
 	UPROPERTY(EditDefaultsOnly, Category = "Tactics|Control", meta = (ClampMin = "2", ClampMax = "100"))
 	float EdgeScrollMarginPx = 16.f;
@@ -305,6 +353,26 @@ protected:
 
 	/** Ждём клик по цели атаки (нажата кнопка «Огонь»). */
 	bool bAwaitingAttackTarget = false;
+
+	/** Взятая на прицел цель в режиме «Огонь» (Tab листает, HUD показывает шанс по ней). */
+	TWeakObjectPtr<AUnitBase> CurrentAttackTarget;
+
+	/**
+	 * Общий вход в режим прицеливания: собирает цели, берёт первую (или ближайшую
+	 * к курсору) на прицел, наводит камеру. false — целей нет (в режим не входим,
+	 * кнопка «Огонь» гаснет). Зовут кнопка «Огонь» и хоткей.
+	 */
+	bool BeginAttackTargeting();
+
+	/** Взять КОНКРЕТНУЮ цель на прицел: запомнить и навести на неё кадр камеры. */
+	void SetAttackTarget(AUnitBase* Target);
+
+	/**
+	 * Если AP не осталось ни у кого из отряда и никто не бежит — завершить ход
+	 * (авто-переход к врагу). Зовётся из точек, где AP только что кончились.
+	 * Ничего не делает, пока хоть один боец может действовать или ещё в пути.
+	 */
+	void TryAutoEndTurn();
 
 	/** Последняя точка превью пути (троттлинг перзапроса FindPath). */
 	FVector LastPathPreviewGoal = FVector(TNumericLimits<float>::Max());

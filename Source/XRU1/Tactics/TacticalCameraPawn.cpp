@@ -49,8 +49,9 @@ void ATacticalCameraPawn::AddPanInput(const FVector2D& Input)
 		return;
 	}
 
-	// Ручная панорама разрывает автофокус/следование (как в XCOM).
+	// Ручная панорама разрывает автофокус/следование и кадр выстрела (как в XCOM).
 	ClearFollowTarget();
+	AbandonShotFraming();
 	bHasFocusGoal = false;
 
 	// Направления берём от текущего yaw камеры, движение — в плоскости земли.
@@ -154,10 +155,93 @@ void ATacticalCameraPawn::Tick(float DeltaSeconds)
 		const FVector Goal(FocusGoal.X, FocusGoal.Y, Current.Z);
 		SetActorLocation(FMath::VInterpTo(Current, Goal, DeltaSeconds, FocusInterpSpeed));
 
-		// Долетели и никого не сопровождаем — фокус завершён.
-		if (!FollowTarget.IsValid() && FVector::DistSquared2D(GetActorLocation(), Goal) < 25.f)
+		// Долетели и никого не сопровождаем — фокус завершён. В кадре выстрела
+		// фокус НЕ гасим: кадр держит точку смотрения до самого выхода.
+		if (!FollowTarget.IsValid() && !bShotFraming && FVector::DistSquared2D(GetActorLocation(), Goal) < 25.f)
 		{
 			bHasFocusGoal = false;
 		}
 	}
+
+	// Кадр выстрела с конечной длительностью сам себя снимает.
+	if (bShotFraming && ShotFrameTimeLeft >= 0.f)
+	{
+		ShotFrameTimeLeft -= DeltaSeconds;
+		if (ShotFrameTimeLeft <= 0.f)
+		{
+			ClearShotFraming();
+		}
+	}
+}
+
+// --- Кадр выстрела / прицеливания (XCOM) --------------------------------------------
+
+void ATacticalCameraPawn::FrameShot(const AActor* Shooter, const AActor* Target)
+{
+	EnterShotFraming(Shooter, Target, -1.f); // держим до ClearShotFraming
+}
+
+void ATacticalCameraPawn::FrameShotForDuration(const AActor* Shooter, const AActor* Target, float Duration)
+{
+	EnterShotFraming(Shooter, Target, Duration > 0.f ? Duration : ShotFrameDuration);
+}
+
+void ATacticalCameraPawn::EnterShotFraming(const AActor* Shooter, const AActor* Target, float Duration)
+{
+	if (!Shooter || !Target)
+	{
+		return;
+	}
+
+	// Прежние поворот и зум запоминаем ОДИН раз за вход в кадр: повторный
+	// FrameShot (переключение цели табом) не должен затирать их уже кадровыми
+	// значениями — иначе после выхода игрок останется в наезде навсегда.
+	if (!bShotFraming)
+	{
+		PreShotYaw = TargetYaw;
+		PreShotZoom = TargetZoom;
+	}
+	bShotFraming = true;
+	ShotFrameTimeLeft = Duration;
+
+	// Камера смотрит вдоль оси стрелок→цель, но с доворотом: строго по оси цель
+	// закрыта спиной стрелка. Пружина тянется НАЗАД от точки смотрения, поэтому
+	// нужный yaw — это направление взгляда.
+	const FVector ShooterLocation = Shooter->GetActorLocation();
+	const FVector TargetLocation = Target->GetActorLocation();
+	FVector Axis = TargetLocation - ShooterLocation;
+	Axis.Z = 0.f;
+	if (Axis.Normalize())
+	{
+		TargetYaw = Axis.Rotation().Yaw + ShotFrameYawOffset;
+	}
+
+	TargetZoom = FMath::Clamp(ShotFrameZoom, MinZoom, MaxZoom);
+
+	// Точка смотрения между бойцами со смещением к цели; следование за бегущим
+	// на время кадра снимаем — иначе оно перетянет фокус на себя.
+	FollowTarget = nullptr;
+	FocusGoal = FMath::Lerp(ShooterLocation, TargetLocation, ShotFrameTargetBias);
+	bHasFocusGoal = true;
+}
+
+void ATacticalCameraPawn::AbandonShotFraming()
+{
+	bShotFraming = false;
+	ShotFrameTimeLeft = -1.f;
+}
+
+void ATacticalCameraPawn::ClearShotFraming()
+{
+	if (!bShotFraming)
+	{
+		return;
+	}
+	bShotFraming = false;
+	ShotFrameTimeLeft = -1.f;
+
+	// Возвращаем ракурс игрока: точку смотрения оставляем где есть (камера уже
+	// «на месте события» — дёргать её обратно через полкарты было бы хуже).
+	TargetYaw = PreShotYaw;
+	TargetZoom = PreShotZoom;
 }

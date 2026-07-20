@@ -53,6 +53,41 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
 	void ClearFollowTarget();
 
+	/**
+	 * КАДР ПРИЦЕЛИВАНИЯ (XCOM): камера разворачивается вдоль оси стрелок→цель и
+	 * наезжает, чтобы читались обе фигуры. Держится, пока не позвали
+	 * ClearShotFraming — им пользуется режим выбора цели.
+	 *
+	 * Точку смотрения смещаем к ЦЕЛИ (ShotFrameTargetBias): игроку важнее видеть,
+	 * в кого он стреляет и в каком та укрытии, чем собственную спину.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
+	void FrameShot(const AActor* Shooter, const AActor* Target);
+
+	/**
+	 * То же, но на время (сек): кадр самого выстрела — держится, пока летит
+	 * пуля и играет реакция, затем камера сама возвращает прежние поворот и
+	 * зум. Зовётся и для выстрела игрока, и для выстрела врага — иначе игрок
+	 * не видит, в кого враг стреляет.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
+	void FrameShotForDuration(const AActor* Shooter, const AActor* Target, float Duration);
+
+	/** Снимает кадр прицеливания и возвращает прежние поворот/зум. */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
+	void ClearShotFraming();
+
+	UFUNCTION(BlueprintPure, Category = "Tactics|Camera")
+	bool IsFramingShot() const { return bShotFraming; }
+
+	/**
+	 * Бросить кадр БЕЗ возврата прежнего ракурса — на смену фазы/ручной ввод.
+	 * ClearShotFraming вернул бы поворот/зум и тем самым перечеркнул новое
+	 * состояние камеры, которое как раз и наступает.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
+	void AbandonShotFraming();
+
 	// --- Дизайнерские параметры ----------------------------------------------
 
 	/** Скорость панорамирования (см/сек на единицу ввода). */
@@ -81,6 +116,30 @@ public:
 	/** Шаг зума за тик колеса, см. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera")
 	float ZoomStep = 300.f;
+
+	// --- Кадр выстрела/прицеливания (XCOM) ------------------------------------
+
+	/** Длина пружины в кадре выстрела (см) — наезд. Зажимается в [MinZoom, MaxZoom]. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot")
+	float ShotFrameZoom = 900.f;
+
+	/**
+	 * Насколько точка смотрения смещена от стрелка к цели (0 — на стрелке,
+	 * 1 — на цели). Чуть за середину: в кадре обе фигуры, но цель крупнее.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "0", ClampMax = "1"))
+	float ShotFrameTargetBias = 0.65f;
+
+	/**
+	 * Доворот камеры от оси стрелок→цель (град). Строго вдоль оси цель
+	 * закрывается спиной стрелка — уводим вбок, получая ракурс «из-за плеча».
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot")
+	float ShotFrameYawOffset = 35.f;
+
+	/** Сколько держать кадр самого выстрела по умолчанию (сек). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "0"))
+	float ShotFrameDuration = 1.6f;
 
 	/**
 	 * Post-process материал обводки юнитов (M_OutlinePP: edge-detect по Custom
@@ -116,4 +175,19 @@ protected:
 	/** Точка, к которой камера летит (валидна при bHasFocusGoal). */
 	FVector FocusGoal = FVector::ZeroVector;
 	bool bHasFocusGoal = false;
+
+	// --- Кадр выстрела --------------------------------------------------------
+
+	/** Камера сейчас в кадре выстрела/прицеливания. */
+	bool bShotFraming = false;
+
+	/** Остаток времени кадра (< 0 — держать до ClearShotFraming). */
+	float ShotFrameTimeLeft = -1.f;
+
+	/** Поворот и зум ДО кадра — вернём их по выходу (игрок не теряет свой ракурс). */
+	float PreShotYaw = 45.f;
+	float PreShotZoom = 1800.f;
+
+	/** Общая часть FrameShot/FrameShotForDuration. */
+	void EnterShotFraming(const AActor* Shooter, const AActor* Target, float Duration);
 };

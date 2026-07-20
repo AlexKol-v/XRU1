@@ -5,6 +5,7 @@
 #include "CoverDetectionComponent.h"
 #include "TacticalAbility.h"
 #include "TacticalCameraPawn.h"
+#include "GA_Attack.h"
 #include "MoveRangeVisualizer.h"
 #include "MissionObjectives.h"
 #include "TacticsCombatStatics.h"
@@ -162,11 +163,13 @@ void ATacticalPlayerController::PlayerTick(float DeltaTime)
 		}
 
 		// Отложенный XCOM-автопереход: бегун потратил последние AP — теперь,
-		// когда он остановился, выбор уходит следующему бойцу с AP.
+		// когда он остановился, выбор уходит следующему бойцу с AP, а если
+		// такого нет — ход автоматически завершается (переходит врагу).
 		if (bAutoSelectUnits && IsPlayerPhase() && SelectedUnit &&
 			SelectedUnit->GetActionPoints() && !SelectedUnit->GetActionPoints()->HasActionsLeft())
 		{
 			SelectNextUnit();
+			TryAutoEndTurn();
 		}
 	}
 	bSelectedUnitWasMoving = bMovingNow;
@@ -329,8 +332,18 @@ void ATacticalPlayerController::SelectUnit(AUnitBase* Unit)
 		SelectedUnit->SetSelectionHighlight(false);
 	}
 
+	// Смена бойца снимает прицеливание вместе с кадром камеры: прицел старого
+	// бойца к новому не относится (камера уедет к нему ниже через FocusOnActor).
+	if (bAwaitingAttackTarget)
+	{
+		if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+		{
+			Camera->ClearShotFraming();
+		}
+	}
 	bAwaitingAbilityTarget = false;
 	bAwaitingAttackTarget = false;
+	CurrentAttackTarget = nullptr;
 	SelectedUnit = Unit;
 
 	if (SelectedUnit)
@@ -380,6 +393,14 @@ void ATacticalPlayerController::SelectUnitBySlot(int32 SlotIndex)
 
 void ATacticalPlayerController::SelectNextUnit()
 {
+	// Tab в режиме прицеливания листает ЦЕЛИ, а не бойцов (XCOM): игрок выбирает,
+	// в кого стрелять, а не меняет активного юнита посреди прицеливания.
+	if (bAwaitingAttackTarget)
+	{
+		CycleAttackTarget(1);
+		return;
+	}
+
 	const TArray<AUnitBase*> Squad = GetSquad();
 	if (Squad.Num() == 0)
 	{
@@ -480,19 +501,27 @@ void ATacticalPlayerController::HandleSelectPressed()
 		return;
 	}
 
-	// Режим прицеливания атаки (кнопка «Огонь»): клик по врагу — выстрел;
-	// любой другой клик снимает режим и обрабатывается как обычно.
+	// Режим прицеливания атаки (кнопка «Огонь»): клик по врагу-цели — выстрел.
+	// Клик по ДРУГОМУ достижимому врагу — переводит прицел на него (как ховер в
+	// XCOM), а не стреляет сразу; клик мимо — выходит из режима.
 	if (bAwaitingAttackTarget)
 	{
-		bAwaitingAttackTarget = false;
-		if (AUnitBase* AttackTarget = Cast<AUnitBase>(Clicked))
+		if (AUnitBase* ClickedEnemy = Cast<AUnitBase>(Clicked))
 		{
-			if (AttackTarget->GetGenericTeamId().GetId() != 1)
+			if (ClickedEnemy->GetGenericTeamId().GetId() != 1)
 			{
-				TryAttackTarget(AttackTarget);
+				if (ClickedEnemy == CurrentAttackTarget.Get())
+				{
+					ConfirmAttack();
+				}
+				else if (UGA_Attack::CanTargetActor(SelectedUnit, ClickedEnemy))
+				{
+					SetAttackTarget(ClickedEnemy); // навёл на другого — берём его на прицел
+				}
 				return;
 			}
 		}
+		CancelTargeting(); // клик мимо врагов — выходим из прицеливания
 	}
 
 	if (AUnitBase* ClickedUnit = Cast<AUnitBase>(Clicked))
@@ -518,8 +547,13 @@ void ATacticalPlayerController::HandleSelectPressed()
 
 void ATacticalPlayerController::HandleCommandPressed()
 {
-	bAwaitingAbilityTarget = false;
-	bAwaitingAttackTarget = false;
+	// В режиме прицеливания ПКМ = отмена (XCOM), а не приказ на движение:
+	// иначе игрок, передумав стрелять, случайно гнал бы бойца под клик.
+	if (bAwaitingAttackTarget || bAwaitingAbilityTarget)
+	{
+		CancelTargeting();
+		return;
+	}
 
 	FHitResult Hit;
 	if (GetHitResultUnderCursor(ECC_Visibility, false, Hit) && Hit.bBlockingHit)
@@ -645,6 +679,15 @@ void ATacticalPlayerController::HandleAbilityTargetClick(AActor* ClickedActor)
 
 void ATacticalPlayerController::RequestEndTurn()
 {
+	// В режиме прицеливания Enter = «выстрелить по выбранной цели», а не
+	// «завершить ход» (XCOM: подтверждение выстрела). Атака способностью с целью
+	// подтверждается кликом — там Enter оставляем на завершение хода.
+	if (bAwaitingAttackTarget)
+	{
+		ConfirmAttack();
+		return;
+	}
+
 	if (IsPlayerPhase())
 	{
 		if (UTurnManagerSubsystem* TurnManager = GetWorld()->GetSubsystem<UTurnManagerSubsystem>())
@@ -656,13 +699,168 @@ void ATacticalPlayerController::RequestEndTurn()
 
 void ATacticalPlayerController::RequestAttack()
 {
-	// Кнопка «Огонь» (GDD §6): включаем режим прицеливания — следующий ЛКМ
-	// по врагу стреляет. Сама валидация цели/AP — в GA_Attack по клику.
+	// Кнопка «Огонь» / хоткей (GDD §6): вход в режим прицеливания. Дальше цель
+	// листается Tab'ом, подтверждается ЛКМ по ней или Enter. Если целей нет —
+	// в режим не входим (кнопка «Огонь» и так серая по HasAnyValidTarget).
 	if (IsPlayerPhase() && SelectedUnit && !SelectedUnit->IsDowned() &&
 		SelectedUnit->GetActionPoints() && SelectedUnit->GetActionPoints()->HasActionsLeft())
 	{
 		bAwaitingAbilityTarget = false;
-		bAwaitingAttackTarget = true;
+		BeginAttackTargeting();
+	}
+}
+
+// --- Прицеливание по-XCOM'овски ----------------------------------------------------
+
+TArray<AUnitBase*> ATacticalPlayerController::GetAttackTargets() const
+{
+	TArray<AUnitBase*> Targets;
+	if (!SelectedUnit)
+	{
+		return Targets;
+	}
+
+	const UTurnManagerSubsystem* TurnManager = GetWorld() ? GetWorld()->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
+	if (!TurnManager)
+	{
+		return Targets;
+	}
+
+	for (AActor* Enemy : TurnManager->GetOpposingUnits(SelectedUnit))
+	{
+		AUnitBase* EnemyUnit = Cast<AUnitBase>(Enemy);
+		if (EnemyUnit && UGA_Attack::CanTargetActor(SelectedUnit, EnemyUnit))
+		{
+			Targets.Add(EnemyUnit);
+		}
+	}
+
+	// По дальности от стрелка — стабильный, читаемый порядок обхода Tab'ом.
+	const FVector Origin = SelectedUnit->GetActorLocation();
+	Targets.Sort([Origin](const AUnitBase& A, const AUnitBase& B)
+	{
+		return FVector::DistSquared(Origin, A.GetActorLocation()) <
+			FVector::DistSquared(Origin, B.GetActorLocation());
+	});
+	return Targets;
+}
+
+bool ATacticalPlayerController::BeginAttackTargeting()
+{
+	const TArray<AUnitBase*> Targets = GetAttackTargets();
+	if (Targets.Num() == 0)
+	{
+		return false;
+	}
+
+	bAwaitingAttackTarget = true;
+
+	// На прицел — ближайшую к курсору цель, если курсор на достижимом враге,
+	// иначе первую (ближайшую к стрелку): игрок часто уже навёлся на нужного.
+	AUnitBase* Initial = Targets[0];
+	if (AUnitBase* Hovered = HoveredUnit.Get())
+	{
+		if (Targets.Contains(Hovered))
+		{
+			Initial = Hovered;
+		}
+	}
+	SetAttackTarget(Initial);
+	OnAvailableActionsChanged.Broadcast(); // HUD: показать баннер/панель цели
+	return true;
+}
+
+void ATacticalPlayerController::SetAttackTarget(AUnitBase* Target)
+{
+	CurrentAttackTarget = Target;
+	if (Target)
+	{
+		if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+		{
+			Camera->FrameShot(SelectedUnit, Target); // кадр держится, пока целимся
+		}
+	}
+	OnAvailableActionsChanged.Broadcast(); // HUD пересчитает панель цели
+}
+
+void ATacticalPlayerController::CycleAttackTarget(int32 Direction)
+{
+	if (!bAwaitingAttackTarget)
+	{
+		return;
+	}
+	const TArray<AUnitBase*> Targets = GetAttackTargets();
+	if (Targets.Num() == 0)
+	{
+		CancelTargeting();
+		return;
+	}
+
+	const int32 CurrentIndex = Targets.IndexOfByKey(CurrentAttackTarget.Get());
+	const int32 Step = (Direction >= 0) ? 1 : -1;
+	// Если текущей цели в списке нет (умерла/ушла из LOS) — начинаем с 0.
+	const int32 Base = (CurrentIndex == INDEX_NONE) ? 0 : CurrentIndex + Step;
+	const int32 NextIndex = ((Base % Targets.Num()) + Targets.Num()) % Targets.Num();
+	SetAttackTarget(Targets[NextIndex]);
+}
+
+void ATacticalPlayerController::CancelTargeting()
+{
+	const bool bWasTargeting = bAwaitingAttackTarget || bAwaitingAbilityTarget;
+	bAwaitingAttackTarget = false;
+	bAwaitingAbilityTarget = false;
+	CurrentAttackTarget = nullptr;
+
+	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+	{
+		Camera->ClearShotFraming();
+		if (SelectedUnit)
+		{
+			Camera->FocusOnActor(SelectedUnit); // вернуть камеру к бойцу
+		}
+	}
+	if (bWasTargeting)
+	{
+		OnAvailableActionsChanged.Broadcast(); // HUD: убрать баннер прицеливания
+	}
+}
+
+void ATacticalPlayerController::ConfirmAttack()
+{
+	AUnitBase* Target = CurrentAttackTarget.Get();
+	if (!bAwaitingAttackTarget || !Target)
+	{
+		return;
+	}
+	// Цель могла выйти из зоны поражения, пока целились (сдвиг мира скриптом).
+	if (!UGA_Attack::CanTargetActor(SelectedUnit, Target))
+	{
+		return;
+	}
+
+	bAwaitingAttackTarget = false;
+	CurrentAttackTarget = nullptr;
+
+	// Переводим ДЕРЖАЩИЙСЯ кадр прицеливания в таймерный ДО отправки события:
+	// если выстрел не состоится (способность откажет по AP — ResolveShot не
+	// дойдёт до NotifyShotFired), бесконечный кадр иначе застрял бы навсегда.
+	// Состоявшийся выстрел просто переустановит тот же таймер в ResolveShot.
+	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+	{
+		Camera->FrameShotForDuration(SelectedUnit, Target, /*Duration=*/-1.f);
+	}
+
+	TryAttackTarget(Target); // событие Event.Attack; кадр выстрела — в NotifyShotFired
+	OnAvailableActionsChanged.Broadcast();
+}
+
+void ATacticalPlayerController::NotifyShotFired(AActor* Shooter, AActor* Target)
+{
+	// Кадр самого выстрела — на время полёта пули/реакции, и для игрока, и для
+	// врага. Держим ограниченное время: по выходу камера вернёт ракурс сама.
+	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+	{
+		Camera->FrameShotForDuration(Shooter, Target, /*Duration=*/-1.f);
 	}
 }
 
@@ -787,6 +985,13 @@ void ATacticalPlayerController::RequestInteract()
 
 void ATacticalPlayerController::RequestPause()
 {
+	// Esc сперва гасит режим прицеливания (XCOM), и только «в пустоте» — пауза.
+	if (bAwaitingAttackTarget || bAwaitingAbilityTarget)
+	{
+		CancelTargeting();
+		return;
+	}
+
 	if (!PauseMenuClass)
 	{
 		return;
@@ -814,9 +1019,19 @@ void ATacticalPlayerController::HandleCameraPan(const FInputActionValue& Value)
 
 void ATacticalPlayerController::HandleCameraRotate(const FInputActionValue& Value)
 {
+	const float Direction = Value.Get<float>();
+
+	// Q/E в режиме прицеливания листают ЦЕЛИ, а не крутят камеру (XCOM): пока
+	// целимся, вся навигация — по врагам. Камера и так стоит в кадре выстрела.
+	if (bAwaitingAttackTarget && !FMath::IsNearlyZero(Direction))
+	{
+		CycleAttackTarget(Direction > 0.f ? 1 : -1);
+		return;
+	}
+
 	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
 	{
-		Camera->AddRotationStep(Value.Get<float>());
+		Camera->AddRotationStep(Direction);
 	}
 }
 
@@ -858,10 +1073,12 @@ void ATacticalPlayerController::HandleTurnStarted(ETurnPhase Phase)
 {
 	bAwaitingAbilityTarget = false;
 	bAwaitingAttackTarget = false;
+	CurrentAttackTarget = nullptr;
 
 	// Смена фазы: камера бросает сопровождение (нового скажет следующий делегат).
 	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
 	{
+		Camera->AbandonShotFraming(); // прицел прошлой фазы к новой не относится
 		Camera->ClearFollowTarget();
 
 		// Начало нашего хода: вернуть камеру к выбранному бойцу или к отряду.
@@ -970,6 +1187,41 @@ void ATacticalPlayerController::HandleSelectedUnitAPChanged(int32 NewCurrent, in
 	if (NewCurrent == 0 && bAutoSelectUnits && IsPlayerPhase() && !IsSelectedUnitMoving())
 	{
 		SelectNextUnit();
+		TryAutoEndTurn(); // если следующего с AP не нашлось — авто-конец хода
+	}
+}
+
+void ATacticalPlayerController::TryAutoEndTurn()
+{
+	if (!bAutoEndTurnWhenExhausted || !IsPlayerPhase())
+	{
+		return;
+	}
+	// Пока кто-то ещё бежит, ход не завершаем: последний AP мог уйти на движение,
+	// и юнит ещё в пути (его действие фактически не закончилось).
+	if (IsSelectedUnitMoving())
+	{
+		return;
+	}
+
+	for (AUnitBase* Unit : GetSquad())
+	{
+		if (Unit && UTacticsCombatStatics::IsUnitAlive(Unit) &&
+			Unit->GetActionPoints() && Unit->GetActionPoints()->HasActionsLeft())
+		{
+			return; // есть кому ходить — ход не заканчиваем
+		}
+		// Юнит в пути (тратит последний AP на движение) — дождёмся его финиша.
+		if (Unit && UTacticsCombatStatics::IsUnitInTransit(Unit))
+		{
+			return;
+		}
+	}
+
+	// Ни у кого нет AP и никто не бежит — ход автоматически уходит врагу.
+	if (UTurnManagerSubsystem* TurnManager = GetWorld()->GetSubsystem<UTurnManagerSubsystem>())
+	{
+		TurnManager->EndTurn();
 	}
 }
 

@@ -97,6 +97,13 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UHorizontalBox> ActionsPanel;
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UHorizontalBox> SquadPanel;
 
+	/**
+	 * Баннер режима прицеливания (P0): «ВЫБЕРИТЕ ЦЕЛЬ · Tab — след. · ЛКМ/Enter —
+	 * огонь · ПКМ/Esc — отмена». Опциональный виджет в Designer; C++ лишь
+	 * показывает/прячет его по режиму. Нет виджета — работает и без него.
+	 */
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UWidget> TargetingBanner;
+
 	// Панель цели у курсора (центр-право).
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UWidget> TargetPanel;
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UTextBlock> TargetNameText;
@@ -130,6 +137,14 @@ protected:
 	/** Смена юнита под курсором (панель цели: HP + «Попадание: N%»; nullptr — спрятать). */
 	UFUNCTION(BlueprintImplementableEvent, Category = "HUD")
 	void OnHoveredUnitChanged(AUnitBase* Hovered);
+
+	/**
+	 * Вход/выход в режим прицеливания (кнопка «Огонь»). Для BP-подачи: сменить
+	 * курсор, подсветить цель иначе, анимировать баннер. C++ уже показал/спрятал
+	 * TargetingBanner — это хук для доп. оформления.
+	 */
+	UFUNCTION(BlueprintImplementableEvent, Category = "HUD")
+	void OnTargetingModeChanged(bool bTargeting);
 
 	/**
 	 * Любой юнит боя сменил состояние (смерть/ранение/подъём/эвакуация).
@@ -186,6 +201,9 @@ private:
 
 	/** Панель цели у курсора: показать по врагу при выбранном бойце, иначе спрятать. */
 	void UpdateTargetPanel(AUnitBase* Hovered);
+
+	/** Баннер прицеливания: показать/спрятать по режиму «Огонь» + BP-хук. */
+	void UpdateTargetingBanner();
 
 	/** XCOM-стиль: скрыть карточки всех, кроме выбранного (см. bShowOnlySelectedCard). */
 	void UpdateSquadCardVisibility(AUnitBase* Selected);
