@@ -39,3 +39,20 @@ enum class EInteractionKind : uint8
 	DefuseBomb UMETA(DisplayName = "Обезвредить заряд"),
 	Evacuate   UMETA(DisplayName = "Эвакуация")
 };
+
+/**
+ * Почему юнит не может атаковать конкретную цель прямо сейчас (или может —
+ * Valid). Раньше и «слишком далеко», и «нет линии огня» схлопывались в один
+ * bool/-1, из-за чего HUD всегда писал «Нет линии огня» даже при реальной
+ * причине «дальность» — эта детализация фиксит именно это (панель цели,
+ * серость AttackBtn).
+ */
+UENUM(BlueprintType)
+enum class EAttackTargetStatus : uint8
+{
+	Valid          UMETA(DisplayName = "Можно стрелять"),
+	NotHostile     UMETA(DisplayName = "Не враг"),
+	Dead           UMETA(DisplayName = "Цель мертва"),
+	OutOfRange     UMETA(DisplayName = "Слишком далеко"),
+	NoLineOfSight  UMETA(DisplayName = "Нет линии огня")
+};

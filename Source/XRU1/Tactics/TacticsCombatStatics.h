@@ -52,6 +52,13 @@ public:
 	static bool ResolveShot(AActor* Shooter, AActor* Target, float BaseHitChance, float Damage,
 		TSubclassOf<UGameplayEffect> DamageEffectClass);
 
+	/**
+	 * Дальность визуального контакта отряда (см): на неё смотрят Squadsight
+	 * снайпера и «видит ли отряд действующего врага» для камеры. Один порог на
+	 * оба случая — иначе камера и правила стрельбы расходятся.
+	 */
+	static constexpr float SquadVisionRange = 2500.f;
+
 	/** Есть ли прямая линия видимости между юнитами (трейс по Visibility). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Combat")
 	static bool HasLineOfSight(const AActor* Viewer, const AActor* Target);
@@ -69,15 +76,33 @@ public:
 
 	/**
 	 * Точка на пути по навмешу от Start до Goal, не дальше PathBudget по длине
-	 * пути (обрезка хода юнита бюджетом AP). false — путь не построился.
+	 * пути (обрезка хода юнита бюджетом AP). Путь дополнительно УСЕКАЕТСЯ там,
+	 * где бегущий не протиснется мимо стоящего юнита (навмеш о них не знает) —
+	 * не отказ, а «дойти насколько можно»: иначе AI впустую пропускал бы ход,
+	 * упёршись в союзника. false — путь вообще не построился.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Combat", meta = (WorldContext = "WorldContextObject"))
-	static bool GetPointAlongPathBudget(UObject* WorldContextObject, const FVector& Start,
+	static bool GetPointAlongPathBudget(UObject* WorldContextObject, const AActor* Mover, const FVector& Start,
 		const FVector& Goal, float PathBudget, FVector& OutPoint);
 
-	/** Длина пути по навмешу между точками (< 0 — путь не построился). */
+	/**
+	 * Длина пути по навмешу между точками (< 0 — путь не построился).
+	 * ЧИСТАЯ навигационная метрика без учёта юнитов: достижимость с учётом
+	 * занятости — задача поля дистанций (AMoveRangeVisualizer), см. §2.4
+	 * 03_CODE_OVERVIEW. Используется там, где занятость уже проверена отдельно.
+	 */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Combat", meta = (WorldContext = "WorldContextObject"))
 	static float GetNavPathLength(UObject* WorldContextObject, const FVector& Start, const FVector& Goal);
+
+	/**
+	 * ЕДИНСТВЕННЫЙ источник правила стоимости перемещения (GDD §5.3):
+	 * путь ≤ MoveRange — 1 AP, ≤ 2×MoveRange — 2 AP, дальше — нельзя.
+	 * Возвращает 0, если приказ неоплатен (не хватает AP или слишком далеко).
+	 * Зона хода, превью пути и валидация клика обязаны звать ЭТО, иначе
+	 * пороги разъезжаются и «зона показывает одно, клик делает другое».
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Combat")
+	static int32 GetMoveCostForDistance(const AUnitBase* Unit, float PathLength, int32 AvailableActionPoints);
 
 	// --- Занятость: юниты НЕ мутируют навмеш (XCOM-подход) --------------------
 	//
@@ -85,8 +110,21 @@ public:
 	// на уровне ЗАПРОСОВ дисками занятости. Никаких асинхронных перестроек
 	// тайлов — зона хода и валидация приказов считаются синхронно и точно.
 
-	/** Радиус диска занятости стоящего юнита (см): капсула + зазор. */
+	/**
+	 * Радиус «занятой клетки» вокруг юнита (см) — аналог занятого тайла XCOM.
+	 * ВНУТРИ него нельзя ЗАКОНЧИТЬ перемещение (валидация цели приказа, волна
+	 * зоны хода). Для «пробежать МИМО» нужен больший просвет — см.
+	 * GetTransitClearance: тело бегущего тоже занимает место.
+	 */
 	static constexpr float UnitObstacleRadius = 60.f;
+
+	/**
+	 * Просвет ЦЕНТР-В-ЦЕНТР, нужный, чтобы Mover протиснулся мимо стоящего
+	 * юнита: занятая клетка + собственный радиус капсулы бегущего (берётся с
+	 * актора, а не константой — BP может переопределить капсулу). «Встать
+	 * рядом» можно ближе, чем «пробежать мимо» — это разные правила.
+	 */
+	static float GetTransitClearance(const AActor* Mover);
 
 	/**
 	 * Позиции дисков занятости: живые неэвакуированные юниты обеих сторон,
@@ -101,6 +139,20 @@ public:
 	 */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Combat", meta = (WorldContext = "WorldContextObject"))
 	static bool IsLocationBlockedByUnit(UObject* WorldContextObject, const FVector& Location, const AActor* Ignored);
+
+	/**
+	 * Длина вдоль пути до первого места, где просвет между полилинией и диском
+	 * занятости меньше Clearance (бегущий там не протиснется). < 0 — путь чист
+	 * целиком. Obstacles передаются ГОТОВЫМИ: в горячих циклах (уточнение поля
+	 * зоны хода) сбор дисков делается один раз снаружи, а не на каждый вызов.
+	 *
+	 * ВАЖНО: «путь задевает юнита» != «дойти нельзя» — навмеш строит прямую и в
+	 * чистом поле пройдёт сквозь одиночного бойца, которого Detour Crowd спокойно
+	 * обходит на бегу. Ответ на «достижимо ли» даёт ВОЛНА поля дистанций
+	 * (она знает про обходы), а это — метрика «докуда точно дойдём по прямой».
+	 */
+	static double FindPathClearanceLimit(const TArray<FVector>& PathPoints,
+		const TArray<FVector>& Obstacles, float Clearance);
 
 	/**
 	 * Выталкивает цель перемещения из диска занятости на его край (клик «в»

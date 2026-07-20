@@ -7,8 +7,10 @@
 #include "TacticsGameplayEffects.h"
 #include "TacticsGameplayTags.h"
 #include "TurnManagerSubsystem.h"
+#include "GA_Attack.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemGlobals.h"
+#include "AbilitySystemBlueprintLibrary.h"
 #include "Perception/AIPerceptionComponent.h"
 #include "Perception/AISenseConfig_Sight.h"
 #include "Perception/AISense_Sight.h"
@@ -66,6 +68,17 @@ void AUnitAIController::OnPossess(APawn* InPawn)
 	AlertState = EUnitAlertState::Patrol;
 	bHasThreatLocation = false;
 	PatrolIndex = 0;
+
+	// Валидация настройки BP — один раз при вселении, а не на каждом выстреле:
+	// без AttackAbilityClass юнит стреляет фолбэком (мимо GA_Attack, а значит
+	// без BP-хуков анимации/VFX выстрела).
+	const AUnitBase* Unit = Cast<AUnitBase>(InPawn);
+	if (Unit && !Unit->AttackAbilityClass)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[AI] У %s не назначен AttackAbilityClass — выстрелы пойдут ")
+			TEXT("в обход GA_Attack (без хуков анимации/VFX). Задай класс в Class Defaults BP юнита."),
+			*GetNameSafe(InPawn));
+	}
 }
 
 void AUnitAIController::HandlePerceptionUpdated(AActor* Actor, FAIStimulus Stimulus)
@@ -160,28 +173,70 @@ bool AUnitAIController::StepCombat(AUnitBase* Unit)
 {
 	AActor* Target = FindVisibleTarget();
 
-	// 1) Цель видна и в дальности — стреляем (1 AP за выстрел).
+	// 1) Цель поражаема прямо сейчас — стреляем. Предикат ОБЩИЙ с игроком
+	// (дальность + LOS/Squadsight): AI не может выстрелить там, где HUD игрока
+	// показал бы «нет линии огня», и наоборот.
 	if (Target)
 	{
 		LastKnownThreatLocation = Target->GetActorLocation();
 		bHasThreatLocation = true;
 
-		const float Distance = FVector::Dist(Unit->GetActorLocation(), Target->GetActorLocation());
-		if (Distance <= Unit->AttackRange && LineOfSightTo(Target))
+		if (UGA_Attack::CanTargetActor(Unit, Target))
 		{
-			Unit->GetActionPoints()->TrySpendActionPoint();
-			UTacticsCombatStatics::ResolveShot(Unit, Target, Unit->BaseAim, Unit->ShotDamage, DamageEffect);
+			if (!TryFireAtTarget(Unit, Target))
+			{
+				return false; // способность отказала — ход завершаем, без зацикливания
+			}
 			ScheduleNextStep();
 			return true;
 		}
 
-		// 2) Цель видна, но далеко — сближение (1 AP, бюджет пути).
+		// 2) Цель видна, но стрелять нельзя (далеко/нет линии) — сближение.
 		return MoveWithBudget(Unit, Target->GetActorLocation(), Unit->AttackRange * 0.8f);
 	}
 
 	// 3) Цели не видно — переходим к разведке последней известной точки.
 	AlertState = EUnitAlertState::Investigate;
 	return StepInvestigate(Unit);
+}
+
+bool AUnitAIController::TryFireAtTarget(AUnitBase* Unit, AActor* Target)
+{
+	UActionPointsComponent* ActionPoints = Unit ? Unit->GetActionPoints() : nullptr;
+	if (!ActionPoints || !Target)
+	{
+		return false;
+	}
+
+	// Штатный путь: то же событие, что шлёт контроллер игрока. Стоимость AP,
+	// XCOM-сжигание остатка и BP-хуки выстрела живут в одном месте — GA_Attack.
+	UAbilitySystemComponent* ASC = Unit->GetAbilitySystemComponent();
+	const bool bHasAttackAbility = ASC && Unit->AttackAbilityClass &&
+		ASC->FindAbilitySpecFromClass(Unit->AttackAbilityClass) != nullptr;
+
+	if (bHasAttackAbility)
+	{
+		const int32 PointsBefore = ActionPoints->CurrentActionPoints;
+
+		FGameplayEventData Payload;
+		Payload.Instigator = Unit;
+		Payload.Target = Target;
+		UAbilitySystemBlueprintLibrary::SendGameplayEventToActor(
+			Unit, TacticsGameplayTags::Event_Attack, Payload);
+
+		// Способность не заплатила AP (отказала по своим правилам) — считаем,
+		// что выстрела не было: иначе шаг хода повторялся бы бесконечно.
+		return ActionPoints->CurrentActionPoints < PointsBefore;
+	}
+
+	// Фолбэк: у юнита не назначен AttackAbilityClass (не настроен BP; о чём
+	// предупредили один раз в OnPossess). Правила те же — точность через общий
+	// расчёт, выстрел завершает активацию.
+	ActionPoints->TrySpendActionPoint();
+	ActionPoints->SpendAllRemaining();
+	UTacticsCombatStatics::ResolveShot(Unit, Target,
+		UGA_Attack::ComputeEffectiveAim(Unit, Target), Unit->ShotDamage, DamageEffect);
+	return true;
 }
 
 bool AUnitAIController::StepInvestigate(AUnitBase* Unit)
@@ -231,8 +286,12 @@ bool AUnitAIController::StepPatrol(AUnitBase* Unit)
 bool AUnitAIController::MoveWithBudget(AUnitBase* Unit, const FVector& Goal, float AcceptanceRadius)
 {
 	// Обрезаем путь бюджетом 1 AP (MoveRange по длине пути навмеша, не по прямой).
+	// GetPointAlongPathBudget заодно УСЕКАЕТ путь там, где не протиснуться мимо
+	// стоящего юнита: AI подходит насколько может, а не упирается в толпу и не
+	// теряет ход. Поле дистанций (как у игрока) здесь не строим — оно дорогое,
+	// а врагу достаточно «дойти насколько можно» без точной зоны.
 	FVector BudgetedGoal;
-	if (!UTacticsCombatStatics::GetPointAlongPathBudget(this, Unit->GetActorLocation(), Goal,
+	if (!UTacticsCombatStatics::GetPointAlongPathBudget(this, Unit, Unit->GetActorLocation(), Goal,
 		Unit->MoveRange, BudgetedGoal))
 	{
 		return false;
@@ -344,11 +403,13 @@ AActor* AUnitAIController::FindVisibleTarget() const
 			continue;
 		}
 
-		// Провокация танка: провоцирующая цель всегда приоритетнее обычных.
+		// Провокация танка (GDD §7): провоцирующая цель приоритетнее обычных,
+		// но только пока враг в радиусе её действия.
 		bool bTaunting = false;
 		if (const UAbilitySystemComponent* ASC = UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(Actor))
 		{
-			bTaunting = ASC->HasMatchingGameplayTag(TacticsGameplayTags::State_Taunting);
+			bTaunting = ASC->HasMatchingGameplayTag(TacticsGameplayTags::State_Taunting) &&
+				FVector::Dist(MyPawn->GetActorLocation(), Actor->GetActorLocation()) <= TauntPriorityRadius;
 		}
 		if (bBestIsTaunting && !bTaunting)
 		{

@@ -81,7 +81,10 @@ public:
 
 	// --- Параметры хода -------------------------------------------------------
 
-	/** GE урона выстрела (по умолчанию UGE_ShotDamage с SetByCaller Data.Damage). */
+	/**
+	 * GE урона для ФОЛБЭК-выстрела (когда юниту не назначен AttackAbilityClass).
+	 * В штатном пути урон определяет сама GA_Attack.
+	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Combat")
 	TSubclassOf<UGameplayEffect> DamageEffect;
 
@@ -92,6 +95,14 @@ public:
 	/** Пауза между последовательными действиями юнита в его ход (читабельность). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Combat", meta = (ClampMin = "0"))
 	float ActionInterval = 0.4f;
+
+	/**
+	 * Радиус действия провокации танка (GDD §7): враг ближе этого расстояния к
+	 * провоцирующей цели обязан бить именно её. Дальше — выбирает цель обычно
+	 * (иначе «крик» танка перетягивал бы врагов через всю карту).
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Combat", meta = (ClampMin = "0"))
+	float TauntPriorityRadius = 1200.f;
 
 protected:
 	virtual void BeginPlay() override;
@@ -107,6 +118,16 @@ protected:
 
 	/** Действия шага в состоянии Combat. true — шаг обработан (ждём таймер/движение). */
 	bool StepCombat(AUnitBase* Unit);
+
+	/**
+	 * Выстрел AI по цели. Штатный путь — событие Event.Attack: те же правила,
+	 * стоимость AP (включая XCOM-сжигание остатка) и BP-хуки (VFX/анимация),
+	 * что и у выстрела игрока. Фолбэк прямым ResolveShot — только для юнитов,
+	 * которым в BP не назначен AttackAbilityClass.
+	 * false — выстрел не состоялся (способность отказала): ход юнита завершается,
+	 * чтобы шаг не зациклился на неоплаченном действии.
+	 */
+	bool TryFireAtTarget(AUnitBase* Unit, AActor* Target);
 
 	/** Действия шага в состоянии Investigate. */
 	bool StepInvestigate(AUnitBase* Unit);

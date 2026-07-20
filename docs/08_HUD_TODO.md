@@ -181,28 +181,50 @@ CanvasPanel
 - [x] Кнопки → соответствующие Request*-методы контроллера (2026-07-17,
   все 6: Overwatch/Hunker/Ability/Interact/Skip/EndTurn).
 
-**Правки по аудиту 2026-07-18** (C++ готов и собран; Designer-часть внесена
-агентом через UnrealClaude; подробные шаги — 09 §4.3/§5/§6):
+**Правки по аудиту 2026-07-18** (Designer-часть внесена агентом):
 
 - [x] Designer: **AttackBtn** создана (первая в ActionsPanel, T_Icon_Attack,
   tooltip) и **TargetCoverIcon** создана (в TargetPanel после имени, Collapsed)
-  — агент, 2026-07-18. Живой граф верифицирован чтением: единственная ошибка —
-  цепочка «врага» в OnHoveredUnitChanged висит на выходе ноды «спрятать»
-  (детали и починка — 09 §4.3, красный блок);
-- [ ] **Граф OnHoveredUnitChanged**: Шаг 2а.0 (разорвать провод от Collapse)
-  + Шаг 2а (без выбранного бойца панель не показывается — фикс ложного
-  «Нет линии огня») + Шаг 5а (логика TargetCoverIcon);
-- [ ] **Граф RefreshButtons**: Set Is Enabled для AttackBtn по `bCanAct`
-  (09 §5 п.3);
-- [ ] **AttackBtn OnClicked** → `RequestAttack` (09 §6);
-- [ ] Удалить неиспользуемые переменные `BoundAPUnit` и `NewVar` (09 §2);
-- [ ] Прочее из C++-фиксов проверяется само в PIE: клик по мёртвому портрету
-  не выбирает, смерть/эвакуация выбранного снимает выбор, Tab пропускает
-  мёртвых, у заскриптованного Downed-союзника есть портрет (GetSquad теперь
-  отдаёт весь ростер).
+  — агент, 2026-07-18.
 
-- [ ] WBP_TacticalHUD готов и компилируется
-- [ ] `GM_Tactics` → `TacticalHUDClass = WBP_TacticalHUD`
+**⚡ Пересмотр 2026-07-20 — хрупкая логика перенесена в C++** (см.
+03_CODE_OVERVIEW §2.2, `UTacticalHUDWidget`): серость кнопок
+(`RefreshActionButtons`), панель цели (`UpdateTargetPanel` — этим же починен
+баг «Нет линии огня всегда видна»: BP-цепочка врага висела на выходе ноды
+«спрятать»), карточка только выбранного бойца (`UpdateSquadCardVisibility`),
+клик AttackBtn → `RequestAttack` (подписка из C++ — **OnClicked в BP для
+AttackBtn НЕ добавлять**), стиль/размеры/иконки из DataAsset
+`UTacticalHUDStyleData` (+`bAutoSelectUnits` в контроллере). Ручные шаги
+2а.0/2а/5а из 09 §4.3 и врезки в RefreshButtons **больше не нужны**. Осталось:
+
+- [x] Пересборка C++ (`.\Build-XRU1.ps1`, редактор закрыт);
+- [x] **Чистка WBP-графа от перенесённого** (агент через UnrealClaude MCP,
+  готовый план с GUID нод — `docs/10_SONNET_MCP_TASKS.md`, выполнено 2026-07-20):
+  удалён обработчик OnHoveredUnitChanged, все вызовы и сама функция
+  RefreshButtons, AP-подписка в Construct, переменные `NewVar`/`BoundAPUnit`;
+- [x] **DA_TacticalHUDStyle** создан (Data Asset → TacticalHUDStyleData),
+  иконки/размеры заполнены, назначен в Class Defaults WBP_TacticalHUD → Style;
+- [x] Прочее из C++-фиксов проверяется само в PIE: клик по мёртвому портрету
+  не выбирает, смерть/эвакуация выбранного снимает выбор, Tab пропускает
+  мёртвых, автоселект бойца в начале фазы, карточка только выбранного.
+
+- [x] WBP_TacticalHUD готов и компилируется
+- [x] `GM_Tactics` → `TacticalHUDClass = WBP_TacticalHUD`
+
+**Правки по аудиту 2026-07-20 (вторая волна, после PIE-теста пользователя):**
+
+- [x] **Краш-баг**: `ForEachLoop(Portraits)` в `OnSelectedUnitChanged`/
+  `OnUnitsStateChanged` звал `SetSelected`/`Refresh` на элементе массива без
+  проверки — при невалидном портрете (стоп PIE, пересборка панели) сыпал
+  ошибку `... вне UClass` на каждой итерации. Добавлен `IsValid → Branch`
+  перед обоими вызовами (тот же паттерн, что уже используется для бомбы).
+- [x] **Разный размер кнопок ActionsPanel**: добавлено поле `ActionButtonPadding`
+  в `UTacticalHUDStyleData` (`Source/XRU1/UI/TacticalHUDStyleData.h`),
+  `ApplyStyle()` теперь принудительно выставляет единый `NormalPadding`/
+  `PressedPadding` на всех 6 кнопках ActionsPanel + EndTurnBtn — раньше
+  унифицировался только `PressedPadding` относительно (разного!) `NormalPadding`
+  каждой кнопки, отсюда и визуальный разнобой при одинаковых иконках.
+  Пересобрано, поле заполнено в `DA_TacticalHUDStyle` (8/8/8/8 — дефолт).
 
 ## 5. HUD над головой юнита
 
@@ -222,7 +244,9 @@ CanvasPanel
 3. **В BP юнитов** (BP_Unit_Assault, BP_Unit_Marauder, будущие):
    `HUDWidgetClass = WBP_UnitHUD`; `HUDLayout = DA_UnitHUD_Squad` (врагу — Enemy).
 
-- [ ] HP/AP/укрытие видны над головами в PIE
+- [x] HP/AP/укрытие видны над головами в PIE — обнаружено уже полностью
+  собранным (4 WBP + `DA_UnitHUD_Squad`/`DA_UnitHUD_Enemy` + назначение в
+  BP_Unit_Assault/Marauder), проверено чтением 2026-07-20
 
 ## 6. Добить ввод (хоткеи из GDD §11)
 
@@ -231,7 +255,8 @@ CanvasPanel
 `IA_SkipTurn` (Backspace), `IA_Pause` (Esc). Добавить маппинги в `IMC_Tactical`
 и заполнить соответствующие слоты в `BP_TacticalPlayerController`.
 
-- [ ] Хоткеи работают в PIE
+- [x] Хоткеи работают в PIE — IA_*/маппинги IMC_Tactical/слоты контроллера
+  обнаружены уже готовыми, проверено чтением 2026-07-20
 
 ## 7. Проверка (DoD этапа 6) и синхронизация доков
 
@@ -239,8 +264,9 @@ CanvasPanel
 Overwatch/Оборона с кнопок → наведение на врага показывает шанс → «Завершить
 ход» → фаза врага блокирует панель → смерть врага уменьшает счётчик.
 
-- [ ] Всё проходит мышью, без клавиатуры
-- [ ] Чекбоксы: `04_ROADMAP.md` этап 6 (WBP_TacticalHUD) и этап 4 («HUD юнита»)
+- [ ] Всё проходит мышью, без клавиатуры (нужен ручной PIE-прогон пользователя —
+  агент проверил состояние ассетов/графа через MCP, но не может водить мышью в PIE)
+- [x] Чекбоксы: `04_ROADMAP.md` этап 6 (WBP_TacticalHUD) и этап 4 («HUD юнита»)
 - [ ] `05_EDITOR_GUIDE.md` — при расхождениях поправить
 - [ ] Удалить диагностические логи `[Unit] …` в `AUnitBase` (см. заметку в ROADMAP)
 - [ ] Этот файл удалить/зачистить

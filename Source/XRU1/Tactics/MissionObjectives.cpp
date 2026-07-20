@@ -28,7 +28,10 @@ bool ABombObjective::CanDefuse(const AUnitBase* Unit) const
 	{
 		return false;
 	}
-	return FVector::Dist(Unit->GetActorLocation(), GetActorLocation()) <= InteractRadius;
+	// Dist2D (не Dist): интеракция «встал рядом», не должна зависеть от разницы
+	// по высоте между пивотом меша заряда (стол/консоль) и полом юнита —
+	// тот же принцип, что у AEvacZone::IsUnitInside.
+	return FVector::Dist2D(Unit->GetActorLocation(), GetActorLocation()) <= InteractRadius;
 }
 
 bool ABombObjective::TryDefuse(AUnitBase* Unit)

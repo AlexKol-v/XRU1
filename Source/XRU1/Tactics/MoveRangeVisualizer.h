@@ -102,6 +102,26 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|MoveRange")
 	void HidePathPreview();
 
+	/**
+	 * Построено ли сейчас поле дистанций именно для этого юнита (зона видима).
+	 * Валидация приказа опирается на поле, поэтому её надо гейтить этим.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|MoveRange")
+	bool IsFieldBuiltFor(const AUnitBase* Unit) const;
+
+	/**
+	 * Стоимость приказа в AP до точки ПО ПОЛЮ ЗАНЯТОСТИ (0 — недостижимо или
+	 * не хватает AP). ЕДИНСТВЕННЫЙ ответ на «можно ли туда приказать»:
+	 *
+	 * поле строит волновой Dijkstra, который обходит диски занятости юнитов и
+	 * потому ЗНАЕТ про обходные пути — в отличие от прямого navmesh-запроса,
+	 * который в чистом поле прокладывает прямую сквозь стоящего бойца. Зона
+	 * рисуется из этого же поля тем же порогом, поэтому «что подсвечено — то и
+	 * кликается» верно по построению, а не по совпадению.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|MoveRange")
+	int32 GetMoveCostTo(const FVector& Goal) const;
+
 protected:
 	/** Сэмпл поля дистанций: длина пути до точки сетки и высота пола. */
 	struct FZoneSample
@@ -140,6 +160,14 @@ protected:
 
 	/** Лента по точкам пути + кружок-маркер в конце (секции 2 и 3). */
 	void BuildPathRibbon(const TArray<FVector>& PathPoints, UMaterialInterface* Material);
+
+	/**
+	 * Длина пути до точки по полю дистанций (билинейно по 4 соседним сэмплам).
+	 * Недостижимые сэмплы берутся как «чуть за краем» — ровно та же условность,
+	 * что у marching squares в BuildContourSection, поэтому граница зоны и
+	 * ответ этой функции совпадают. < 0 — точка вне поля.
+	 */
+	double GetFieldDistanceAt(const FVector& Location) const;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tactics|MoveRange")
 	TObjectPtr<UProceduralMeshComponent> ZoneMesh;

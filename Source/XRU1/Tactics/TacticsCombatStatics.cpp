@@ -13,6 +13,8 @@
 #include "EngineUtils.h"
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/Character.h"
+#include "Components/CapsuleComponent.h"
 
 bool UTacticsCombatStatics::IsUnitAlive(const AActor* Unit)
 {
@@ -98,7 +100,9 @@ bool UTacticsCombatStatics::ResolveShot(AActor* Shooter, AActor* Target, float B
 	{
 		HitChance = ComputeHitChance(Shooter, Target, BaseHitChance);
 	}
-	const bool bHit = FMath::FRandRange(0.f, 100.f) <= HitChance;
+	// Строгий бросок: 100% попадает всегда (Roll может выпасть ровно 100),
+	// 0% мажет всегда (Roll может выпасть ровно 0) — скриптовые выстрелы честны.
+	const bool bHit = HitChance >= 100.f || FMath::FRandRange(0.f, 100.f) < HitChance;
 
 	if (bHit)
 	{
@@ -180,7 +184,7 @@ bool UTacticsCombatStatics::SquadHasLineOfSight(const AActor* Unit, const AActor
 	for (AActor* Ally : TurnManager->GetSideUnits(Unit))
 	{
 		if (Ally && Ally != Unit && IsUnitAlive(Ally) &&
-			FVector::Dist(Ally->GetActorLocation(), Target->GetActorLocation()) <= 2500.f &&
+			FVector::Dist(Ally->GetActorLocation(), Target->GetActorLocation()) <= SquadVisionRange &&
 			HasLineOfSight(Ally, Target))
 		{
 			return true;
@@ -218,8 +222,8 @@ void UTacticsCombatStatics::NotifyCombatNoise(AActor* Instigator, const FVector&
 	}
 }
 
-bool UTacticsCombatStatics::GetPointAlongPathBudget(UObject* WorldContextObject, const FVector& Start,
-	const FVector& Goal, float PathBudget, FVector& OutPoint)
+bool UTacticsCombatStatics::GetPointAlongPathBudget(UObject* WorldContextObject, const AActor* Mover,
+	const FVector& Start, const FVector& Goal, float PathBudget, FVector& OutPoint)
 {
 	OutPoint = Start;
 	UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::ReturnNull) : nullptr;
@@ -235,14 +239,29 @@ bool UTacticsCombatStatics::GetPointAlongPathBudget(UObject* WorldContextObject,
 		return false;
 	}
 
+	// Бюджет урезаем ещё и клиренсом: если впереди стоящий юнит, идём до него,
+	// а не сквозь. Именно УСЕЧЕНИЕ, а не отказ — иначе AI, упёршийся в союзника,
+	// впустую пропускал бы ход вместо «подойти насколько можно».
+	TArray<FVector> Obstacles;
+	GetUnitObstacles(World, Mover, Obstacles);
+	const double ClearanceLimit = FindPathClearanceLimit(Path->PathPoints, Obstacles, GetTransitClearance(Mover));
+	double Remaining = PathBudget;
+	if (ClearanceLimit >= 0.)
+	{
+		Remaining = FMath::Min(Remaining, ClearanceLimit);
+	}
+	if (Remaining <= 0.)
+	{
+		return false; // упёрлись сразу на старте — двигаться некуда
+	}
+
 	// Идём по сегментам пути, пока не исчерпаем бюджет длины.
-	float Remaining = PathBudget;
 	OutPoint = Path->PathPoints[0];
 	for (int32 i = 1; i < Path->PathPoints.Num(); ++i)
 	{
 		const FVector& A = Path->PathPoints[i - 1];
 		const FVector& B = Path->PathPoints[i];
-		const float SegmentLength = FVector::Dist(A, B);
+		const double SegmentLength = FVector::Dist(A, B);
 
 		if (SegmentLength >= Remaining)
 		{
@@ -271,6 +290,82 @@ float UTacticsCombatStatics::GetNavPathLength(UObject* WorldContextObject, const
 		return -1.f;
 	}
 	return Path->GetPathLength();
+}
+
+int32 UTacticsCombatStatics::GetMoveCostForDistance(const AUnitBase* Unit, float PathLength, int32 AvailableActionPoints)
+{
+	if (!Unit || PathLength < 0.f || AvailableActionPoints <= 0)
+	{
+		return 0;
+	}
+	if (PathLength <= Unit->MoveRange)
+	{
+		return 1;
+	}
+	if (PathLength <= Unit->MoveRange * 2.f && AvailableActionPoints >= 2)
+	{
+		return 2;
+	}
+	return 0; // вне оплачиваемой зоны
+}
+
+float UTacticsCombatStatics::GetTransitClearance(const AActor* Mover)
+{
+	// Занятая клетка стоящего + собственный радиус бегущего: тело мувера тоже
+	// не должно налезать на клетку. Радиус берём с капсулы (BP может её менять),
+	// фолбэк — дефолт ACharacter (34 см).
+	float MoverRadius = 34.f;
+	if (const ACharacter* Character = Cast<ACharacter>(Mover))
+	{
+		if (const UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
+		{
+			MoverRadius = Capsule->GetScaledCapsuleRadius();
+		}
+	}
+	return UnitObstacleRadius + MoverRadius;
+}
+
+double UTacticsCombatStatics::FindPathClearanceLimit(const TArray<FVector>& PathPoints,
+	const TArray<FVector>& Obstacles, float Clearance)
+{
+	if (PathPoints.Num() < 2 || Obstacles.Num() == 0)
+	{
+		return -1.;
+	}
+
+	// Идём по сегментам, копим пройденную длину; на каждом ищем первую точку,
+	// где просвет до любого диска меньше Clearance. Шаг сэмплирования — доля
+	// клиренса: диск нельзя «перепрыгнуть» между двумя пробами.
+	const double Step = FMath::Max(10., static_cast<double>(Clearance) * 0.5);
+	double Travelled = 0.;
+	for (int32 i = 0; i + 1 < PathPoints.Num(); ++i)
+	{
+		FVector A = PathPoints[i];
+		FVector B = PathPoints[i + 1];
+		A.Z = 0.;
+		B.Z = 0.;
+		const double SegmentLength = FVector::Dist(A, B);
+		if (SegmentLength <= UE_KINDA_SMALL_NUMBER)
+		{
+			continue;
+		}
+
+		const int32 NumSteps = FMath::Max(1, FMath::CeilToInt(SegmentLength / Step));
+		for (int32 S = 0; S <= NumSteps; ++S)
+		{
+			const double T = static_cast<double>(S) / NumSteps;
+			const FVector Point = FMath::Lerp(A, B, T);
+			for (const FVector& Obstacle : Obstacles)
+			{
+				if (FVector::DistSquared2D(Obstacle, Point) < FMath::Square(static_cast<double>(Clearance)))
+				{
+					return Travelled + SegmentLength * T;
+				}
+			}
+		}
+		Travelled += SegmentLength;
+	}
+	return -1.; // путь чист целиком
 }
 
 // --- Занятость (диски юнитов вместо мутаций навмеша) ---------------------------

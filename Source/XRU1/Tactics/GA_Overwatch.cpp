@@ -3,6 +3,7 @@
 #include "TacticsGameplayEffects.h"
 #include "TacticsCombatStatics.h"
 #include "TurnManagerSubsystem.h"
+#include "GA_Attack.h"
 #include "UnitBase.h"
 #include "Perception/AIPerceptionComponent.h"
 #include "GameFramework/Actor.h"
@@ -111,8 +112,12 @@ void UGA_Overwatch::HandlePerceptionUpdated(AActor* Actor, FAIStimulus Stimulus)
 		}
 	}
 
-	// Стреляем только по живым врагам.
-	if (!UTacticsCombatStatics::AreHostile(Avatar, Actor) || !UTacticsCombatStatics::IsUnitAlive(Actor))
+	// Реакция подчиняется ОБЩЕМУ правилу выстрела (враждебность, живость,
+	// дальность оружия, линия огня) — тому же, что у игрока и у AI. Радиус
+	// перцепции шире дальности стрельбы: без этого юнит реагировал бы на цели,
+	// в которые физически не может попасть.
+	const AUnitBase* ShooterUnit = Cast<AUnitBase>(Avatar);
+	if (!ShooterUnit || !UGA_Attack::CanTargetActor(ShooterUnit, Actor))
 	{
 		return;
 	}
@@ -153,15 +158,15 @@ void UGA_Overwatch::FireReactionShot(AActor* Target)
 		return;
 	}
 
-	// Точность/урон — со статов юнита, реакция стреляет со штрафом (GDD §5.4).
-	float Aim = 70.f;
-	float Damage = 25.f;
-	if (const AUnitBase* Unit = Cast<AUnitBase>(Avatar))
+	// Точность/урон — со статов юнита: общий расчёт (как у обычного выстрела)
+	// плюс штраф реакции (GDD §5.4).
+	const AUnitBase* Unit = Cast<AUnitBase>(Avatar);
+	if (!Unit)
 	{
-		Aim = Unit->BaseAim;
-		Damage = Unit->ShotDamage;
+		return;
 	}
-	Aim = FMath::Max(0.f, Aim - ReactionAimPenalty);
+	const float Aim = FMath::Max(0.f, UGA_Attack::ComputeEffectiveAim(Unit, Target) - ReactionAimPenalty);
+	const float Damage = Unit->ShotDamage;
 
 	// Бросок против укрытия цели + урон через GE (SetByCaller Data.Damage).
 	const bool bHit = UTacticsCombatStatics::ResolveShot(Avatar, Target, Aim, Damage, DamageEffect);

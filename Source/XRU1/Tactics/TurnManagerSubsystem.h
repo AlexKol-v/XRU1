@@ -11,6 +11,7 @@ class AActor;
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnTurnStarted, ETurnPhase, Phase);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCombatEnded, bool, bPlayerWon);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnTurnLimitExpired);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnTurnLimitChanged);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnEnemyUnitActivated, AActor*, Unit);
 
 /**
@@ -55,7 +56,7 @@ public:
 
 	/** Юниты активной стороны в этом ходу. */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Turns")
-	const TArray<AActor*>& GetActiveSideUnits() const;
+	TArray<AActor*> GetActiveSideUnits() const;
 
 	/** Ходит ли сейчас сторона, которой принадлежит юнит. */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Turns")
@@ -86,9 +87,11 @@ public:
 	/**
 	 * Лимит ходов игрока (0 = без лимита). По завершении лимитного хода игрока —
 	 * OnTurnLimitExpired и поражение. GameMode снимает лимит при обезвреживании.
+	 * Смена лимита шлёт OnTurnLimitChanged: счётчик «До подрыва» в HUD обязан
+	 * погаснуть сразу после обезвреживания, а не в начале следующего хода.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Turns")
-	void SetTurnLimit(int32 NewLimit) { TurnLimit = FMath::Max(0, NewLimit); }
+	void SetTurnLimit(int32 NewLimit);
 
 	/** Сколько ходов игрока осталось до взрыва (-1 = лимита нет). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Turns")
@@ -110,6 +113,10 @@ public:
 	/** Истёк лимит ходов (бомба взорвалась) — срабатывает ПЕРЕД OnCombatEnded(false). */
 	UPROPERTY(BlueprintAssignable, Category = "Tactics|Turns")
 	FOnTurnLimitExpired OnTurnLimitExpired;
+
+	/** Лимит ходов изменился посреди боя (обезвредили заряд) — HUD перерисует таймер. */
+	UPROPERTY(BlueprintAssignable, Category = "Tactics|Turns")
+	FOnTurnLimitChanged OnTurnLimitChanged;
 
 	/**
 	 * Вражеский юнит начал свой ход (шлётся перед ExecuteUnitTurn). Контроллер
@@ -168,8 +175,4 @@ protected:
 	float EnemyActivationDelay = 0.35f;
 
 	FTimerHandle EnemyStepTimerHandle;
-
-private:
-	// Кэш для GetActiveSideUnits (возврат по ссылке).
-	mutable TArray<AActor*> ActiveSideCache;
 };

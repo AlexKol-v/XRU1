@@ -41,6 +41,10 @@ void UTacticsGameInstance::TravelToHub()
 	{
 		UGameplayStatics::OpenLevelBySoftObjectPtr(this, HubLevel);
 	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[GameInstance] HubLevel не задан в BP-наследнике — TravelToHub() ничего не сделал"));
+	}
 }
 
 void UTacticsGameInstance::TravelToMainMenu()
@@ -48,5 +52,9 @@ void UTacticsGameInstance::TravelToMainMenu()
 	if (!MainMenuLevel.IsNull())
 	{
 		UGameplayStatics::OpenLevelBySoftObjectPtr(this, MainMenuLevel);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[GameInstance] MainMenuLevel не задан в BP-наследнике — TravelToMainMenu() ничего не сделал"));
 	}
 }

@@ -18,6 +18,7 @@ class AEvacZone;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnSelectedUnitChanged, AUnitBase*, NewSelected);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnHoveredUnitChanged, AUnitBase*, NewHovered);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnAvailableActionsChanged);
 
 /**
  * Контроллер игрока в тактическом бою (GDD §11): выбор юнита (ЛКМ/1–4/Tab),
@@ -50,9 +51,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Control")
 	void SelectUnitBySlot(int32 SlotIndex);
 
-	/** Следующий юнит отряда с оставшимися AP (Tab). */
+	/** Следующий юнит отряда с оставшимися AP (Tab). Нет таких — выбор не меняется. */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Control")
 	void SelectNextUnit();
+
+	/**
+	 * Автовыбор бойца (XCOM: активный боец есть всегда): первый живой с AP,
+	 * начиная со следующего за текущим (или с начала отряда, если выбора нет);
+	 * нет никого с AP — любой живой; отряд выбит — выбор снимается.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Control")
+	void SelectNextAvailableUnit();
 
 	/** Юниты отряда (сторона игрока, живые) — для портретов HUD. */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Control")
@@ -95,11 +104,26 @@ public:
 	void RequestPause();
 
 	/**
+	 * Сообщить UI, что набор доступных действий мог измениться извне (открылась
+	 * зона эвакуации, скрипт туториала сдвинул мир). Зовут GameMode и level BP —
+	 * HUD пересчитает серость кнопок без ожидания следующего события боя.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Control")
+	void NotifyAvailableActionsChanged() { OnAvailableActionsChanged.Broadcast(); }
+
+	/**
 	 * Юнит закончил перемещение (зовёт AUnitAIController из OnMoveCompleted).
 	 * Если это НЕ выбранный юнит — его диск занятости встал на новое место,
 	 * зона хода выбранного пересчитывается немедленно.
 	 */
 	void NotifyUnitMoveFinished(AUnitBase* Unit);
+
+	/**
+	 * Сейчас фаза игрока и бой идёт — ЕДИНЫЙ признак «игрок может действовать».
+	 * По нему гейтятся и приказы, и активность кнопок/панели прицеливания HUD.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Control")
+	bool IsPlayerPhase() const;
 
 	/** В режиме ли выбора цели способности (медик ждёт клика по союзнику). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Control")
@@ -126,6 +150,16 @@ public:
 	/** Смена юнита под курсором (показ/скрытие панели цели с шансом попадания). */
 	UPROPERTY(BlueprintAssignable, Category = "Tactics|Control")
 	FOnHoveredUnitChanged OnHoveredUnitChanged;
+
+	/**
+	 * Набор доступных действий выбранного бойца изменился НЕ из-за смены выбора
+	 * или трат AP, а из-за его новой позиции (добежал до бомбы/зоны эвакуации,
+	 * сменился шанс попадания по цели под курсором). HUD пересчитывает по нему
+	 * серость кнопок и панель цели: иначе кнопка F оставалась бы серой у самой
+	 * бомбы — AP списываются в момент приказа, а доехал юнит куда позже.
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "Tactics|Control")
+	FOnAvailableActionsChanged OnAvailableActionsChanged;
 
 protected:
 	virtual void BeginPlay() override;
@@ -157,9 +191,6 @@ protected:
 	 * и RequestInteract (исполнение) — порядок не может разъехаться.
 	 */
 	EInteractionKind FindAvailableInteraction(ABombObjective*& OutBomb, AEvacZone*& OutZone) const;
-
-	/** Сейчас фаза игрока и бой идёт (приказы разрешены). */
-	bool IsPlayerPhase() const;
 
 	/** Идёт бой и сейчас фаза врага (наш выбор/ховер своих скрываем). */
 	bool IsEnemyPhaseNow() const;
@@ -244,6 +275,15 @@ protected:
 	/** Панорама мышью у края экрана (XCOM). Выключается в BP при желании. */
 	UPROPERTY(EditDefaultsOnly, Category = "Tactics|Control")
 	bool bEdgeScrollEnabled = true;
+
+	/**
+	 * XCOM-автовыбор бойцов: активный боец есть всегда. Включает: автовыбор в
+	 * начале фазы игрока, переход к следующему бойцу после смерти/эвакуации
+	 * выбранного и после исчерпания его AP (действие завершило активацию).
+	 * Выключается в BP при желании — тогда выбор полностью ручной.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|Control")
+	bool bAutoSelectUnits = true;
 
 	/** Ширина зоны edge scroll от края вьюпорта, px. */
 	UPROPERTY(EditDefaultsOnly, Category = "Tactics|Control", meta = (ClampMin = "2", ClampMax = "100"))

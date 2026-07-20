@@ -3,7 +3,9 @@
 #include "TacticsGameplayTags.h"
 #include "TacticsGameplayEffects.h"
 #include "TacticsCombatStatics.h"
+#include "TurnManagerSubsystem.h"
 #include "AbilitySystemComponent.h"
+#include "Engine/World.h"
 
 UGA_Attack::UGA_Attack()
 {
@@ -20,27 +22,95 @@ UGA_Attack::UGA_Attack()
 	DamageEffect = UGE_ShotDamage::StaticClass();
 }
 
-bool UGA_Attack::CanTargetActor(const AUnitBase* Shooter, const AActor* Target)
+float UGA_Attack::ComputeEffectiveAim(const AUnitBase* Shooter, const AActor* Target)
 {
-	if (!Shooter || !Target ||
-		!UTacticsCombatStatics::AreHostile(Shooter, Target) ||
-		!UTacticsCombatStatics::IsUnitAlive(Target))
+	if (!Shooter)
 	{
-		return false;
+		return 0.f;
+	}
+
+	float Aim = Shooter->BaseAim;
+	// Squadsight-выстрел без собственной LOS идёт со штрафом к точности. Штраф
+	// берём из CDO способности атаки ЭТОГО юнита — HUD и выстрел считают одно
+	// и то же даже при перенастроенном BP-наследнике GA_Attack.
+	if (Target && !UTacticsCombatStatics::HasLineOfSight(Shooter, Target))
+	{
+		const UGA_Attack* AttackCDO = nullptr;
+		if (Shooter->AttackAbilityClass && Shooter->AttackAbilityClass->IsChildOf(UGA_Attack::StaticClass()))
+		{
+			AttackCDO = Shooter->AttackAbilityClass->GetDefaultObject<UGA_Attack>();
+		}
+		const float Penalty = AttackCDO
+			? AttackCDO->SquadsightAimPenalty
+			: GetDefault<UGA_Attack>()->SquadsightAimPenalty;
+		Aim = FMath::Max(0.f, Aim - Penalty);
+	}
+	return Aim;
+}
+
+float UGA_Attack::ComputeAttackHitChance(const AUnitBase* Shooter, const AActor* Target)
+{
+	if (!CanTargetActor(Shooter, Target))
+	{
+		return -1.f;
+	}
+	return UTacticsCombatStatics::ComputeHitChance(Shooter, Target, ComputeEffectiveAim(Shooter, Target));
+}
+
+EAttackTargetStatus UGA_Attack::GetTargetStatus(const AUnitBase* Shooter, const AActor* Target)
+{
+	if (!Shooter || !Target || !UTacticsCombatStatics::AreHostile(Shooter, Target))
+	{
+		return EAttackTargetStatus::NotHostile;
+	}
+	if (!UTacticsCombatStatics::IsUnitAlive(Target))
+	{
+		return EAttackTargetStatus::Dead;
 	}
 
 	const float Distance = FVector::Dist(Shooter->GetActorLocation(), Target->GetActorLocation());
 	if (Distance > Shooter->AttackRange)
 	{
-		return false;
+		return EAttackTargetStatus::OutOfRange;
 	}
 
 	// Прямая видимость либо Squadsight (цель видит любой союзник снайпера).
 	if (UTacticsCombatStatics::HasLineOfSight(Shooter, Target))
 	{
-		return true;
+		return EAttackTargetStatus::Valid;
 	}
-	return Shooter->bHasSquadsight && UTacticsCombatStatics::SquadHasLineOfSight(Shooter, Target);
+	if (Shooter->bHasSquadsight && UTacticsCombatStatics::SquadHasLineOfSight(Shooter, Target))
+	{
+		return EAttackTargetStatus::Valid;
+	}
+	return EAttackTargetStatus::NoLineOfSight;
+}
+
+bool UGA_Attack::CanTargetActor(const AUnitBase* Shooter, const AActor* Target)
+{
+	return GetTargetStatus(Shooter, Target) == EAttackTargetStatus::Valid;
+}
+
+bool UGA_Attack::HasAnyValidTarget(const AUnitBase* Shooter)
+{
+	if (!Shooter)
+	{
+		return false;
+	}
+	const UWorld* World = Shooter->GetWorld();
+	const UTurnManagerSubsystem* TurnManager = World ? World->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
+	if (!TurnManager)
+	{
+		return false;
+	}
+	for (const AActor* Enemy : TurnManager->GetOpposingUnits(Shooter))
+	{
+		if (CanTargetActor(Shooter, Enemy))
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 void UGA_Attack::ActivateAbility(
@@ -65,12 +135,8 @@ void UGA_Attack::ActivateAbility(
 		return;
 	}
 
-	// Squadsight-выстрел без собственной LOS идёт со штрафом к точности.
-	float Aim = Shooter->BaseAim;
-	if (!UTacticsCombatStatics::HasLineOfSight(Shooter, Target))
-	{
-		Aim = FMath::Max(0.f, Aim - SquadsightAimPenalty);
-	}
+	// Точность — единым расчётом с HUD-прогнозом (Squadsight-штраф внутри).
+	const float Aim = ComputeEffectiveAim(Shooter, Target);
 
 	const bool bHit = UTacticsCombatStatics::ResolveShot(Shooter, Target, Aim, Shooter->ShotDamage, DamageEffect);
 	OnShotFired(Target, bHit);

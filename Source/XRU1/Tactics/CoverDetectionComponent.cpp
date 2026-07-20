@@ -11,9 +11,9 @@ UCoverDetectionComponent::UCoverDetectionComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
 
-	// Дефолты из нативных тегов/эффектов; при желании переопределяются в BP.
-	HalfCoverTag = TacticsGameplayTags::Cover_Half;
-	FullCoverTag = TacticsGameplayTags::Cover_Full;
+	// Дефолты из GE-классов (сами теги захардкожены в их конструкторах —
+	// тот же паттерн, что у State.HunkeredDown/State.Taunting); при желании
+	// переопределяются в BP другим GE-классом.
 	HalfCoverEffect = UGE_CoverHalf::StaticClass();
 	FullCoverEffect = UGE_CoverFull::StaticClass();
 }

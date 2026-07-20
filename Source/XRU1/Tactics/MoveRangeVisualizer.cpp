@@ -280,11 +280,99 @@ bool AMoveRangeVisualizer::BuildDistanceField(const AUnitBase* Unit, double Budg
 			const FPathFindingResult Result = NavSys->FindPathSync(Query);
 			if (Result.IsSuccessful() && Result.Path.IsValid() && !Result.Path->IsPartial())
 			{
-				Sample.PathDist = Result.Path->GetLength();
+				// Funnel-путь (в отличие от волны) о дисках занятости не знает и
+				// может геометрически срезать через стоящего юнита — тогда его
+				// длина короче настоящей, и уточнение соврало бы в пользу «ближе».
+				// В этом случае не доверяем funnel'у и оставляем октильную оценку
+				// волны (она диски уже уважает). Диски берём ГОТОВЫЕ (собраны в
+				// начале функции): собирать их здесь = TActorIterator на каждый
+				// сэмпл спорной полосы.
+				TArray<FVector> RefinedPoints;
+				RefinedPoints.Reserve(Result.Path->GetPathPoints().Num());
+				for (const FNavPathPoint& PathPoint : Result.Path->GetPathPoints())
+				{
+					RefinedPoints.Add(PathPoint.Location);
+				}
+				const double ClearanceLimit = UTacticsCombatStatics::FindPathClearanceLimit(
+					RefinedPoints, UnitObstacles, UTacticsCombatStatics::GetTransitClearance(Unit));
+				if (ClearanceLimit < 0.)
+				{
+					Sample.PathDist = Result.Path->GetLength();
+				}
 			}
 		}
 	}
 	return true;
+}
+
+// --- Запрос поля (валидация приказа и превью) ---------------------------------------
+
+bool AMoveRangeVisualizer::IsFieldBuiltFor(const AUnitBase* Unit) const
+{
+	return Unit && CurrentUnit.Get() == Unit && FieldSamplesPerSide >= 2;
+}
+
+double AMoveRangeVisualizer::GetFieldDistanceAt(const FVector& Location) const
+{
+	if (FieldSamplesPerSide < 2)
+	{
+		return -1.;
+	}
+
+	// Позиция в координатах сетки; берём ячейку и билинейно смешиваем 4 угла.
+	const double GX = (Location.X - FieldOrigin.X) / CellSize;
+	const double GY = (Location.Y - FieldOrigin.Y) / CellSize;
+	const int32 IX = FMath::FloorToInt(GX);
+	const int32 IY = FMath::FloorToInt(GY);
+	if (IX < 0 || IY < 0 || IX + 1 >= FieldSamplesPerSide || IY + 1 >= FieldSamplesPerSide)
+	{
+		return -1.; // вне поля — заведомо дальше любого бюджета
+	}
+
+	// Недостижимый угол = «чуть за краем»: та же условность, что в
+	// BuildContourSection, иначе клик и нарисованная граница разъедутся.
+	double MaxReachable = 0.;
+	for (int32 CornerY = IY; CornerY <= IY + 1; ++CornerY)
+	{
+		for (int32 CornerX = IX; CornerX <= IX + 1; ++CornerX)
+		{
+			const FZoneSample& S = Field[CornerY * FieldSamplesPerSide + CornerX];
+			if (S.bReachable)
+			{
+				MaxReachable = FMath::Max(MaxReachable, S.PathDist);
+			}
+		}
+	}
+	const double UnreachableDist = MaxReachable + CellSize;
+	auto DistAt = [&](int32 CornerX, int32 CornerY)
+	{
+		const FZoneSample& S = Field[CornerY * FieldSamplesPerSide + CornerX];
+		return S.bReachable ? S.PathDist : UnreachableDist;
+	};
+
+	const double FX = GX - IX;
+	const double FY = GY - IY;
+	const double D00 = DistAt(IX, IY);
+	const double D10 = DistAt(IX + 1, IY);
+	const double D01 = DistAt(IX, IY + 1);
+	const double D11 = DistAt(IX + 1, IY + 1);
+	return FMath::Lerp(FMath::Lerp(D00, D10, FX), FMath::Lerp(D01, D11, FX), FY);
+}
+
+int32 AMoveRangeVisualizer::GetMoveCostTo(const FVector& Goal) const
+{
+	const AUnitBase* Unit = CurrentUnit.Get();
+	if (!Unit || !Unit->GetActionPoints())
+	{
+		return 0;
+	}
+	const double Distance = GetFieldDistanceAt(Goal);
+	if (Distance < 0.)
+	{
+		return 0; // вне поля / недостижимо
+	}
+	return UTacticsCombatStatics::GetMoveCostForDistance(
+		Unit, static_cast<float>(Distance), Unit->GetActionPoints()->CurrentActionPoints);
 }
 
 // --- Marching squares ---------------------------------------------------------------
@@ -676,7 +764,18 @@ void AMoveRangeVisualizer::UpdatePathPreview(const FVector& GoalLocation)
 		return;
 	}
 
-	// Путь как в валидации приказа (funnel); частичный путь = цель недостижима.
+	// Достижимость и стоимость — ПО ПОЛЮ (оно знает про обходы дисков), тем же
+	// запросом, что валидация приказа в контроллере: превью не может обещать
+	// того, что клик потом откажет, и наоборот.
+	const int32 Cost = GetMoveCostTo(GoalLocation);
+	if (Cost == 0)
+	{
+		HidePathPreview();
+		return;
+	}
+
+	// Геометрия ленты — обычный funnel-путь (форма линии, не источник правды
+	// о проходимости); частичный путь = цель недостижима.
 	FPathFindingQuery Query(Unit, *NavData, Unit->GetActorLocation(), GoalLocation);
 	Query.SetAllowPartialPaths(false);
 	const FPathFindingResult Result = NavSys->FindPathSync(Query);
@@ -686,21 +785,11 @@ void AMoveRangeVisualizer::UpdatePathPreview(const FVector& GoalLocation)
 		return;
 	}
 
-	// Стоимость приказа: 1 AP в пределах MoveRange, 2 AP до 2×MoveRange.
-	const double Length = Result.Path->GetLength();
-	int32 Cost = 0;
-	if (Length <= Unit->MoveRange)
+	TArray<FVector> RawPoints;
+	RawPoints.Reserve(Result.Path->GetPathPoints().Num());
+	for (const FNavPathPoint& PathPoint : Result.Path->GetPathPoints())
 	{
-		Cost = 1;
-	}
-	else if (Length <= Unit->MoveRange * 2. && ActionPoints >= 2)
-	{
-		Cost = 2;
-	}
-	if (Cost == 0 || Cost > ActionPoints)
-	{
-		HidePathPreview(); // вне оплачиваемой зоны — приказ всё равно игнорируется
-		return;
+		RawPoints.Add(PathPoint.Location);
 	}
 
 	// Цвет: тратит ПОСЛЕДНИЙ AP («рывок») — жёлтый, иначе синий.
@@ -708,13 +797,7 @@ void AMoveRangeVisualizer::UpdatePathPreview(const FVector& GoalLocation)
 		? (PathDashMaterial ? PathDashMaterial.Get() : ZoneTwoMaterial.Get())
 		: (PathOneMaterial ? PathOneMaterial.Get() : ZoneOneMaterial.Get());
 
-	TArray<FVector> Points;
-	Points.Reserve(Result.Path->GetPathPoints().Num());
-	for (const FNavPathPoint& PathPoint : Result.Path->GetPathPoints())
-	{
-		Points.Add(PathPoint.Location);
-	}
-	BuildPathRibbon(Points, Material);
+	BuildPathRibbon(RawPoints, Material);
 }
 
 void AMoveRangeVisualizer::HidePathPreview()

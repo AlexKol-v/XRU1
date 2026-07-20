@@ -1,6 +1,7 @@
 #include "TacticsGameMode.h"
 #include "UnitBase.h"
 #include "MissionObjectives.h"
+#include "TacticalPlayerController.h"
 #include "TurnManagerSubsystem.h"
 #include "TacticsGameInstance.h"
 #include "TacticsSaveGame.h"
@@ -92,6 +93,12 @@ void ATacticsGameMode::StartMissionCombat()
 
 	const EDifficultyLevel Difficulty = ResolveDifficulty();
 	const FTacticsDifficultyParams* Params = DifficultyParams.Find(Difficulty);
+	if (!Params)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[GameMode] У %s нет FTacticsDifficultyParams для сложности %d — ")
+			TEXT("враги останутся с дефолтными статами BP, а таймер бомбы (если она есть на карте) не включится"),
+			*GetNameSafe(this), static_cast<int32>(Difficulty));
+	}
 
 	// Сбор сторон по TeamId: 1 — отряд игрока, 2 — враги.
 	PlayerUnits.Reset();
@@ -146,6 +153,14 @@ void ATacticsGameMode::ActivateEvacuation()
 	for (TActorIterator<AEvacZone> It(GetWorld()); It; ++It)
 	{
 		It->ActivateZone();
+	}
+
+	// Зона открылась прямо сейчас: у бойца, уже стоящего в ней, кнопка F должна
+	// ожить немедленно, а не после следующего события боя.
+	if (ATacticalPlayerController* PlayerController =
+		Cast<ATacticalPlayerController>(GetWorld()->GetFirstPlayerController()))
+	{
+		PlayerController->NotifyAvailableActionsChanged();
 	}
 }
 

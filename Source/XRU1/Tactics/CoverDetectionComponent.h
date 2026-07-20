@@ -63,14 +63,6 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Cover")
 	TSubclassOf<UGameplayEffect> FullCoverEffect;
 
-	/** Тег GAS для половинчатого укрытия (Cover.Half). Используется UI/способностями. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Cover")
-	FGameplayTag HalfCoverTag;
-
-	/** Тег GAS для полного укрытия (Cover.Full). */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Cover")
-	FGameplayTag FullCoverTag;
-
 	/** Лучшее укрытие из всех направлений (кэш последнего EvaluateSurroundings). */
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Tactics|Cover")
 	ECoverType BestCoverAround = ECoverType::None;

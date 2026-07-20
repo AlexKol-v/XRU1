@@ -160,6 +160,14 @@ void ATacticalPlayerController::PlayerTick(float DeltaTime)
 		{
 			Camera->ClearFollowTarget();
 		}
+
+		// Отложенный XCOM-автопереход: бегун потратил последние AP — теперь,
+		// когда он остановился, выбор уходит следующему бойцу с AP.
+		if (bAutoSelectUnits && IsPlayerPhase() && SelectedUnit &&
+			SelectedUnit->GetActionPoints() && !SelectedUnit->GetActionPoints()->HasActionsLeft())
+		{
+			SelectNextUnit();
+		}
 	}
 	bSelectedUnitWasMoving = bMovingNow;
 
@@ -350,6 +358,13 @@ void ATacticalPlayerController::NotifyUnitMoveFinished(AUnitBase* Unit)
 	{
 		RefreshMoveRange();
 	}
+
+	// Финишировал ВЫБРАННЫЙ: с новой позиции могли открыться действия (бомба,
+	// зона эвакуации) и изменился шанс попадания по цели под курсором.
+	if (Unit && Unit == SelectedUnit)
+	{
+		OnAvailableActionsChanged.Broadcast();
+	}
 }
 
 void ATacticalPlayerController::SelectUnitBySlot(int32 SlotIndex)
@@ -375,13 +390,48 @@ void ATacticalPlayerController::SelectNextUnit()
 	for (int32 Offset = 1; Offset <= Squad.Num(); ++Offset)
 	{
 		AUnitBase* Candidate = Squad[(StartIndex + Offset) % Squad.Num()];
-		if (Candidate && UTacticsCombatStatics::IsUnitAlive(Candidate) &&
+		if (Candidate && Candidate != SelectedUnit && UTacticsCombatStatics::IsUnitAlive(Candidate) &&
 			Candidate->GetActionPoints() && Candidate->GetActionPoints()->HasActionsLeft())
 		{
 			SelectUnit(Candidate);
 			return;
 		}
 	}
+}
+
+void ATacticalPlayerController::SelectNextAvailableUnit()
+{
+	const TArray<AUnitBase*> Squad = GetSquad();
+	const int32 Num = Squad.Num();
+	if (Num == 0)
+	{
+		SelectUnit(nullptr);
+		return;
+	}
+
+	// Выбора нет — идём с начала отряда; есть — со следующего за текущим.
+	const int32 CurrentIndex = Squad.IndexOfByKey(SelectedUnit);
+	AUnitBase* AliveFallback = nullptr;
+	for (int32 i = 0; i < Num; ++i)
+	{
+		const int32 Index = (CurrentIndex == INDEX_NONE) ? i : (CurrentIndex + 1 + i) % Num;
+		AUnitBase* Candidate = Squad[Index];
+		if (!Candidate || Candidate == SelectedUnit || !UTacticsCombatStatics::IsUnitAlive(Candidate))
+		{
+			continue;
+		}
+		if (Candidate->GetActionPoints() && Candidate->GetActionPoints()->HasActionsLeft())
+		{
+			SelectUnit(Candidate);
+			return;
+		}
+		if (!AliveFallback)
+		{
+			AliveFallback = Candidate;
+		}
+	}
+	// Никого с AP: живой без AP (HUD остаётся на бойце), весь отряд выбит — nullptr.
+	SelectUnit(AliveFallback);
 }
 
 TArray<AUnitBase*> ATacticalPlayerController::GetSquad() const
@@ -450,14 +500,16 @@ void ATacticalPlayerController::HandleSelectPressed()
 		{
 			SelectUnit(ClickedUnit);
 		}
-		else if (!bOwnUnit)
-		{
-			TryAttackTarget(ClickedUnit);
-		}
+		// Клик по врагу БЕЗ вооружённого режима прицеливания (кнопка «Огонь») —
+		// намеренно ничего не делает (XCOM-правило, GDD §6): стреляем только
+		// через явное «Огонь» → клик по цели. Прогноз (шанс/причина отказа)
+		// всё равно виден по ховеру — UpdateTargetPanel не привязан к режиму.
 	}
-	else
+	else if (!bAutoSelectUnits)
 	{
-		// ЛКМ по пустому месту — снять выбор (зона хода прячется).
+		// Ручной режим (автовыбор выключен) — ЛКМ по пустому месту снимает выбор.
+		// В XCOM-режиме выбор не снимаем: активный боец есть всегда, иначе
+		// случайный клик мимо юнита гасил бы панель действий и зону хода.
 		SelectUnit(nullptr);
 	}
 }
@@ -510,6 +562,13 @@ void ATacticalPlayerController::TryMoveSelectedUnit(const FVector& Goal)
 		return;
 	}
 
+	// Приказ во время выполнения предыдущего не принимаем: зона в этот момент
+	// спрятана (позиция юнита устарела), значит и affordance у игрока нет.
+	if (IsSelectedUnitMoving())
+	{
+		return;
+	}
+
 	// Точка в диске занятости другого юнита — выталкиваем на край (клик «в»
 	// стоящего бойца); не вытолкнулась (толпа) — приказ отклоняется.
 	FVector AdjustedGoal = Goal;
@@ -518,26 +577,21 @@ void ATacticalPlayerController::TryMoveSelectedUnit(const FVector& Goal)
 		return;
 	}
 
-	// Бюджет по ДЛИНЕ ПУТИ (не радиусу): 1 AP = MoveRange, 2 AP = 2×MoveRange.
-	const float PathLength = UTacticsCombatStatics::GetNavPathLength(
-		this, SelectedUnit->GetActorLocation(), AdjustedGoal);
-	if (PathLength < 0.f)
+	// Достижимость и стоимость — ПО ПОЛЮ ЗАНЯТОСТИ визуализатора, а НЕ прямым
+	// navmesh-запросом. Поле строит волна, огибающая диски юнитов, поэтому оно
+	// знает про обходы: перекрытый тремя бойцами коридор непроходим, а
+	// одиночный боец в чистом поле обходится и приказ проходит. Прямой запрос
+	// такого различить не мог — отсюда был баг «клик разрешён, AP списаны, юнит
+	// упёрся в толпу». Зона рисуется из ЭТОГО ЖЕ поля тем же порогом, поэтому
+	// «что подсвечено — то и кликается» верно по построению.
+	if (!MoveRangeVisualizer || !MoveRangeVisualizer->IsFieldBuiltFor(SelectedUnit))
 	{
-		return; // путь не построился
+		return;
 	}
-
-	int32 Cost = 0;
-	if (PathLength <= SelectedUnit->MoveRange)
+	const int32 Cost = MoveRangeVisualizer->GetMoveCostTo(AdjustedGoal);
+	if (Cost == 0 || !ActionPoints->CanSpend(Cost))
 	{
-		Cost = 1;
-	}
-	else if (PathLength <= SelectedUnit->MoveRange * 2.f && ActionPoints->CanSpend(2))
-	{
-		Cost = 2;
-	}
-	else
-	{
-		return; // вне оплачиваемой зоны — приказ игнорируется
+		return; // недостижимо по занятости / вне оплачиваемой зоны
 	}
 
 	AUnitAIController* UnitAI = Cast<AUnitAIController>(SelectedUnit->GetController());
@@ -643,10 +697,19 @@ void ATacticalPlayerController::RequestClassAbility()
 	}
 
 	// Способности с целью (медик) — режим выбора: следующий ЛКМ по союзнику.
+	// Перед входом в режим — те же проверки, что серят кнопку в HUD: без AP или
+	// зарядов хоткей R не должен включать пустое прицеливание.
 	const UTacticalAbility* AbilityCDO = SelectedUnit->ClassAbilityClass->GetDefaultObject<UTacticalAbility>();
 	if (AbilityCDO && AbilityCDO->bRequiresTargetActor)
 	{
-		bAwaitingAbilityTarget = true;
+		const UActionPointsComponent* ActionPoints = SelectedUnit->GetActionPoints();
+		const bool bHasActionPoints = AbilityCDO->ActionPointCost <= 0 ||
+			(ActionPoints && ActionPoints->CanSpend(AbilityCDO->ActionPointCost));
+		const bool bHasUses = SelectedUnit->GetAbilityUsesRemaining(SelectedUnit->ClassAbilityClass) != 0;
+		if (bHasActionPoints && bHasUses)
+		{
+			bAwaitingAbilityTarget = true;
+		}
 		return;
 	}
 
@@ -714,11 +777,9 @@ void ATacticalPlayerController::RequestInteract()
 		Bomb->TryDefuse(SelectedUnit);
 		break;
 	case EInteractionKind::Evacuate:
-		if (Zone->TryEvacuate(SelectedUnit))
-		{
-			// Эвакуированный выбор не имеет смысла — перейти к следующему бойцу.
-			SelectNextUnit();
-		}
+		// Переход выбора сделает HandleSelectedUnitStateChanged (Evacuate()
+		// бросает OnUnitStateChanged) — здесь не дублируем, иначе двойной прыжок.
+		Zone->TryEvacuate(SelectedUnit);
 		break;
 	default:
 		break;
@@ -821,9 +882,21 @@ void ATacticalPlayerController::HandleTurnStarted(ETurnPhase Phase)
 	if (Phase == ETurnPhase::Player && !bInitialSquadFocusDone)
 	{
 		// Старт боя: камеру ставим на центр отряда МГНОВЕННО (без полёта через
-		// карту), но НИКОГО не выбираем — первого бойца игрок берёт сам.
+		// карту). Выбор бойца — ниже, общим автоселектом (или игроком вручную,
+		// если bAutoSelectUnits выключен).
 		FocusCameraOnSquad(/*bInstant=*/true);
 		bInitialSquadFocusDone = true;
+	}
+
+	// Автоселект (XCOM 2): ход игрока всегда начинается с бойца, который МОЖЕТ
+	// действовать. Не только «выбора нет», но и «выбранный больше не боец»:
+	// упавший тяжело раненым в ход врага иначе остался бы выбранным, и новый ход
+	// начинался бы с мёртвой панели действий (IsUnitAlive ложна и для Downed,
+	// и для эвакуированных).
+	if (Phase == ETurnPhase::Player && bAutoSelectUnits &&
+		(!SelectedUnit || !UTacticsCombatStatics::IsUnitAlive(SelectedUnit)))
+	{
+		SelectNextAvailableUnit();
 	}
 
 	RefreshMoveRange();
@@ -839,9 +912,20 @@ void ATacticalPlayerController::HandleEnemyUnitActivated(AActor* Unit)
 
 	// XCOM: камера сопровождает действующего врага, но только если отряд его
 	// ВИДИТ — скрытые враги ходят «за кадром», их позицию камера не выдаёт.
-	const TArray<AUnitBase*> Squad = GetSquad();
-	const bool bVisibleToSquad = Squad.Num() > 0
-		&& UTacticsCombatStatics::SquadHasLineOfSight(Squad[0], Unit);
+	// Проверяем КАЖДОГО живого бойца (SquadHasLineOfSight не годится: она
+	// проверяет союзников юнита, исключая его самого).
+	bool bVisibleToSquad = false;
+	for (const AUnitBase* Member : GetSquad())
+	{
+		if (Member && UTacticsCombatStatics::IsUnitAlive(Member) &&
+			FVector::Dist(Member->GetActorLocation(), Unit->GetActorLocation())
+				<= UTacticsCombatStatics::SquadVisionRange &&
+			UTacticsCombatStatics::HasLineOfSight(Member, Unit))
+		{
+			bVisibleToSquad = true;
+			break;
+		}
+	}
 	if (!bVisibleToSquad)
 	{
 		return;
@@ -877,17 +961,34 @@ void ATacticalPlayerController::FocusCameraOnSquad(bool bInstant)
 	}
 }
 
-void ATacticalPlayerController::HandleSelectedUnitAPChanged(int32 /*NewCurrent*/, int32 /*Max*/)
+void ATacticalPlayerController::HandleSelectedUnitAPChanged(int32 NewCurrent, int32 /*Max*/)
 {
 	RefreshMoveRange();
+
+	// XCOM-флоу: действие завершило активацию бойца (AP кончились) — выбор
+	// переходит к следующему с AP. Бегущего не переключаем (камера сопровождает
+	// его до финиша; переход сделает PlayerTick по остановке).
+	if (NewCurrent == 0 && bAutoSelectUnits && IsPlayerPhase() && !IsSelectedUnitMoving())
+	{
+		SelectNextUnit();
+	}
 }
 
 void ATacticalPlayerController::HandleSelectedUnitStateChanged()
 {
-	// Выбранный погиб или эвакуирован — выбор снимается: труп не принимает
-	// приказов, зона хода и кнопки не должны работать от его имени.
+	// Выбранный погиб или эвакуирован — труп не принимает приказов: в свою фазу
+	// выбор переходит к следующему бойцу (XCOM). В фазу врага — просто снимаем
+	// (SelectUnit дёргает камеру, нельзя рвать показ хода врага; в начале
+	// следующей фазы игрока бойца подберёт автоселект).
 	if (SelectedUnit && (SelectedUnit->IsDead() || SelectedUnit->IsEvacuated()))
 	{
-		SelectUnit(nullptr);
+		if (bAutoSelectUnits && IsPlayerPhase())
+		{
+			SelectNextAvailableUnit();
+		}
+		else
+		{
+			SelectUnit(nullptr);
+		}
 	}
 }

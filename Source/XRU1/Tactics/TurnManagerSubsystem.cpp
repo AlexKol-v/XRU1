@@ -27,6 +27,17 @@ void UTurnManagerSubsystem::StartCombat(const TArray<AActor*>& PlayerUnits, cons
 	BeginPhase(ETurnPhase::Player);
 }
 
+void UTurnManagerSubsystem::SetTurnLimit(int32 NewLimit)
+{
+	const int32 Clamped = FMath::Max(0, NewLimit);
+	if (Clamped == TurnLimit)
+	{
+		return;
+	}
+	TurnLimit = Clamped;
+	OnTurnLimitChanged.Broadcast();
+}
+
 void UTurnManagerSubsystem::EndTurn()
 {
 	if (!bInCombat)
@@ -222,15 +233,16 @@ void UTurnManagerSubsystem::StopEnemyTurnProcessing()
 	EnemyTurnIndex = 0;
 }
 
-const TArray<AActor*>& UTurnManagerSubsystem::GetActiveSideUnits() const
+TArray<AActor*> UTurnManagerSubsystem::GetActiveSideUnits() const
 {
-	ActiveSideCache.Reset();
 	const TArray<TObjectPtr<AActor>>& Side = (CurrentPhase == ETurnPhase::Enemy) ? EnemySide : PlayerSide;
+	TArray<AActor*> Result;
+	Result.Reserve(Side.Num());
 	for (const TObjectPtr<AActor>& A : Side)
 	{
-		ActiveSideCache.Add(A.Get());
+		Result.Add(A.Get());
 	}
-	return ActiveSideCache;
+	return Result;
 }
 
 bool UTurnManagerSubsystem::IsUnitOnActiveSide(const AActor* Unit) const

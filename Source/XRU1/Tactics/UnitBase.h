@@ -54,9 +54,17 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactics|Stats", meta = (ClampMin = "0"))
 	float ShotDamage = 25.f;
 
-	/** Дальность стрельбы (см). */
+	/**
+	 * Дальность стрельбы (см). В настоящем XCOM 2 у оружия нет жёсткого предела
+	 * дальности — стрелять можно куда угодно в пределах LOS, дистанция влияет
+	 * только на точность у part оружия (что мы сознательно не моделируем, см.
+	 * GDD §5.4). Поэтому значение здесь — щедрый technical cap, заведомо больше
+	 * всех радиусов зрения/тревоги в бою (SquadVisionRange=2500,
+	 * AI SightRadius=1400..1600, TauntPriorityRadius=1200), чтобы реальным
+	 * ограничителем почти всегда была линия видимости, а не число дальности.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactics|Stats", meta = (ClampMin = "0"))
-	float AttackRange = 1100.f;
+	float AttackRange = 3000.f;
 
 	/** Длина пути (см по навмешу), проходимая за 1 AP. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactics|Stats", meta = (ClampMin = "0"))
