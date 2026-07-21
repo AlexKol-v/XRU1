@@ -208,7 +208,12 @@ void ATacticalCameraPawn::EnterShotFraming(const AActor* Shooter, const AActor* 
 	{
 		PreShotYaw = TargetYaw;
 		PreShotZoom = TargetZoom;
-		PreShotLocation = GetActorLocation();
+		// Если камера СЕЙЧАС летит к цели (только что выбрали бойца — glide ещё
+		// идёт), «прежняя» позиция — это КОНЕЦ полёта, а не промежуточная точка,
+		// иначе возврат после выстрела/отмены встанет посреди карты.
+		PreShotLocation = bHasFocusGoal
+			? FVector(FocusGoal.X, FocusGoal.Y, GetActorLocation().Z)
+			: GetActorLocation();
 	}
 	bShotFraming = true;
 	ShotFrameTimeLeft = Duration;

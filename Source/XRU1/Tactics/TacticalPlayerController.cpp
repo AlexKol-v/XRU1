@@ -112,6 +112,7 @@ void ATacticalPlayerController::SetupInputComponent()
 	BindPressed(SelectAction, &ATacticalPlayerController::HandleSelectPressed);
 	BindPressed(CommandAction, &ATacticalPlayerController::HandleCommandPressed);
 	BindPressed(EndTurnAction, &ATacticalPlayerController::RequestEndTurn);
+	BindPressed(AttackAction, &ATacticalPlayerController::RequestAttack);
 	BindPressed(OverwatchAction, &ATacticalPlayerController::RequestOverwatch);
 	BindPressed(HunkerAction, &ATacticalPlayerController::RequestHunkerDown);
 	BindPressed(ClassAbilityAction, &ATacticalPlayerController::RequestClassAbility);
@@ -528,19 +529,23 @@ void ATacticalPlayerController::HandleSelectPressed()
 		return;
 	}
 
-	// Режим прицеливания атаки: ЛКМ по врагу ВЫБИРАЕТ цель, но НЕ стреляет —
-	// как в XCOM 2, где клик по врагу лишь переводит прицел, а выстрел
-	// подтверждают отдельно (кнопка «Огонь» повторно / Enter). Это же защищает
-	// от случайного даблклика «взял в прицел и тут же пальнул».
-	// Клик мимо врагов — выход из режима (по своему бойцу — ещё и его выбор ниже).
+	// Режим прицеливания: ЛКМ по УЖЕ ВЫБРАННОЙ цели — выстрел (её камера уже
+	// показала — подтверждение осознанное); ЛКМ по ДРУГОМУ достижимому врагу —
+	// переводит прицел на него (камера наводится, но не стреляет); клик мимо
+	// врагов — выход из режима (по своему бойцу — ещё и его выбор ниже).
+	// Так «просто ЛКМ» больше не стреляет вслепую — нужен именно клик по
+	// показанной цели, ровно как в XCOM 2.
 	if (bAwaitingAttackTarget)
 	{
 		if (AUnitBase* ClickedEnemy = Cast<AUnitBase>(Clicked))
 		{
 			if (ClickedEnemy->GetGenericTeamId().GetId() != 1)
 			{
-				if (ClickedEnemy != CurrentAttackTarget.Get() &&
-					UGA_Attack::CanTargetActor(SelectedUnit, ClickedEnemy))
+				if (ClickedEnemy == CurrentAttackTarget.Get())
+				{
+					ConfirmAttack();
+				}
+				else if (UGA_Attack::CanTargetActor(SelectedUnit, ClickedEnemy))
 				{
 					SetAttackTarget(ClickedEnemy);
 				}
@@ -725,12 +730,13 @@ void ATacticalPlayerController::RequestEndTurn()
 
 void ATacticalPlayerController::RequestAttack()
 {
-	// Кнопка «Огонь» / хоткей — ДВУХТАКТНАЯ, как в XCOM 2: первое нажатие входит
-	// в прицеливание (цель листается Tab/Q/E или кликом), повторное нажатие той
-	// же кнопки (или Enter) подтверждает выстрел по взятой цели.
+	// Кнопка «Огонь» / пробел — TOGGLE входа в прицеливание, НИКОГДА не выстрел.
+	// Так исключён баг «дважды нажал — пальнул вслепую по авто-выбранной цели»:
+	// хоткей только открывает/закрывает режим, а стреляют Enter'ом или кликом
+	// по уже показанной камерой цели (осознанное подтверждение, как в XCOM 2).
 	if (bAwaitingAttackTarget)
 	{
-		ConfirmAttack();
+		CancelTargeting(); // повторное нажатие выходит из режима (0 AP)
 		return;
 	}
 

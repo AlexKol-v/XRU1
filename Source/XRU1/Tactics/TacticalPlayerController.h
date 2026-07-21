@@ -285,6 +285,7 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Input") TObjectPtr<UInputAction> SelectAction;      // ЛКМ
 	UPROPERTY(EditDefaultsOnly, Category = "Input") TObjectPtr<UInputAction> CommandAction;     // ПКМ
 	UPROPERTY(EditDefaultsOnly, Category = "Input") TObjectPtr<UInputAction> EndTurnAction;     // Enter
+	UPROPERTY(EditDefaultsOnly, Category = "Input") TObjectPtr<UInputAction> AttackAction;      // Пробел: вход/выход прицеливания (toggle)
 	UPROPERTY(EditDefaultsOnly, Category = "Input") TObjectPtr<UInputAction> OverwatchAction;   // Y
 	UPROPERTY(EditDefaultsOnly, Category = "Input") TObjectPtr<UInputAction> HunkerAction;      // X
 	UPROPERTY(EditDefaultsOnly, Category = "Input") TObjectPtr<UInputAction> ClassAbilityAction;// R
