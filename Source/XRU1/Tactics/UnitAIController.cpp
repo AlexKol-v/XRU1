@@ -137,6 +137,7 @@ void AUnitAIController::ExecuteUnitTurn(FSimpleDelegate OnFinished)
 	TurnFinishedDelegate = MoveTemp(OnFinished);
 	bTurnMoveInProgress = false;
 	bCoverMoveDoneThisTurn = false;
+	bManeuverInProgress = false;
 	AdvanceTurnStep();
 }
 
@@ -200,41 +201,80 @@ bool AUnitAIController::StepCombat(AUnitBase* Unit)
 	bHasThreatLocation = true;
 
 	const UActionPointsComponent* ActionPoints = Unit->GetActionPoints();
+	const int32 PointsLeft = ActionPoints ? ActionPoints->CurrentActionPoints : 0;
 	const bool bCanShootNow = UGA_Attack::CanTargetActor(Unit, Target);
+	const bool bLogAI = CVarLogAICombat.GetValueOnGameThread() != 0;
 
-	// 1) XCOM-манёвр «займи укрытие — потом стреляй»: если стоим открытыми к
-	// цели (или не простреливаем её отсюда) и хватает AP на «двинуться +
-	// выстрелить», сначала уходим в укрытие с линией огня. Один манёвр на ход.
-	if (!bCoverMoveDoneThisTurn && ActionPoints && ActionPoints->CurrentActionPoints >= 2)
+	// 0) Продолжение НАЧАТОГО манёвра (отступление/рывок длиннее 1 AP): вторая
+	// нога к той же точке. Это не новый выбор — bCoverMoveDoneThisTurn уже стоит.
+	if (bManeuverInProgress)
 	{
-		const UCoverDetectionComponent* Cover = Unit->GetCoverDetection();
-		const bool bExposed = !Cover || Cover->GetCoverAgainst(Target) == ECoverType::None;
-		if (bExposed || !bCanShootNow)
+		bManeuverInProgress = false; // однократное продолжение за шаг; при успехе взводится снова
+		if (PointsLeft > 0 && FVector::Dist2D(Unit->GetActorLocation(), PendingManeuverPoint) > 75.f)
 		{
-			FVector CoverPoint;
-			const bool bFoundCover = FindCoverPoint(Unit, Target, CoverPoint);
-			if (CVarLogAICombat.GetValueOnGameThread() != 0)
+			if (MoveWithBudget(Unit, PendingManeuverPoint, /*AcceptanceRadius=*/40.f))
 			{
-				UE_LOG(LogTemp, Log, TEXT("[AI] %s: открыт=%d, можно_стрелять=%d, укрытие_найдено=%d%s"),
-					*GetNameSafe(Unit), bExposed, bCanShootNow, bFoundCover,
-					bFoundCover ? TEXT("") : TEXT(" (рядом нет укрытия с линией огня — проверь, есть ли на карте WorldStatic-стены на высоте Half/Full CoverDetection)"));
-			}
-			if (bFoundCover)
-			{
-				bCoverMoveDoneThisTurn = true;
-				if (MoveWithBudget(Unit, CoverPoint, /*AcceptanceRadius=*/40.f))
-				{
-					return true; // добежит — следующий шаг выстрелит уже из укрытия
-				}
+				bManeuverInProgress = true;
+				return true;
 			}
 		}
 	}
 
-	// 2) Цель поражаема — стреляем. Предикат ОБЩИЙ с игроком (дальность +
-	// LOS/Squadsight): AI не может выстрелить там, где HUD игрока показал бы
-	// «нет линии огня», и наоборот.
+	const UCoverDetectionComponent* Cover = Unit->GetCoverDetection();
+	const bool bExposed = !Cover || Cover->GetCoverAgainst(Target) == ECoverType::None;
+
+	// Решения ниже — приоритетный список с утилити-оценкой точек внутри
+	// (веса Tactics|AI|Weights). Порядок — XCOM-логика хода.
+
+	// 1) ОТСТУПЛЕНИЕ: мало HP и стоим открытыми — уходим в укрытие ПОДАЛЬШЕ от
+	// угрозы, на это можно потратить весь ход (бюджет = все AP).
+	const bool bLowHealth = Unit->GetHealth() <= Unit->GetMaxHealth() * RetreatHealthFraction;
+	if (!bCoverMoveDoneThisTurn && bLowHealth && bExposed && PointsLeft >= 1)
+	{
+		FVector RetreatPoint;
+		if (FindCoverPoint(Unit, Target, Unit->MoveRange * PointsLeft, /*bRetreat=*/true, RetreatPoint) &&
+			StartManeuverTo(Unit, RetreatPoint, TEXT("отступление (мало HP)")))
+		{
+			return true; // не удалось стартовать — ниже обычная логика (выстрел/сближение)
+		}
+	}
+
+	// 2) МАНЁВР «в укрытие с линией огня» на 1 AP — выстрел вторым AP (XCOM).
+	if (!bCoverMoveDoneThisTurn && PointsLeft >= 2 && (bExposed || !bCanShootNow))
+	{
+		FVector CoverPoint;
+		if (FindCoverPoint(Unit, Target, Unit->MoveRange, /*bRetreat=*/false, CoverPoint) &&
+			StartManeuverTo(Unit, CoverPoint, TEXT("укрытие с линией огня (1 AP)")))
+		{
+			return true;
+		}
+
+		// 3) РЫВОК: рядом стрелять неоткуда — идём к укрытию ближе к цели на
+		// оба AP (в этом ходу уже не выстрелим, зато следующий начнём в укрытии).
+		if (!bCanShootNow && !bCoverMoveDoneThisTurn &&
+			FindCoverPoint(Unit, Target, Unit->MoveRange * PointsLeft, /*bRetreat=*/false, CoverPoint) &&
+			StartManeuverTo(Unit, CoverPoint, TEXT("рывок к дальнему укрытию (2 AP)")))
+		{
+			return true;
+		}
+
+		if (bLogAI)
+		{
+			UE_LOG(LogTemp, Log, TEXT("[AI] %s: открыт=%d, можно_стрелять=%d — укрытие не найдено ")
+				TEXT("(нужны WorldStatic-стены высотой Half/Full CoverDetection в радиусе хода)"),
+				*GetNameSafe(Unit), bExposed, bCanShootNow);
+		}
+	}
+
+	// 4) ВЫСТРЕЛ. Предикат ОБЩИЙ с игроком (дальность + LOS/Squadsight): AI не
+	// может выстрелить там, где HUD игрока показал бы «нет линии огня».
 	if (bCanShootNow)
 	{
+		if (bLogAI)
+		{
+			UE_LOG(LogTemp, Log, TEXT("[AI] %s: решение — ВЫСТРЕЛ (шанс %.0f%%)"),
+				*GetNameSafe(Unit), UGA_Attack::ComputeAttackHitChance(Unit, Target));
+		}
 		if (!TryFireAtTarget(Unit, Target))
 		{
 			return false; // способность отказала — ход завершаем, без зацикливания
@@ -243,16 +283,40 @@ bool AUnitAIController::StepCombat(AUnitBase* Unit)
 		return true;
 	}
 
-	// 3) Стрелять нельзя (далеко/нет линии), укрытие не нашлось — сближение.
+	// 5) СБЛИЖЕНИЕ: стрелять нельзя и укрытие не нашлось.
+	if (bLogAI)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[AI] %s: решение — сближение с целью"), *GetNameSafe(Unit));
+	}
 	return MoveWithBudget(Unit, Target->GetActorLocation(), Unit->AttackRange * 0.8f);
 }
 
-bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, FVector& OutPoint)
+bool AUnitAIController::StartManeuverTo(AUnitBase* Unit, const FVector& Point, const TCHAR* Reason)
+{
+	if (CVarLogAICombat.GetValueOnGameThread() != 0)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[AI] %s: решение — манёвр: %s → (%.0f, %.0f)"),
+			*GetNameSafe(Unit), Reason, Point.X, Point.Y);
+	}
+	bCoverMoveDoneThisTurn = true;
+	if (MoveWithBudget(Unit, Point, /*AcceptanceRadius=*/40.f))
+	{
+		// Точка может быть дальше 1 AP (отступление/рывок): продолжение сделает
+		// следующий шаг хода — MoveWithBudget за раз проходит максимум MoveRange.
+		PendingManeuverPoint = Point;
+		bManeuverInProgress = true;
+		return true;
+	}
+	return false;
+}
+
+bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, float PathBudget,
+	bool bRetreat, FVector& OutPoint)
 {
 	UWorld* World = GetWorld();
 	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
 	const UCoverDetectionComponent* Cover = Unit ? Unit->GetCoverDetection() : nullptr;
-	if (!World || !NavSys || !Cover || !Threat)
+	if (!World || !NavSys || !Cover || !Threat || PathBudget <= 0.f)
 	{
 		return false;
 	}
@@ -290,17 +354,24 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, FV
 		}
 	};
 
-	// Оценка позиции: укрытие + возможность стрелять − цена манёвра − штраф за
-	// дистанцию до цели сверх комфортной. Веса подобраны так, что Half-укрытие
-	// (+20) не окупает потерю линии огня (−45), а Full (+40) против Half (+20)
-	// стоит пробежки до полутора сотен метров... то есть сантиметров: −0.015/см.
+	// Взвешенная оценка позиции (веса — Tactics|AI|Weights):
+	//   укрытие × вес + линия огня ± дистанция до цели − цена пути.
+	// В режиме ОТСТУПЛЕНИЯ дистанция инвертируется (награда за удаление) и
+	// потеря линии огня не штрафуется — выживание важнее выстрела.
 	auto ScorePosition = [&](const FVector& FloorPoint, ECoverType CoverType, bool bCanShoot)
 	{
 		const float ThreatDistance = FVector::Dist(FloorPoint, ThreatLocation);
-		float Score = CoverValue(CoverType);
-		Score += bCanShoot ? 25.f : -45.f;
-		Score -= 0.015f * FVector::Dist2D(UnitLocation, FloorPoint);
-		Score -= 0.02f * FMath::Max(0.f, ThreatDistance - Unit->AttackRange * 0.75f);
+		float Score = CoverValue(CoverType) * CoverDefenseWeight;
+		Score += bCanShoot ? LineOfFireBonus : (bRetreat ? 0.f : -LoseLineOfFirePenalty);
+		Score -= TravelCostPerCm * FVector::Dist2D(UnitLocation, FloorPoint);
+		if (bRetreat)
+		{
+			Score += RetreatRewardPerCm * ThreatDistance;
+		}
+		else
+		{
+			Score -= OverextendPenaltyPerCm * FMath::Max(0.f, ThreatDistance - Unit->AttackRange * 0.75f);
+		}
 		return Score;
 	};
 
@@ -308,15 +379,16 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, FV
 	// не дёргаемся ради косметики.
 	const float BaselineScore = ScorePosition(UnitLocation,
 		Cover->GetCoverAgainst(Threat), UGA_Attack::CanTargetActor(Unit, Threat));
-	float BestScore = BaselineScore + 10.f;
+	float BestScore = BaselineScore + RelocateBias;
 	bool bFound = false;
 
-	// Кольцевой сэмплинг вокруг юнита в радиусе 1 AP.
-	const float Radii[] = {0.4f, 0.7f, 1.0f};
+	// Кольцевой сэмплинг вокруг юнита в пределах бюджета пути (1 AP — манёвр
+	// с выстрелом, 2 AP — отступление/рывок: поле поиска шире).
+	const float Radii[] = {0.35f, 0.6f, 0.85f, 1.0f};
 	constexpr int32 AngleSteps = 12;
 	for (const float RadiusFactor : Radii)
 	{
-		const float Radius = Unit->MoveRange * RadiusFactor;
+		const float Radius = PathBudget * RadiusFactor;
 		for (int32 Step = 0; Step < AngleSteps; ++Step)
 		{
 			const float Angle = 2.f * PI * Step / AngleSteps;
@@ -356,12 +428,11 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, FV
 				continue;
 			}
 
-			// Дорогая проверка — последней: точка должна быть ДОСТИЖИМА в бюджет
-			// 1 AP (путь с занятостью), иначе манёвр «в укрытие» оборвётся на
-			// полпути в чистом поле.
+			// Дорогая проверка — последней: точка должна быть ДОСТИЖИМА в переданный
+			// бюджет пути (с занятостью), иначе манёвр оборвётся на полпути.
 			FVector Reachable;
 			if (!UTacticsCombatStatics::GetPointAlongPathBudget(this, Unit, UnitLocation,
-					Projected.Location, Unit->MoveRange, Reachable) ||
+					Projected.Location, PathBudget, Reachable) ||
 				FVector::Dist2D(Reachable, Projected.Location) > 75.f)
 			{
 				continue;

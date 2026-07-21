@@ -253,8 +253,20 @@ void ATacticalCameraPawn::EnterShotFraming(const AActor* Shooter, const AActor* 
 
 void ATacticalCameraPawn::AbandonShotFraming()
 {
+	if (!bShotFraming)
+	{
+		return;
+	}
 	bShotFraming = false;
 	ShotFrameTimeLeft = -1.f;
+
+	// Наклон и высота обзора принадлежат ТОЛЬКО кадру выстрела — у игрока нет
+	// ввода, который бы их менял, поэтому «бросить как есть» их нельзя: камера
+	// навсегда осталась бы в плечевом наклоне (баг «ход врага кончился, а камера
+	// зависла в режиме атаки»). Возвращаем их ВСЕГДА. Yaw/зум/позицию не трогаем:
+	// ими игрок управляет сам, и новый интент (фокус/follow/панорама) их уже ведёт.
+	TargetPitch = PreShotPitch;
+	TargetLookHeight = PreShotLookHeight;
 }
 
 void ATacticalCameraPawn::ClearShotFraming()

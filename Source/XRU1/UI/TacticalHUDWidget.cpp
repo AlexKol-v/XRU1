@@ -8,6 +8,8 @@
 #include "GA_Attack.h"
 #include "Engine/World.h"
 #include "Blueprint/UserWidget.h"
+#include "Blueprint/WidgetTree.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Components/Button.h"
 #include "Components/Image.h"
 #include "Components/TextBlock.h"
@@ -446,6 +448,47 @@ void UTacticalHUDWidget::NativeConstruct()
 		HandleSelectedUnitChanged(Controller->GetSelectedUnit());
 		HandleHoveredUnitChanged(Controller->GetHoveredUnit());
 	}
+
+	// Клавиатура принадлежит игре, а не кнопкам HUD (фикс «пробел повторяет
+	// последнее нажатое действие»).
+	EnsureButtonsDontStealFocus();
+}
+
+void UTacticalHUDWidget::EnsureButtonsDontStealFocus()
+{
+	// Рекурсивный обход: своё дерево + деревья вложенных UserWidget'ов
+	// (портреты отряда и т.п. — их кнопки живут в СВОИХ WidgetTree).
+	TArray<UUserWidget*, TInlineAllocator<16>> Pending;
+	Pending.Add(this);
+	while (Pending.Num() > 0)
+	{
+		UUserWidget* Current = Pending.Pop(EAllowShrinking::No);
+		if (!Current || !Current->WidgetTree)
+		{
+			continue;
+		}
+		Current->WidgetTree->ForEachWidget([this, &Pending](UWidget* Widget)
+		{
+			if (UButton* Button = Cast<UButton>(Widget))
+			{
+				Button->OnClicked.AddUniqueDynamic(this, &UTacticalHUDWidget::HandleAnyButtonClickedResetFocus);
+			}
+			else if (UUserWidget* Nested = Cast<UUserWidget>(Widget))
+			{
+				Pending.Add(Nested);
+			}
+		});
+	}
+}
+
+void UTacticalHUDWidget::HandleAnyButtonClickedResetFocus()
+{
+	// Вернуть фокус вьюпорту: иначе кликнутая кнопка держит его, и следующий
+	// пробел/Enter «нажимает» её повторно средствами Slate — мимо Enhanced Input.
+	if (FSlateApplication::IsInitialized())
+	{
+		FSlateApplication::Get().SetAllUserFocusToGameViewport();
+	}
 }
 
 void UTacticalHUDWidget::NativeDestruct()
@@ -536,6 +579,10 @@ void UTacticalHUDWidget::HandleUnitStateChanged()
 {
 	OnUnitsStateChanged();
 	RefreshActionButtons();
+
+	// BP мог пересобрать портреты (смерть/эвакуация) — у новых кнопок тоже
+	// не должно оставаться фокуса после клика (AddUniqueDynamic, дубли не страшны).
+	EnsureButtonsDontStealFocus();
 }
 
 void UTacticalHUDWidget::HandleSquadAPChanged(int32 NewCurrent, int32 Max)

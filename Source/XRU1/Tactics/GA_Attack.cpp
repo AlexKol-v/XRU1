@@ -40,12 +40,18 @@ float UGA_Attack::ComputeEffectiveAim(const AUnitBase* Shooter, const AActor* Ta
 		const float Distance = FVector::Dist(Shooter->GetActorLocation(), Target->GetActorLocation());
 		Aim += UTacticsCombatStatics::GetAimDistanceModifier(Shooter, Distance);
 
-		// 2) Преимущество высоты: стрелок заметно выше цели → +20 (XCOM 2).
-		// Снизу вверх штрафа нет — как в оригинале.
-		if (Shooter->GetActorLocation().Z - Target->GetActorLocation().Z >=
-			UTacticsCombatStatics::HeightAdvantageZ)
+		// 2) Высота — СИММЕТРИЧНО: стрелок заметно выше цели → +20, заметно ниже
+		// → −20. (В XCOM 2 штрафа снизу нет, только бонус сверху; симметрия —
+		// осознанное отклонение, зафиксировано в GDD §5.4: позиция на высоте
+		// должна читаться как преимущество с обеих сторон.)
+		const float HeightDelta = Shooter->GetActorLocation().Z - Target->GetActorLocation().Z;
+		if (HeightDelta >= UTacticsCombatStatics::HeightAdvantageZ)
 		{
 			Aim += UTacticsCombatStatics::HeightAdvantageAimBonus;
+		}
+		else if (HeightDelta <= -UTacticsCombatStatics::HeightAdvantageZ)
+		{
+			Aim -= UTacticsCombatStatics::HeightAdvantageAimBonus;
 		}
 
 		// 3) Squadsight-выстрел без собственной LOS — штраф. Берём из CDO

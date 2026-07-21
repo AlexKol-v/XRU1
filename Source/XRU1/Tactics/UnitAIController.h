@@ -151,6 +151,46 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Combat", meta = (ClampMin = "0"))
 	float TauntPriorityRadius = 1200.f;
 
+	// --- Веса боевых решений (утилити-скоринг позиций, XCOM-подход) -----------
+	//
+	// Firaxis в XCOM гоняет дерево ОДИН раз на активацию юнита и выбирает
+	// позицию по скорингу (укрытие/фланг/дистанция) — не реалтайм-стейты.
+	// Здесь тот же принцип: FSM тревоги (Patrol/Investigate/Combat) остаётся
+	// источником правды «что юнит знает», а ВНУТРИ Combat позиция выбирается
+	// взвешенной оценкой. Новое поведение = новый вес/слагаемое, не новый флаг.
+
+	/** Множитель ценности укрытия в точке (защита 20/40 × вес). */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights", meta = (ClampMin = "0"))
+	float CoverDefenseWeight = 1.f;
+
+	/** Бонус точке, из которой цель ПРОСТРЕЛИВАЕТСЯ (манёвр не теряет выстрел). */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights")
+	float LineOfFireBonus = 25.f;
+
+	/** Штраф точке без линии огня (при отступлении не применяется). */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights")
+	float LoseLineOfFirePenalty = 45.f;
+
+	/** Цена манёвра за см пути (короткие перебежки лучше марафонов). */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights", meta = (ClampMin = "0"))
+	float TravelCostPerCm = 0.015f;
+
+	/** Штраф за отход дальше комфортной дистанции боя (за см сверх 0.75×AttackRange). */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights", meta = (ClampMin = "0"))
+	float OverextendPenaltyPerCm = 0.02f;
+
+	/** Порог значимости: манёвр только если он лучше текущей позиции на столько. */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights", meta = (ClampMin = "0"))
+	float RelocateBias = 10.f;
+
+	/** Доля HP, ниже которой открытый юнит ОТСТУПАЕТ в укрытие, а не лезет вперёд. */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights", meta = (ClampMin = "0", ClampMax = "1"))
+	float RetreatHealthFraction = 0.35f;
+
+	/** При отступлении: награда за каждый см УДАЛЕНИЯ от угрозы. */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights", meta = (ClampMin = "0"))
+	float RetreatRewardPerCm = 0.01f;
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void OnPossess(APawn* InPawn) override;
@@ -167,15 +207,22 @@ protected:
 	bool StepCombat(AUnitBase* Unit);
 
 	/**
-	 * Поиск точки укрытия против угрозы в радиусе 1 AP (XCOM-манёвр «займи
-	 * укрытие и стреляй»). Кольцевой сэмплинг вокруг юнита; каждая точка
-	 * оценивается ТЕМИ ЖЕ правилами, что действуют при стрельбе: укрытие —
-	 * математикой CoverDetectionComponent юнита, линия огня — общим LOS
+	 * Поиск лучшей боевой позиции против угрозы в бюджете пути PathBudget (см).
+	 * Кольцевой сэмплинг вокруг юнита; каждая точка оценивается ТЕМИ ЖЕ
+	 * правилами, что действуют при стрельбе: укрытие — математикой
+	 * CoverDetectionComponent юнита, линия огня — общим LOS
 	 * (HasLineOfSightFromLocation), достижимость — навигацией с занятостью.
-	 * false — ничего значимо лучше текущей позиции не нашлось (стоим где стоим,
-	 * а не мечемся ради +0 к укрытию).
+	 * Оценка — взвешенная (веса Tactics|AI|Weights): защита укрытия, линия
+	 * огня, цена пути, дистанция до цели. bRetreat инвертирует дистанцию
+	 * (награда за удаление, потеря LOS не штрафуется) — режим «отойти и
+	 * спрятаться» при низком HP.
+	 * false — ничего значимо лучше текущей позиции (порог RelocateBias):
+	 * стоим где стоим, а не мечемся ради +0 к укрытию.
 	 */
-	bool FindCoverPoint(AUnitBase* Unit, const AActor* Threat, FVector& OutPoint);
+	bool FindCoverPoint(AUnitBase* Unit, const AActor* Threat, float PathBudget, bool bRetreat, FVector& OutPoint);
+
+	/** Старт манёвра к точке: помечает ход и запоминает точку для продолжения. */
+	bool StartManeuverTo(AUnitBase* Unit, const FVector& Point, const TCHAR* Reason);
 
 	/**
 	 * Выстрел AI по цели. Штатный путь — событие Event.Attack: те же правила,
@@ -229,11 +276,20 @@ protected:
 	bool bTurnMoveInProgress = false;
 
 	/**
-	 * Манёвр в укрытие в этом ходу уже сделан. Один на ход (XCOM: переместился —
-	 * стреляй): без флага открытый юнит, не нашедший идеального укрытия, мог бы
-	 * потратить оба AP на метания и не выстрелить вовсе.
+	 * Манёвр в укрытие в этом ходу уже ВЫБРАН. Один выбор на ход (XCOM:
+	 * переместился — стреляй): без флага открытый юнит, не нашедший идеального
+	 * укрытия, мог бы потратить оба AP на метания и не выстрелить вовсе.
 	 */
 	bool bCoverMoveDoneThisTurn = false;
+
+	/**
+	 * Манёвр длиннее 1 AP (отступление/рывок к дальнему укрытию) продолжается
+	 * на следующем шаге хода: MoveWithBudget за раз проходит максимум MoveRange,
+	 * вторую ногу к ТОЙ ЖЕ точке делает следующий AdvanceTurnStep. Это
+	 * продолжение выбора, а не новый выбор (bCoverMoveDoneThisTurn уже стоит).
+	 */
+	bool bManeuverInProgress = false;
+	FVector PendingManeuverPoint = FVector::ZeroVector;
 
 	FTimerHandle TurnStepTimerHandle;
 
