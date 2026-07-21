@@ -13,7 +13,7 @@ ATacticalCameraPawn::ATacticalCameraPawn()
 	SpringArm = CreateDefaultSubobject<USpringArmComponent>(TEXT("SpringArm"));
 	SpringArm->SetupAttachment(Root);
 	SpringArm->TargetArmLength = TargetZoom;
-	SpringArm->SetRelativeRotation(FRotator(-55.f, TargetYaw, 0.f));
+	SpringArm->SetRelativeRotation(FRotator(TargetPitch, TargetYaw, 0.f));
 	SpringArm->bDoCollisionTest = false; // камера не должна «прилипать» к стенам укрытий
 
 	Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
@@ -142,9 +142,16 @@ void ATacticalCameraPawn::Tick(float DeltaSeconds)
 	FRotator Rot = SpringArm->GetRelativeRotation();
 	const float DeltaYaw = FMath::FindDeltaAngleDegrees(Rot.Yaw, TargetYaw);
 	Rot.Yaw += FMath::FInterpTo(0.f, DeltaYaw, DeltaSeconds, InterpSpeed);
+	// Наклон: тактические −55° ↔ пологий кадр выстрела (диапазон малый, простой FInterpTo).
+	Rot.Pitch = FMath::FInterpTo(Rot.Pitch, TargetPitch, DeltaSeconds, InterpSpeed);
 	SpringArm->SetRelativeRotation(Rot);
 
 	SpringArm->TargetArmLength = FMath::FInterpTo(SpringArm->TargetArmLength, TargetZoom, DeltaSeconds, InterpSpeed);
+
+	// Подъём точки вращения к линии груди в кадре выстрела (в тактике — 0).
+	FVector Offset = SpringArm->TargetOffset;
+	Offset.Z = FMath::FInterpTo(Offset.Z, TargetLookHeight, DeltaSeconds, InterpSpeed);
+	SpringArm->TargetOffset = Offset;
 
 	// Полёт к цели фокуса / следование за актором (XCOM-glide, только XY).
 	if (FollowTarget.IsValid())
@@ -208,6 +215,8 @@ void ATacticalCameraPawn::EnterShotFraming(const AActor* Shooter, const AActor* 
 	{
 		PreShotYaw = TargetYaw;
 		PreShotZoom = TargetZoom;
+		PreShotPitch = TargetPitch;
+		PreShotLookHeight = TargetLookHeight;
 		// Если камера СЕЙЧАС летит к цели (только что выбрали бойца — glide ещё
 		// идёт), «прежняя» позиция — это КОНЕЦ полёта, а не промежуточная точка,
 		// иначе возврат после выстрела/отмены встанет посреди карты.
@@ -218,9 +227,10 @@ void ATacticalCameraPawn::EnterShotFraming(const AActor* Shooter, const AActor* 
 	bShotFraming = true;
 	ShotFrameTimeLeft = Duration;
 
-	// Камера смотрит вдоль оси стрелок→цель, но с доворотом: строго по оси цель
-	// закрыта спиной стрелка. Пружина тянется НАЗАД от точки смотрения, поэтому
-	// нужный yaw — это направление взгляда.
+	// Пружина тянется НАЗАД от точки обзора вдоль своего yaw — значит камера
+	// окажется позади точки обзора. Ставим yaw = направление стрелок→цель +
+	// плечевой доворот: точка обзора у стрелка → камера позади него, стрелок на
+	// переднем плане, цель уходит вглубь кадра (ракурс «из-за плеча»).
 	const FVector ShooterLocation = Shooter->GetActorLocation();
 	const FVector TargetLocation = Target->GetActorLocation();
 	FVector Axis = TargetLocation - ShooterLocation;
@@ -231,9 +241,11 @@ void ATacticalCameraPawn::EnterShotFraming(const AActor* Shooter, const AActor* 
 	}
 
 	TargetZoom = FMath::Clamp(ShotFrameZoom, MinZoom, MaxZoom);
+	TargetPitch = ShotFramePitch;       // пологий «взгляд от плеча»
+	TargetLookHeight = ShotFrameLookHeight; // обзор на линии груди
 
-	// Точка смотрения между бойцами со смещением к цели; следование за бегущим
-	// на время кадра снимаем — иначе оно перетянет фокус на себя.
+	// Точка обзора у СТРЕЛКА (bias мал): он на переднем плане, цель вдали.
+	// Следование за бегущим на время кадра снимаем — иначе перетянет фокус.
 	FollowTarget = nullptr;
 	FocusGoal = FMath::Lerp(ShooterLocation, TargetLocation, ShotFrameTargetBias);
 	bHasFocusGoal = true;
@@ -254,10 +266,12 @@ void ATacticalCameraPawn::ClearShotFraming()
 	bShotFraming = false;
 	ShotFrameTimeLeft = -1.f;
 
-	// Полный возврат ракурса (XCOM): поворот, зум и позиция — как до кадра.
-	// Плавно, тем же glide-механизмом, что и полёт фокуса.
+	// Полный возврат ракурса (XCOM): поворот, наклон, зум, высота обзора и
+	// позиция — как до кадра. Плавно, тем же glide-механизмом, что и фокус.
 	TargetYaw = PreShotYaw;
 	TargetZoom = PreShotZoom;
+	TargetPitch = PreShotPitch;
+	TargetLookHeight = PreShotLookHeight;
 	FocusGoal = PreShotLocation;
 	bHasFocusGoal = true;
 }

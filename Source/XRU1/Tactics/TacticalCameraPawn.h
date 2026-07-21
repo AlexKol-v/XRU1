@@ -117,25 +117,42 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera")
 	float ZoomStep = 300.f;
 
-	// --- Кадр выстрела/прицеливания (XCOM) ------------------------------------
+	// --- Кадр выстрела/прицеливания «из-за плеча» (XCOM action cam) -----------
+	//
+	// Композиция over-the-shoulder: камера ПОЗАДИ и сбоку стрелка на уровне
+	// корпуса, стрелок — на переднем плане в углу кадра, цель — в фокусе вдали.
+	// Достигается пологим наклоном (не тактические −55°), точкой обзора у
+	// стрелка (не у цели) и подъёмом точки к линии груди.
 
-	/** Длина пружины в кадре выстрела (см) — наезд. Зажимается в [MinZoom, MaxZoom]. */
+	/** Длина пружины в кадре (см) — дистанция камеры от стрелка. [MinZoom,MaxZoom]. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot")
-	float ShotFrameZoom = 900.f;
+	float ShotFrameZoom = 700.f;
 
 	/**
-	 * Насколько точка смотрения смещена от стрелка к цели (0 — на стрелке,
-	 * 1 — на цели). Чуть за середину: в кадре обе фигуры, но цель крупнее.
+	 * Наклон камеры в кадре (град, отрицательный = смотрит вниз). Пологий, чтобы
+	 * читался «взгляд от плеча стрелка», а не тактический вид сверху.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "-80", ClampMax = "0"))
+	float ShotFramePitch = -14.f;
+
+	/**
+	 * Точка обзора между стрелком и целью (0 — на стрелке, 1 — на цели). Мала:
+	 * обзор держим у СТРЕЛКА, чтобы он был на переднем плане, а цель уходила
+	 * вглубь кадра (иначе видно только цель — что и было).
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "0", ClampMax = "1"))
-	float ShotFrameTargetBias = 0.65f;
+	float ShotFrameTargetBias = 0.2f;
+
+	/** Подъём точки обзора над полом в кадре (см) — к линии груди юнитов. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "0"))
+	float ShotFrameLookHeight = 90.f;
 
 	/**
-	 * Доворот камеры от оси стрелок→цель (град). Строго вдоль оси цель
-	 * закрывается спиной стрелка — уводим вбок, получая ракурс «из-за плеча».
+	 * Доворот камеры от оси стрелок→цель (град) — плечевой ракурс. Строго вдоль
+	 * оси цель закрыта спиной стрелка; доворот открывает её «из-за плеча».
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot")
-	float ShotFrameYawOffset = 35.f;
+	float ShotFrameYawOffset = 28.f;
 
 	/** Сколько держать кадр самого выстрела по умолчанию (сек). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "0"))
@@ -167,6 +184,15 @@ protected:
 	float TargetYaw = 45.f;
 	float TargetZoom = 1800.f;
 
+	/** Наклон камеры: −55° тактический вид, пологий в кадре выстрела. */
+	float TargetPitch = -55.f;
+
+	/**
+	 * Подъём точки вращения пружины над полом (SpringArm TargetOffset.Z): 0 в
+	 * тактике, ShotFrameLookHeight в кадре — чтобы обзор был на линии груди.
+	 */
+	float TargetLookHeight = 0.f;
+
 	// --- Фокус/следование (XCOM-полёт камеры) ---------------------------------
 
 	/** Актор, за которым камера следует каждый тик (невалиден = не следуем). */
@@ -191,6 +217,8 @@ protected:
 	 */
 	float PreShotYaw = 45.f;
 	float PreShotZoom = 1800.f;
+	float PreShotPitch = -55.f;
+	float PreShotLookHeight = 0.f;
 	FVector PreShotLocation = FVector::ZeroVector;
 
 	/** Общая часть FrameShot/FrameShotForDuration. */

@@ -21,6 +21,19 @@
 #include "Components/CapsuleComponent.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
+#include "HAL/IConsoleManager.h"
+
+/**
+ * Диагностика решений AI в бою: почему враг стреляет/бежит/стоит. Под cvar,
+ * выключено по умолчанию. Включить в консоли: `xru1.AI.LogCombat 1`.
+ * Отвечает на «понимают ли враги, где прятаться» — печатает, нашёл ли манёвр
+ * укрытие и с какой оценкой (0 найдено = на карте нет укрытий рядом).
+ */
+static TAutoConsoleVariable<int32> CVarLogAICombat(
+	TEXT("xru1.AI.LogCombat"),
+	0,
+	TEXT("1 — логировать боевые решения вражеского AI (укрытие/выстрел/сближение)."),
+	ECVF_Default);
 
 AUnitAIController::AUnitAIController(const FObjectInitializer& ObjectInitializer)
 	// Detour Crowd вместо стокового path following: агенты знают друг о друге
@@ -199,7 +212,14 @@ bool AUnitAIController::StepCombat(AUnitBase* Unit)
 		if (bExposed || !bCanShootNow)
 		{
 			FVector CoverPoint;
-			if (FindCoverPoint(Unit, Target, CoverPoint))
+			const bool bFoundCover = FindCoverPoint(Unit, Target, CoverPoint);
+			if (CVarLogAICombat.GetValueOnGameThread() != 0)
+			{
+				UE_LOG(LogTemp, Log, TEXT("[AI] %s: открыт=%d, можно_стрелять=%d, укрытие_найдено=%d%s"),
+					*GetNameSafe(Unit), bExposed, bCanShootNow, bFoundCover,
+					bFoundCover ? TEXT("") : TEXT(" (рядом нет укрытия с линией огня — проверь, есть ли на карте WorldStatic-стены на высоте Half/Full CoverDetection)"));
+			}
+			if (bFoundCover)
 			{
 				bCoverMoveDoneThisTurn = true;
 				if (MoveWithBudget(Unit, CoverPoint, /*AcceptanceRadius=*/40.f))
