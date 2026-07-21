@@ -306,7 +306,7 @@ void ATacticalPlayerController::UpdatePathPreviewUnderCursor()
 
 	// Превью уместно только когда юнит готов принять приказ и стоит на месте.
 	const bool bCanPreview = IsPlayerPhase() && SelectedUnit && !SelectedUnit->IsDowned()
-		&& !SelectedUnit->IsEvacuated() && !bAwaitingAbilityTarget && !IsSelectedUnitMoving();
+		&& !SelectedUnit->IsEvacuated() && !IsTargetingAbility() && !IsSelectedUnitMoving();
 	if (!bCanPreview)
 	{
 		MoveRangeVisualizer->HidePathPreview();
@@ -358,20 +358,19 @@ void ATacticalPlayerController::SelectUnit(AUnitBase* Unit)
 		SelectedUnit->SetSelectionHighlight(false);
 	}
 
-	// Смена бойца снимает прицеливание (подсветку цели — тоже) вместе с кадром
-	// камеры: прицел старого бойца к новому не относится. Кадр именно БРОСАЕМ
-	// (Abandon), а не закрываем: FocusOnActor ниже сам увезёт камеру к новому
-	// бойцу, возврат «как было» тут не нужен.
-	if (bAwaitingAttackTarget)
+	// Смена бойца снимает прицеливание. Кадр камеры БРОСАЕМ (Abandon) ДО смены
+	// режима: FocusOnActor ниже сам увезёт камеру к новому бойцу, возврат «как
+	// было» тут не нужен (и был бы неверным). Abandon гасит bShotFraming, поэтому
+	// ExitTargetingMode внутри SetTargetingMode камеру уже не тронет — только
+	// снимет подсветку/баннер.
+	if (IsTargetingAttack())
 	{
 		if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
 		{
 			Camera->AbandonShotFraming();
 		}
 	}
-	bAwaitingAbilityTarget = false;
-	bAwaitingAttackTarget = false;
-	ClearAttackTarget();
+	SetTargetingMode(EPlayerTargetingMode::None);
 	SelectedUnit = Unit;
 
 	if (SelectedUnit)
@@ -423,7 +422,7 @@ void ATacticalPlayerController::SelectNextUnit()
 {
 	// Tab в режиме прицеливания листает ЦЕЛИ, а не бойцов (XCOM): игрок выбирает,
 	// в кого стрелять, а не меняет активного юнита посреди прицеливания.
-	if (bAwaitingAttackTarget)
+	if (IsTargetingAttack())
 	{
 		CycleAttackTarget(1);
 		return;
@@ -523,7 +522,7 @@ void ATacticalPlayerController::HandleSelectPressed()
 	}
 
 	// Режим выбора цели способности (медик): клик решает.
-	if (bAwaitingAbilityTarget)
+	if (IsTargetingAbility())
 	{
 		HandleAbilityTargetClick(Clicked);
 		return;
@@ -533,7 +532,7 @@ void ATacticalPlayerController::HandleSelectPressed()
 	// показала — подтверждение осознанное, как второй пробел); ЛКМ по ДРУГОМУ
 	// достижимому врагу — переводит прицел на него (камера наводится, не
 	// стреляет); клик мимо врагов — выход из режима.
-	if (bAwaitingAttackTarget)
+	if (IsTargetingAttack())
 	{
 		if (AUnitBase* ClickedEnemy = Cast<AUnitBase>(Clicked))
 		{
@@ -578,7 +577,7 @@ void ATacticalPlayerController::HandleCommandPressed()
 {
 	// В режиме прицеливания ПКМ = отмена (XCOM), а не приказ на движение:
 	// иначе игрок, передумав стрелять, случайно гнал бы бойца под клик.
-	if (bAwaitingAttackTarget || bAwaitingAbilityTarget)
+	if (IsTargetingAttack() || IsTargetingAbility())
 	{
 		CancelTargeting();
 		return;
@@ -693,7 +692,7 @@ void ATacticalPlayerController::TryAttackTarget(AActor* Target)
 
 void ATacticalPlayerController::HandleAbilityTargetClick(AActor* ClickedActor)
 {
-	bAwaitingAbilityTarget = false;
+	SetTargetingMode(EPlayerTargetingMode::None); // клик по цели закрывает режим способности
 	if (!IsPlayerPhase() || !SelectedUnit || !ClickedActor)
 	{
 		return;
@@ -711,7 +710,7 @@ void ATacticalPlayerController::RequestEndTurn()
 	// Enter завершает ход и НЕ подтверждает выстрел (по просьбе: подтверждение —
 	// только тем же пробелом «Огонь» или кликом по цели). В режиме прицеливания
 	// Enter сперва выходит из него — иначе завершил бы ход мимо намерения.
-	if (bAwaitingAttackTarget || bAwaitingAbilityTarget)
+	if (IsTargetingAttack() || IsTargetingAbility())
 	{
 		CancelTargeting();
 		return;
@@ -732,7 +731,7 @@ void ATacticalPlayerController::RequestAttack()
 	// входит в прицеливание (камера кадром «из-за плеча» СРАЗУ показывает цель —
 	// стрелять вслепую нельзя, видно по кому), второе нажатие ТЕМ ЖЕ пробелом
 	// подтверждает выстрел по взятой цели. Выход из режима — ПКМ/Esc.
-	if (bAwaitingAttackTarget)
+	if (IsTargetingAttack())
 	{
 		ConfirmAttack();
 		return;
@@ -741,9 +740,57 @@ void ATacticalPlayerController::RequestAttack()
 	if (IsPlayerPhase() && SelectedUnit && !SelectedUnit->IsDowned() &&
 		SelectedUnit->GetActionPoints() && SelectedUnit->GetActionPoints()->HasActionsLeft())
 	{
-		bAwaitingAbilityTarget = false;
+		// BeginAttackTargeting сам сделает SetTargetingMode(Attack) — а он
+		// корректно выйдет из Ability, если тот был активен.
 		BeginAttackTargeting();
 	}
+}
+
+// --- Единый источник правды: режим взаимодействия ----------------------------------
+
+void ATacticalPlayerController::SetTargetingMode(EPlayerTargetingMode NewMode)
+{
+	if (TargetingMode == NewMode)
+	{
+		return;
+	}
+	const EPlayerTargetingMode OldMode = TargetingMode;
+	ExitTargetingMode(OldMode);
+	TargetingMode = NewMode;
+	EnterTargetingMode(NewMode);
+
+	// HUD один раз на переход: баннер прицела, серость кнопок, панель цели.
+	OnAvailableActionsChanged.Broadcast();
+}
+
+void ATacticalPlayerController::ExitTargetingMode(EPlayerTargetingMode OldMode)
+{
+	if (OldMode == EPlayerTargetingMode::Attack)
+	{
+		// Снять подсветку взятой цели.
+		ClearAttackTarget();
+
+		// Вернуть камеру — но ТОЛЬКО если она держит кадр ПРИЦЕЛА. Если сейчас
+		// играет кадр ВЫСТРЕЛА (выход из-за подтверждения), не трогаем: он сам
+		// вернёт ракурс по своему таймеру. Так один выход закрывает и отмену
+		// (камера возвращается), и выстрел (кадр доигрывает) — без дублей.
+		if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+		{
+			if (Camera->IsHoldingAimFrame())
+			{
+				Camera->ClearShotFraming();
+			}
+		}
+	}
+	// Ability-режим побочных эффектов, требующих отката, не имеет
+	// (подсветка/камера у него не менялись) — но ветка есть для симметрии.
+}
+
+void ATacticalPlayerController::EnterTargetingMode(EPlayerTargetingMode /*NewMode*/)
+{
+	// Побочные эффекты входа задаются точечно там, где известен контекст:
+	// цель атаки берёт BeginAttackTargeting (нужен список целей). Метод оставлен
+	// точкой расширения — новое состояние добавит сюда свой вход.
 }
 
 // --- Прицеливание по-XCOM'овски ----------------------------------------------------
@@ -789,7 +836,7 @@ bool ATacticalPlayerController::BeginAttackTargeting()
 		return false;
 	}
 
-	bAwaitingAttackTarget = true;
+	SetTargetingMode(EPlayerTargetingMode::Attack);
 
 	// На прицел — ближайшую к курсору цель, если курсор на достижимом враге,
 	// иначе первую (ближайшую к стрелку): игрок часто уже навёлся на нужного.
@@ -801,8 +848,7 @@ bool ATacticalPlayerController::BeginAttackTargeting()
 			Initial = Hovered;
 		}
 	}
-	SetAttackTarget(Initial);
-	OnAvailableActionsChanged.Broadcast(); // HUD: показать баннер/панель цели
+	SetAttackTarget(Initial); // сам броадкастит панель цели
 	return true;
 }
 
@@ -847,7 +893,7 @@ void ATacticalPlayerController::ClearAttackTarget()
 
 void ATacticalPlayerController::CycleAttackTarget(int32 Direction)
 {
-	if (!bAwaitingAttackTarget)
+	if (!IsTargetingAttack())
 	{
 		return;
 	}
@@ -868,28 +914,16 @@ void ATacticalPlayerController::CycleAttackTarget(int32 Direction)
 
 void ATacticalPlayerController::CancelTargeting()
 {
-	const bool bWasTargeting = bAwaitingAttackTarget || bAwaitingAbilityTarget;
-	bAwaitingAttackTarget = false;
-	bAwaitingAbilityTarget = false;
-	ClearAttackTarget();
-
-	// Камера сама вернёт ракурс, каким он был ДО прицеливания (позиция/поворот/
-	// зум) — это и есть XCOM-поведение отмены. FocusOnActor здесь не нужен: он
-	// перечеркнул бы возврат.
-	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
-	{
-		Camera->ClearShotFraming();
-	}
-	if (bWasTargeting)
-	{
-		OnAvailableActionsChanged.Broadcast(); // HUD: убрать баннер прицеливания
-	}
+	// Просто выход в обычный режим — весь откат (камера возвращается, подсветка
+	// и баннер гаснут) делает ExitTargetingMode. Отдельной логики отмены больше
+	// нет: один путь выхода, ничего не забудется.
+	SetTargetingMode(EPlayerTargetingMode::None);
 }
 
 void ATacticalPlayerController::ConfirmAttack()
 {
 	AUnitBase* Target = CurrentAttackTarget.Get();
-	if (!bAwaitingAttackTarget || !Target)
+	if (TargetingMode != EPlayerTargetingMode::Attack || !Target)
 	{
 		return;
 	}
@@ -899,20 +933,18 @@ void ATacticalPlayerController::ConfirmAttack()
 		return;
 	}
 
-	bAwaitingAttackTarget = false;
-	ClearAttackTarget();
-
-	// Переводим ДЕРЖАЩИЙСЯ кадр прицеливания в таймерный ДО отправки события:
-	// если выстрел не состоится (способность откажет по AP — ResolveShot не
-	// дойдёт до NotifyShotFired), бесконечный кадр иначе застрял бы навсегда.
-	// Состоявшийся выстрел просто переустановит тот же таймер в ResolveShot.
+	// Переводим ДЕРЖАЩИЙСЯ кадр прицеливания в таймерный ДО выхода из режима:
+	// тогда ExitTargetingMode увидит кадр ВЫСТРЕЛА (не прицела) и НЕ станет
+	// возвращать камеру — кадр доиграет и вернёт ракурс сам. А если выстрел не
+	// состоится (способность откажет по AP), таймерный кадр всё равно истечёт,
+	// и бесконечный кадр не застрянет.
 	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
 	{
 		Camera->FrameShotForDuration(SelectedUnit, Target, /*Duration=*/-1.f);
 	}
 
-	TryAttackTarget(Target); // событие Event.Attack; кадр выстрела — в NotifyShotFired
-	OnAvailableActionsChanged.Broadcast();
+	SetTargetingMode(EPlayerTargetingMode::None); // выход из прицела (камеру не трогает — играет выстрел)
+	TryAttackTarget(Target); // событие Event.Attack; кадр выстрела переустановит NotifyShotFired
 }
 
 void ATacticalPlayerController::NotifyShotFired(AActor* Shooter, AActor* Target)
@@ -966,7 +998,7 @@ void ATacticalPlayerController::RequestClassAbility()
 		const bool bHasUses = SelectedUnit->GetAbilityUsesRemaining(SelectedUnit->ClassAbilityClass) != 0;
 		if (bHasActionPoints && bHasUses)
 		{
-			bAwaitingAbilityTarget = true;
+			SetTargetingMode(EPlayerTargetingMode::Ability);
 		}
 		return;
 	}
@@ -1047,7 +1079,7 @@ void ATacticalPlayerController::RequestInteract()
 void ATacticalPlayerController::RequestPause()
 {
 	// Esc сперва гасит режим прицеливания (XCOM), и только «в пустоте» — пауза.
-	if (bAwaitingAttackTarget || bAwaitingAbilityTarget)
+	if (IsTargetingAttack() || IsTargetingAbility())
 	{
 		CancelTargeting();
 		return;
@@ -1084,7 +1116,7 @@ void ATacticalPlayerController::HandleCameraRotate(const FInputActionValue& Valu
 
 	// Q/E в режиме прицеливания листают ЦЕЛИ, а не крутят камеру (XCOM): пока
 	// целимся, вся навигация — по врагам. Камера и так стоит в кадре выстрела.
-	if (bAwaitingAttackTarget && !FMath::IsNearlyZero(Direction))
+	if (IsTargetingAttack() && !FMath::IsNearlyZero(Direction))
 	{
 		CycleAttackTarget(Direction > 0.f ? 1 : -1);
 		return;
@@ -1132,15 +1164,20 @@ void ATacticalPlayerController::RefreshMoveRange()
 
 void ATacticalPlayerController::HandleTurnStarted(ETurnPhase Phase)
 {
-	bAwaitingAbilityTarget = false;
-	bAwaitingAttackTarget = false;
 	bPendingAutoAdvance = false; // фаза сменилась — отложенный переход не актуален
-	ClearAttackTarget();
+
+	// Кадр прицела бросаем ДО смены режима: камера ниже сама встанет на отряд/
+	// бойца, возврат «как было» неуместен. Abandon гасит bShotFraming, поэтому
+	// SetTargetingMode(None) камеру уже не тронет — снимет только подсветку/баннер.
+	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+	{
+		Camera->AbandonShotFraming();
+	}
+	SetTargetingMode(EPlayerTargetingMode::None);
 
 	// Смена фазы: камера бросает сопровождение (нового скажет следующий делегат).
 	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
 	{
-		Camera->AbandonShotFraming(); // прицел прошлой фазы к новой не относится
 		Camera->ClearFollowTarget();
 
 		// Начало нашего хода: вернуть камеру к выбранному бойцу или к отряду.

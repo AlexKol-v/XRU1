@@ -21,6 +21,30 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnHoveredUnitChanged, AUnitBase*, N
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnAvailableActionsChanged);
 
 /**
+ * ЕДИНЫЙ ИСТОЧНИК ПРАВДЫ о режиме взаимодействия игрока в свою фазу. Раньше
+ * это были два независимых булевых флага (bAwaitingAttackTarget/AbilityTarget)
+ * с ручными условиями входа/выхода в каждой точке — отсюда «камера зависла»
+ * (один из путей выхода забывал её вернуть). Теперь ЛЮБОЙ переход идёт через
+ * SetTargetingMode → ExitTargetingMode(старый) + EnterTargetingMode(новый),
+ * поэтому откат побочных эффектов (камера/подсветка/баннер) не может быть
+ * пропущен. Новое состояние = новый case в двух switch'ах, а не новый флаг
+ * с россыпью условий по всему классу.
+ *
+ * Фаза боя (Player/Enemy) и «юнит в движении» сюда НЕ входят — их источник
+ * TurnManager и AIController соответственно (не дублируем истину).
+ */
+UENUM(BlueprintType)
+enum class EPlayerTargetingMode : uint8
+{
+	/** Обычный тактический режим: выбор юнита, приказ движения. */
+	None,
+	/** Прицеливание атаки: камера «из-за плеча», взятая цель, баннер. */
+	Attack,
+	/** Выбор цели способности (медик ждёт клика по союзнику). */
+	Ability
+};
+
+/**
  * Контроллер игрока в тактическом бою (GDD §11): выбор юнита (ЛКМ/1–4/Tab),
  * приказ перемещения (ПКМ, бюджет по длине пути навмеша), атака (ЛКМ по врагу
  * или кнопка «Огонь» → GameplayEvent Event.Attack), хоткеи действий
@@ -125,13 +149,17 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Tactics|Control")
 	bool IsPlayerPhase() const;
 
+	/** Текущий режим взаимодействия (единый источник правды, см. EPlayerTargetingMode). */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Control")
+	EPlayerTargetingMode GetTargetingMode() const { return TargetingMode; }
+
 	/** В режиме ли выбора цели способности (медик ждёт клика по союзнику). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Control")
-	bool IsTargetingAbility() const { return bAwaitingAbilityTarget; }
+	bool IsTargetingAbility() const { return TargetingMode == EPlayerTargetingMode::Ability; }
 
 	/** В режиме ли прицеливания атаки (нажата кнопка «Огонь», ждём клика по врагу). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Control")
-	bool IsTargetingAttack() const { return bAwaitingAttackTarget; }
+	bool IsTargetingAttack() const { return TargetingMode == EPlayerTargetingMode::Attack; }
 
 	/** Юнит под курсором (с обводкой; nullptr — пусто). Для панели цели HUD. */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Control")
@@ -349,14 +377,24 @@ protected:
 	/** Юнит под курсором (с обводкой). Weak: юнит может умереть/исчезнуть между тиками. */
 	TWeakObjectPtr<AUnitBase> HoveredUnit;
 
-	/** Ждём клик по цели способности (Event.Heal медика). */
-	bool bAwaitingAbilityTarget = false;
+	/** ЕДИНЫЙ источник правды о режиме взаимодействия (см. EPlayerTargetingMode). */
+	EPlayerTargetingMode TargetingMode = EPlayerTargetingMode::None;
 
-	/** Ждём клик по цели атаки (нажата кнопка «Огонь»). */
-	bool bAwaitingAttackTarget = false;
-
-	/** Взятая на прицел цель в режиме «Огонь» (Tab листает, HUD показывает шанс по ней). */
+	/** Взятая на прицел цель в режиме Attack (Tab листает, HUD показывает шанс по ней). */
 	TWeakObjectPtr<AUnitBase> CurrentAttackTarget;
+
+	/**
+	 * ЕДИНСТВЕННАЯ точка смены режима: откатывает побочные эффекты старого
+	 * (ExitTargetingMode) и включает новые (EnterTargetingMode). Все переходы
+	 * обязаны идти через неё — тогда камера/подсветка/баннер не «зависнут».
+	 */
+	void SetTargetingMode(EPlayerTargetingMode NewMode);
+
+	/** Откат побочных эффектов покидаемого режима (камера, подсветка, баннер). */
+	void ExitTargetingMode(EPlayerTargetingMode OldMode);
+
+	/** Установка побочных эффектов входимого режима. */
+	void EnterTargetingMode(EPlayerTargetingMode NewMode);
 
 	/**
 	 * Общий вход в режим прицеливания: собирает цели, берёт первую (или ближайшую
