@@ -227,61 +227,30 @@ Manny с тёмным материалом, статы: BaseAim 65 / ShotDamage 
    в туториале зону активирует скрипт: GameMode->`ActivateEvacuation()`).
    Юнит рядом с бомбой / в зоне жмёт **F**.
 
-## 4.6 Подсветка юнитов: обводка при наведении + кольцо выбора
+## 4.6 Подсветка юнитов: обводка при наведении + кольцо выбора ✅ сделано
 
-C++ уже всё делает (ховер-трейс, Render Custom Depth со stencil 1 = отряд /
-2 = враг, показ кольца в `SelectUnit`); `r.CustomDepth=3` включён в
-DefaultEngine.ini (проверить: Project Settings → Rendering → Postprocessing →
-Custom Depth-Stencil Pass = **Enabled with Stencil**). В редакторе нужно два
-материала и два назначения.
+Материалы созданы, назначены и проверены в PIE (2026-07-15) — в репозитории
+через LFS, на новой машине пересоздавать не нужно. Логика на стороне C++
+(ховер-трейс, Custom Depth stencil 1=отряд/2=враг, показ кольца в
+`SelectUnit`) без правок в редакторе. Формула на случай, если материалы
+понадобится пересобрать (`Content/XRU1Game/Materials/`):
 
-1. **M_OutlinePP** (`Content/XRU1Game/Materials/`) — post-process обводка:
-   - Details материала: Material Domain = **Post Process**; Blendable Location =
-     **Before Tonemapping** (в новых версиях пункт называется *Scene Color
-     Before Bloom*) — так обводку сглаживает TSR/TAA.
-   - Граф (классический 4-тап edge-detect, без Custom-нод):
-     1. `SceneTexture: CustomStencil` (UVs пустые) → `Mask(R)` — stencil в
-        центре пикселя, далее **C**.
-     2. Четыре `SceneTexture: CustomStencil` с UVs = `ScreenPosition` +
-        смещение на 1 пиксель: смещение = `float2(±1,0)/float2(0,±1)` ×
-        скалярный параметр **Thickness** (деф. 2) × `ViewSize` (нода
-        *ViewProperty → InvSize*). Их `Mask(R)` свести попарно нодами `Max` →
-        **N** (максимальный stencil соседей).
-     3. Маска ребра: `If (C < 0.5 && N > 0.5)` → практично: `1 - saturate(C)`
-        умножить на `saturate(N)` → **EdgeMask** (обводка рисуется СНАРУЖИ
-        юнита: центр пуст, сосед закрашен).
-     4. Цвет: `If (N == 1)` → VectorParam **AllyColor** (голубой ~(0.1,0.8,1)),
-        иначе VectorParam **EnemyColor** (красный ~(1,0.15,0.1)); сравнение —
-        `If` с порогом 1.5.
-     5. Итог: `Lerp( SceneTexture:PostProcessInput0 , Цвет×Intensity(деф. 5) ,
-        EdgeMask )` → **Emissive Color**.
-2. **M_SelectionRing** (там же) — кольцо-декаль:
-   - Material Domain = **Deferred Decal**, Blend Mode = **Translucent**.
-   - Маска кольца: `RadialGradientExponential` (Radius 0.5, Density 8) минус
-     `RadialGradientExponential` (Radius 0.4, Density 8) → **Opacity**;
-     VectorParam **RingColor** (жёлто-зелёный, ×3 эмиссив) → **Emissive Color**.
-   - (По желанию текстура-кольцо вместо градиентов — просто в Opacity.)
-3. **BP_TacticalCameraPawn** → Details → Tactics|Camera → `OutlineMaterial =
-   M_OutlinePP`. Материал вешается блендаблом на **unbound-`PostProcessComponent`**
-   пешки в BeginPlay — отдельный PostProcessVolume на карте НЕ нужен (если добавлял
-   вручную для теста — можно убрать, иначе обводка примёнится дважды).
-4. **BP-юниты** (BP_Unit_* и враг): компонент `SelectionDecal` → Decal Material
-   = `M_SelectionRing`. Дефолты положения/размера уже заданы в C++ (опущен к
-   ногам `Z=-88`, `DecalSize` X=120 глубина / Y/Z=60 радиус) — трогать только
-   если у юнита нестандартная капсула (напр. у танка увеличить радиус).
+- **M_OutlinePP** — Post Process, Blendable Location = Before Tonemapping
+  (сглаживается TSR/TAA); 4-тап edge-detect по `SceneTexture:CustomStencil`
+  (стенсил в центре пикселя vs максимум четырёх соседей со смещением
+  `Thickness × ViewSize`) → маска ребра снаружи силуэта → цвет по стенсилу
+  (`AllyColor` голубой / `EnemyColor` красный) → Emissive. Назначен в
+  `BP_TacticalCameraPawn → OutlineMaterial` (вешается блендаблом на
+  unbound-`PostProcessComponent` в BeginPlay — отдельный PostProcessVolume
+  на карте не нужен).
+- **M_SelectionRing** — Deferred Decal, Translucent; кольцо = разность двух
+  `RadialGradientExponential` (Radius 0.4/0.5) в Opacity, `RingColor`
+  эмиссивом. Назначен как `SelectionDecal` во всех BP-юнитах (позиция/размер
+  из C++, трогать только у нестандартных капсул).
 
-Логика подсветки (C++, уже работает):
-- **кольцо выбора** — только в свою (игрока) фазу; в ход врага прячется, чтобы
-  не загромождать картинку, и возвращается в начале нашего хода;
-- **ховер-обводка** в фазу игрока — и свои (голубым), и враги (красным);
-- **ховер-обводка** в фазу врага — свои НЕ подсвечиваются, враги подсвечиваются
-  (видно их ход);
-- смерть/эвакуация гасят и обводку, и кольцо.
-
-Проверка на Lvl_TopDown: навёл на бойца — голубая обводка, на врага — красная;
-ЛКМ по бойцу — под ногами кольцо, ЛКМ в пусто — гаснет; заверши ход — в фазу
-врага кольцо выбранного пропадает и наведение на своих обводку не даёт, а
-враги при наведении подсвечиваются.
+Поведение: кольцо выбора видно только в свою фазу (в ход врага прячется);
+ховер-обводка в фазу игрока красит и своих (голубым), и врагов (красным),
+в фазу врага — только врагов; смерть/эвакуация гасят обе подсветки.
 
 ## 5. Уровень-туториал (этап 7)
 
