@@ -134,7 +134,7 @@ neutral gray-teal background, same lighting across set".
 - **Клин (штурмовик):** "young restless male assault scout ~25, short mohawk, cocky half-smile, light armor, compact SMG"
 - **Мародёр (враг):** "faceless raider in welded scrap mask and rusty plate armor, olive rags, menacing but human" (+ вариант с другой маской)
 
-Куда: `UI/Art/Portraits/T_Portrait_Tank|Sniper|Medic|Assault|Marauder`.
+Куда: `UI/Art/Portraits/T_Portrait_Tank|Sniper|Medic|Assault|Marauder`. 
 
 ## 5. Иконки (256×256, PNG-alpha, единый стиль)
 
