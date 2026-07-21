@@ -869,6 +869,15 @@ void ATacticalPlayerController::SetAttackTarget(AUnitBase* Target)
 	if (Target)
 	{
 		Target->SetHoverHighlight(true);
+
+		// Стрелок разворачивается лицом к взятой цели (XCOM: читаемость наводки —
+		// видно, в кого целится). Тот же хелпер, что и у выстрела, — поворот
+		// прицела и поворот выстрела едины.
+		if (SelectedUnit)
+		{
+			UTacticsCombatStatics::FaceActorTowards(SelectedUnit, Target->GetActorLocation());
+		}
+
 		if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
 		{
 			Camera->FrameShot(SelectedUnit, Target); // кадр держится, пока целимся

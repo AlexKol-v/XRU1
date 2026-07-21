@@ -112,6 +112,14 @@ public:
 	static bool SquadHasLineOfSight(const AActor* Unit, const AActor* Target);
 
 	/**
+	 * Мгновенно разворачивает Actor лицом (yaw) к TargetLocation; крен/тангаж не
+	 * трогает. Общий для взятия цели на прицел (читаемость наводки) и выстрела
+	 * (не стрелять «в спину») — одна логика, поэтому повороты не расходятся.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Combat")
+	static void FaceActorTowards(AActor* Actor, const FVector& TargetLocation);
+
+	/**
 	 * Шум боя в точке: враги источника в радиусе Radius переходят в режим
 	 * разведки (Investigate, идут на звук) — XCOM-жёлтая тревога от выстрелов.
 	 */

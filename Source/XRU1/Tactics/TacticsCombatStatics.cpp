@@ -89,15 +89,9 @@ bool UTacticsCombatStatics::ResolveShot(AActor* Shooter, AActor* Target, float B
 	}
 
 	// Стрелок разворачивается ЛИЦОМ к цели (XCOM): без этого выстрел «в спину» и
-	// не читается, в кого он. Только yaw — крен/тангаж не трогаем. Работает для
-	// всех путей выстрела: атака игрока, AI, реакция Overwatch, скрипт туториала.
-	FVector ToTarget = Target->GetActorLocation() - Shooter->GetActorLocation();
-	ToTarget.Z = 0.f;
-	if (ToTarget.Normalize())
-	{
-		const FRotator Current = Shooter->GetActorRotation();
-		Shooter->SetActorRotation(FRotator(Current.Pitch, ToTarget.Rotation().Yaw, Current.Roll));
-	}
+	// не читается, в кого он. Общий хелпер — тот же, что при взятии цели на
+	// прицел. Работает для всех путей выстрела: игрок, AI, Overwatch, туториал.
+	FaceActorTowards(Shooter, Target->GetActorLocation());
 
 	// Камера показывает выстрел кадром «из-за плеча» — и выстрел игрока, и
 	// выстрел врага (игрок должен видеть, в кого стреляют по его отряду).
@@ -163,6 +157,21 @@ bool UTacticsCombatStatics::ResolveShot(AActor* Shooter, AActor* Target, float B
 	}
 
 	return bHit;
+}
+
+void UTacticsCombatStatics::FaceActorTowards(AActor* Actor, const FVector& TargetLocation)
+{
+	if (!Actor)
+	{
+		return;
+	}
+	FVector ToTarget = TargetLocation - Actor->GetActorLocation();
+	ToTarget.Z = 0.f;
+	if (ToTarget.Normalize())
+	{
+		const FRotator Current = Actor->GetActorRotation();
+		Actor->SetActorRotation(FRotator(Current.Pitch, ToTarget.Rotation().Yaw, Current.Roll));
+	}
 }
 
 bool UTacticsCombatStatics::HasLineOfSight(const AActor* Viewer, const AActor* Target)
