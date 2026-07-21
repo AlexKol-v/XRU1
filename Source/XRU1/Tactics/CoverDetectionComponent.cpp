@@ -83,30 +83,53 @@ float UCoverDetectionComponent::GetDefenseBonusAgainst(const AActor* Threat) con
 ECoverType UCoverDetectionComponent::TraceCoverInDirection(const FVector& Direction) const
 {
 	const AActor* Owner = GetOwner();
-	UWorld* World = Owner ? Owner->GetWorld() : nullptr;
+	if (!Owner)
+	{
+		return ECoverType::None;
+	}
+	// Общее ядро: юнит на месте — Base и есть его ActorLocation.
+	return TraceCoverAtLocation(Owner->GetWorld(), Owner->GetActorLocation(), Direction,
+		CoverTraceDistance, HalfCoverHeight, FullCoverHeight, CoverTraceChannel, Owner);
+}
+
+ECoverType UCoverDetectionComponent::EvaluateCoverAtLocation(const FVector& Base, const FVector& ThreatLocation) const
+{
+	const AActor* Owner = GetOwner();
+	const FVector ToThreat = (ThreatLocation - Base).GetSafeNormal2D();
+	if (!Owner || ToThreat.IsNearlyZero())
+	{
+		return ECoverType::None;
+	}
+	return TraceCoverAtLocation(Owner->GetWorld(), Base, ToThreat,
+		CoverTraceDistance, HalfCoverHeight, FullCoverHeight, CoverTraceChannel, Owner);
+}
+
+ECoverType UCoverDetectionComponent::TraceCoverAtLocation(const UWorld* World, const FVector& Base,
+	const FVector& Direction, float TraceDistance, float HalfHeight, float FullHeight,
+	ECollisionChannel Channel, const AActor* Ignored)
+{
 	if (!World)
 	{
 		return ECoverType::None;
 	}
 
-	FCollisionQueryParams Params(SCENE_QUERY_STAT(CoverTrace), false, Owner);
-	const FVector Base = Owner->GetActorLocation();
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(CoverTrace), false, Ignored);
 	const FVector Dir = Direction.GetSafeNormal2D();
 
 	auto WallAt = [&](float HeightOffset) -> bool
 	{
 		const FVector Start = Base + FVector(0.f, 0.f, HeightOffset);
-		const FVector End = Start + Dir * CoverTraceDistance;
+		const FVector End = Start + Dir * TraceDistance;
 		FHitResult Hit;
-		return World->LineTraceSingleByChannel(Hit, Start, End, CoverTraceChannel, Params);
+		return World->LineTraceSingleByChannel(Hit, Start, End, Channel, Params);
 	};
 
 	// Есть стена на высоте полного укрытия -> Full; иначе если есть на высоте half -> Half.
-	if (WallAt(FullCoverHeight))
+	if (WallAt(FullHeight))
 	{
 		return ECoverType::Full;
 	}
-	if (WallAt(HalfCoverHeight))
+	if (WallAt(HalfHeight))
 	{
 		return ECoverType::Half;
 	}

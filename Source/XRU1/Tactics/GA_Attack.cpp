@@ -30,22 +30,40 @@ float UGA_Attack::ComputeEffectiveAim(const AUnitBase* Shooter, const AActor* Ta
 	}
 
 	float Aim = Shooter->BaseAim;
-	// Squadsight-выстрел без собственной LOS идёт со штрафом к точности. Штраф
-	// берём из CDO способности атаки ЭТОГО юнита — HUD и выстрел считают одно
-	// и то же даже при перенастроенном BP-наследнике GA_Attack.
-	if (Target && !UTacticsCombatStatics::HasLineOfSight(Shooter, Target))
+	if (Target)
 	{
-		const UGA_Attack* AttackCDO = nullptr;
-		if (Shooter->AttackAbilityClass && Shooter->AttackAbilityClass->IsChildOf(UGA_Attack::StaticClass()))
+		// Модификаторы XCOM 2 (GDD §5.4). Считаются ЗДЕСЬ и только здесь:
+		// через ComputeEffectiveAim идут выстрел игрока, AI, Overwatch (со своим
+		// штрафом поверх) и HUD-прогноз — расходиться им негде.
+
+		// 1) Дистанция: профиль оружия (кривая юнита или встроенная винтовка).
+		const float Distance = FVector::Dist(Shooter->GetActorLocation(), Target->GetActorLocation());
+		Aim += UTacticsCombatStatics::GetAimDistanceModifier(Shooter, Distance);
+
+		// 2) Преимущество высоты: стрелок заметно выше цели → +20 (XCOM 2).
+		// Снизу вверх штрафа нет — как в оригинале.
+		if (Shooter->GetActorLocation().Z - Target->GetActorLocation().Z >=
+			UTacticsCombatStatics::HeightAdvantageZ)
 		{
-			AttackCDO = Shooter->AttackAbilityClass->GetDefaultObject<UGA_Attack>();
+			Aim += UTacticsCombatStatics::HeightAdvantageAimBonus;
 		}
-		const float Penalty = AttackCDO
-			? AttackCDO->SquadsightAimPenalty
-			: GetDefault<UGA_Attack>()->SquadsightAimPenalty;
-		Aim = FMath::Max(0.f, Aim - Penalty);
+
+		// 3) Squadsight-выстрел без собственной LOS — штраф. Берём из CDO
+		// способности атаки ЭТОГО юнита: HUD и выстрел считают одно и то же
+		// даже при перенастроенном BP-наследнике GA_Attack.
+		if (!UTacticsCombatStatics::HasLineOfSight(Shooter, Target))
+		{
+			const UGA_Attack* AttackCDO = nullptr;
+			if (Shooter->AttackAbilityClass && Shooter->AttackAbilityClass->IsChildOf(UGA_Attack::StaticClass()))
+			{
+				AttackCDO = Shooter->AttackAbilityClass->GetDefaultObject<UGA_Attack>();
+			}
+			Aim -= AttackCDO
+				? AttackCDO->SquadsightAimPenalty
+				: GetDefault<UGA_Attack>()->SquadsightAimPenalty;
+		}
 	}
-	return Aim;
+	return FMath::Max(0.f, Aim);
 }
 
 float UGA_Attack::ComputeAttackHitChance(const AUnitBase* Shooter, const AActor* Target)

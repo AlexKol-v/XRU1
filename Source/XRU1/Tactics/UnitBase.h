@@ -7,6 +7,7 @@
 
 class UActionPointsComponent;
 class UCoverDetectionComponent;
+class UCurveFloat;
 class UDecalComponent;
 class UGameplayAbility;
 class UTacticalAbility;
@@ -49,6 +50,15 @@ public:
 	/** Базовый шанс попадания до модификаторов укрытия, %. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactics|Stats", meta = (ClampMin = "0", ClampMax = "100"))
 	float BaseAim = 75.f;
+
+	/**
+	 * Профиль оружия: модификатор точности от дистанции до цели (X = см,
+	 * Y = ±aim). Пусто — встроенный профиль винтовки (+10 в упор → −15 вдали,
+	 * см. UTacticsCombatStatics::GetAimDistanceModifier). Дробовику — крутой
+	 * бонус вблизи и большой штраф вдали, снайперке — наоборот (XCOM 2).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactics|Stats")
+	TObjectPtr<UCurveFloat> AimByDistanceCurve;
 
 	/** Урон выстрела (HP). Разброс ±10% применяется при выстреле. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactics|Stats", meta = (ClampMin = "0"))

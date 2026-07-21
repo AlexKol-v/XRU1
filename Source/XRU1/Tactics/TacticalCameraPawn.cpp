@@ -87,6 +87,10 @@ void ATacticalCameraPawn::FocusOnActor(const AActor* Target, bool bInstant)
 
 void ATacticalCameraPawn::FocusOnLocation(const FVector& Location, bool bInstant)
 {
+	// Новый интент камеры перечёркивает кадр выстрела: без этого истёкший таймер
+	// кадра «вернул бы» камеру назад посреди уже начатого фокуса.
+	AbandonShotFraming();
+
 	// Явный фокус отменяет следование за актором.
 	FollowTarget = nullptr;
 
@@ -105,6 +109,10 @@ void ATacticalCameraPawn::FocusOnLocation(const FVector& Location, bool bInstant
 
 void ATacticalCameraPawn::SetFollowTarget(const AActor* Target)
 {
+	// Следование — новый интент: кадр выстрела (например, предыдущего врага)
+	// бросаем, иначе его таймер потом дёрнет камеру с сопровождаемого юнита.
+	AbandonShotFraming();
+
 	FollowTarget = Target;
 	bHasFocusGoal = Target != nullptr; // цель обновляется каждый тик в Tick
 	if (Target)
@@ -193,13 +201,14 @@ void ATacticalCameraPawn::EnterShotFraming(const AActor* Shooter, const AActor* 
 		return;
 	}
 
-	// Прежние поворот и зум запоминаем ОДИН раз за вход в кадр: повторный
-	// FrameShot (переключение цели табом) не должен затирать их уже кадровыми
-	// значениями — иначе после выхода игрок останется в наезде навсегда.
+	// Прежний ракурс (поворот, зум, позиция) запоминаем ОДИН раз за вход в кадр:
+	// повторный FrameShot (переключение цели табом) не должен затирать его уже
+	// кадровыми значениями — иначе после выхода игрок останется в наезде навсегда.
 	if (!bShotFraming)
 	{
 		PreShotYaw = TargetYaw;
 		PreShotZoom = TargetZoom;
+		PreShotLocation = GetActorLocation();
 	}
 	bShotFraming = true;
 	ShotFrameTimeLeft = Duration;
@@ -240,8 +249,10 @@ void ATacticalCameraPawn::ClearShotFraming()
 	bShotFraming = false;
 	ShotFrameTimeLeft = -1.f;
 
-	// Возвращаем ракурс игрока: точку смотрения оставляем где есть (камера уже
-	// «на месте события» — дёргать её обратно через полкарты было бы хуже).
+	// Полный возврат ракурса (XCOM): поворот, зум и позиция — как до кадра.
+	// Плавно, тем же glide-механизмом, что и полёт фокуса.
 	TargetYaw = PreShotYaw;
 	TargetZoom = PreShotZoom;
+	FocusGoal = PreShotLocation;
+	bHasFocusGoal = true;
 }

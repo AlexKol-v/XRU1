@@ -165,14 +165,34 @@ void ATacticalPlayerController::PlayerTick(float DeltaTime)
 		// Отложенный XCOM-автопереход: бегун потратил последние AP — теперь,
 		// когда он остановился, выбор уходит следующему бойцу с AP, а если
 		// такого нет — ход автоматически завершается (переходит врагу).
+		// Во время кадра выстрела (Overwatch мог стрелять по бегущему) — ждём.
 		if (bAutoSelectUnits && IsPlayerPhase() && SelectedUnit &&
 			SelectedUnit->GetActionPoints() && !SelectedUnit->GetActionPoints()->HasActionsLeft())
 		{
-			SelectNextUnit();
-			TryAutoEndTurn();
+			if (IsCameraFramingShot())
+			{
+				bPendingAutoAdvance = true;
+			}
+			else
+			{
+				SelectNextUnit();
+				TryAutoEndTurn();
+			}
 		}
 	}
 	bSelectedUnitWasMoving = bMovingNow;
+
+	// Отложенный автопереход дозрел: кадр выстрела кончился, никто не бежит.
+	if (bPendingAutoAdvance && IsPlayerPhase() && !bMovingNow && !IsCameraFramingShot())
+	{
+		bPendingAutoAdvance = false;
+		if (bAutoSelectUnits && SelectedUnit && SelectedUnit->GetActionPoints() &&
+			!SelectedUnit->GetActionPoints()->HasActionsLeft())
+		{
+			SelectNextUnit();
+		}
+		TryAutoEndTurn();
+	}
 
 	UpdateEdgeScroll();
 	UpdateHoverHighlight();
@@ -250,7 +270,12 @@ void ATacticalPlayerController::UpdateHoverHighlight()
 
 	if (AUnitBase* OldHovered = HoveredUnit.Get())
 	{
-		OldHovered->SetHoverHighlight(false);
+		// Взятая на прицел цель остаётся подсвеченной, даже когда курсор ушёл
+		// (XCOM): её обводку снимет только смена цели / выход из прицеливания.
+		if (OldHovered != CurrentAttackTarget.Get())
+		{
+			OldHovered->SetHoverHighlight(false);
+		}
 	}
 	if (NewHovered)
 	{
@@ -332,18 +357,20 @@ void ATacticalPlayerController::SelectUnit(AUnitBase* Unit)
 		SelectedUnit->SetSelectionHighlight(false);
 	}
 
-	// Смена бойца снимает прицеливание вместе с кадром камеры: прицел старого
-	// бойца к новому не относится (камера уедет к нему ниже через FocusOnActor).
+	// Смена бойца снимает прицеливание (подсветку цели — тоже) вместе с кадром
+	// камеры: прицел старого бойца к новому не относится. Кадр именно БРОСАЕМ
+	// (Abandon), а не закрываем: FocusOnActor ниже сам увезёт камеру к новому
+	// бойцу, возврат «как было» тут не нужен.
 	if (bAwaitingAttackTarget)
 	{
 		if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
 		{
-			Camera->ClearShotFraming();
+			Camera->AbandonShotFraming();
 		}
 	}
 	bAwaitingAbilityTarget = false;
 	bAwaitingAttackTarget = false;
-	CurrentAttackTarget = nullptr;
+	ClearAttackTarget();
 	SelectedUnit = Unit;
 
 	if (SelectedUnit)
@@ -501,27 +528,26 @@ void ATacticalPlayerController::HandleSelectPressed()
 		return;
 	}
 
-	// Режим прицеливания атаки (кнопка «Огонь»): клик по врагу-цели — выстрел.
-	// Клик по ДРУГОМУ достижимому врагу — переводит прицел на него (как ховер в
-	// XCOM), а не стреляет сразу; клик мимо — выходит из режима.
+	// Режим прицеливания атаки: ЛКМ по врагу ВЫБИРАЕТ цель, но НЕ стреляет —
+	// как в XCOM 2, где клик по врагу лишь переводит прицел, а выстрел
+	// подтверждают отдельно (кнопка «Огонь» повторно / Enter). Это же защищает
+	// от случайного даблклика «взял в прицел и тут же пальнул».
+	// Клик мимо врагов — выход из режима (по своему бойцу — ещё и его выбор ниже).
 	if (bAwaitingAttackTarget)
 	{
 		if (AUnitBase* ClickedEnemy = Cast<AUnitBase>(Clicked))
 		{
 			if (ClickedEnemy->GetGenericTeamId().GetId() != 1)
 			{
-				if (ClickedEnemy == CurrentAttackTarget.Get())
+				if (ClickedEnemy != CurrentAttackTarget.Get() &&
+					UGA_Attack::CanTargetActor(SelectedUnit, ClickedEnemy))
 				{
-					ConfirmAttack();
-				}
-				else if (UGA_Attack::CanTargetActor(SelectedUnit, ClickedEnemy))
-				{
-					SetAttackTarget(ClickedEnemy); // навёл на другого — берём его на прицел
+					SetAttackTarget(ClickedEnemy);
 				}
 				return;
 			}
 		}
-		CancelTargeting(); // клик мимо врагов — выходим из прицеливания
+		CancelTargeting();
 	}
 
 	if (AUnitBase* ClickedUnit = Cast<AUnitBase>(Clicked))
@@ -699,9 +725,15 @@ void ATacticalPlayerController::RequestEndTurn()
 
 void ATacticalPlayerController::RequestAttack()
 {
-	// Кнопка «Огонь» / хоткей (GDD §6): вход в режим прицеливания. Дальше цель
-	// листается Tab'ом, подтверждается ЛКМ по ней или Enter. Если целей нет —
-	// в режим не входим (кнопка «Огонь» и так серая по HasAnyValidTarget).
+	// Кнопка «Огонь» / хоткей — ДВУХТАКТНАЯ, как в XCOM 2: первое нажатие входит
+	// в прицеливание (цель листается Tab/Q/E или кликом), повторное нажатие той
+	// же кнопки (или Enter) подтверждает выстрел по взятой цели.
+	if (bAwaitingAttackTarget)
+	{
+		ConfirmAttack();
+		return;
+	}
+
 	if (IsPlayerPhase() && SelectedUnit && !SelectedUnit->IsDowned() &&
 		SelectedUnit->GetActionPoints() && SelectedUnit->GetActionPoints()->HasActionsLeft())
 	{
@@ -772,15 +804,41 @@ bool ATacticalPlayerController::BeginAttackTargeting()
 
 void ATacticalPlayerController::SetAttackTarget(AUnitBase* Target)
 {
+	// Подсветка цели (XCOM): взятый на прицел враг горит той же обводкой, что и
+	// при наведении, и не гаснет, когда курсор уходит (UpdateHoverHighlight его
+	// пропускает). Прежняя цель гаснет, если только над ней не курсор.
+	if (AUnitBase* Previous = CurrentAttackTarget.Get())
+	{
+		if (Previous != Target && Previous != HoveredUnit.Get())
+		{
+			Previous->SetHoverHighlight(false);
+		}
+	}
+
 	CurrentAttackTarget = Target;
 	if (Target)
 	{
+		Target->SetHoverHighlight(true);
 		if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
 		{
 			Camera->FrameShot(SelectedUnit, Target); // кадр держится, пока целимся
 		}
 	}
 	OnAvailableActionsChanged.Broadcast(); // HUD пересчитает панель цели
+}
+
+void ATacticalPlayerController::ClearAttackTarget()
+{
+	// Снять прицел и его подсветку (кроме случая, когда над целью курсор —
+	// тогда подсветку держит обычный ховер).
+	if (AUnitBase* Target = CurrentAttackTarget.Get())
+	{
+		if (Target != HoveredUnit.Get())
+		{
+			Target->SetHoverHighlight(false);
+		}
+	}
+	CurrentAttackTarget = nullptr;
 }
 
 void ATacticalPlayerController::CycleAttackTarget(int32 Direction)
@@ -809,15 +867,14 @@ void ATacticalPlayerController::CancelTargeting()
 	const bool bWasTargeting = bAwaitingAttackTarget || bAwaitingAbilityTarget;
 	bAwaitingAttackTarget = false;
 	bAwaitingAbilityTarget = false;
-	CurrentAttackTarget = nullptr;
+	ClearAttackTarget();
 
+	// Камера сама вернёт ракурс, каким он был ДО прицеливания (позиция/поворот/
+	// зум) — это и есть XCOM-поведение отмены. FocusOnActor здесь не нужен: он
+	// перечеркнул бы возврат.
 	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
 	{
 		Camera->ClearShotFraming();
-		if (SelectedUnit)
-		{
-			Camera->FocusOnActor(SelectedUnit); // вернуть камеру к бойцу
-		}
 	}
 	if (bWasTargeting)
 	{
@@ -839,7 +896,7 @@ void ATacticalPlayerController::ConfirmAttack()
 	}
 
 	bAwaitingAttackTarget = false;
-	CurrentAttackTarget = nullptr;
+	ClearAttackTarget();
 
 	// Переводим ДЕРЖАЩИЙСЯ кадр прицеливания в таймерный ДО отправки события:
 	// если выстрел не состоится (способность откажет по AP — ResolveShot не
@@ -1073,7 +1130,8 @@ void ATacticalPlayerController::HandleTurnStarted(ETurnPhase Phase)
 {
 	bAwaitingAbilityTarget = false;
 	bAwaitingAttackTarget = false;
-	CurrentAttackTarget = nullptr;
+	bPendingAutoAdvance = false; // фаза сменилась — отложенный переход не актуален
+	ClearAttackTarget();
 
 	// Смена фазы: камера бросает сопровождение (нового скажет следующий делегат).
 	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
@@ -1183,12 +1241,25 @@ void ATacticalPlayerController::HandleSelectedUnitAPChanged(int32 NewCurrent, in
 
 	// XCOM-флоу: действие завершило активацию бойца (AP кончились) — выбор
 	// переходит к следующему с AP. Бегущего не переключаем (камера сопровождает
-	// его до финиша; переход сделает PlayerTick по остановке).
+	// его до финиша; переход сделает PlayerTick по остановке). Пока играет кадр
+	// выстрела — тоже ждём (иначе переход выбора сорвал бы кадр в тот же тик):
+	// доделает PlayerTick по окончании кадра.
 	if (NewCurrent == 0 && bAutoSelectUnits && IsPlayerPhase() && !IsSelectedUnitMoving())
 	{
+		if (IsCameraFramingShot())
+		{
+			bPendingAutoAdvance = true;
+			return;
+		}
 		SelectNextUnit();
 		TryAutoEndTurn(); // если следующего с AP не нашлось — авто-конец хода
 	}
+}
+
+bool ATacticalPlayerController::IsCameraFramingShot() const
+{
+	const ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn());
+	return Camera && Camera->IsFramingShot();
 }
 
 void ATacticalPlayerController::TryAutoEndTurn()

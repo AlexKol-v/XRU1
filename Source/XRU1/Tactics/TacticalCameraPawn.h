@@ -184,9 +184,14 @@ protected:
 	/** Остаток времени кадра (< 0 — держать до ClearShotFraming). */
 	float ShotFrameTimeLeft = -1.f;
 
-	/** Поворот и зум ДО кадра — вернём их по выходу (игрок не теряет свой ракурс). */
+	/**
+	 * Ракурс ДО кадра — поворот, зум И ПОЗИЦИЯ. По выходу возвращаем всё
+	 * (XCOM: после выстрела/отмены камера возвращается, как была, а не остаётся
+	 * в наезде на месте события).
+	 */
 	float PreShotYaw = 45.f;
 	float PreShotZoom = 1800.f;
+	FVector PreShotLocation = FVector::ZeroVector;
 
 	/** Общая часть FrameShot/FrameShotForDuration. */
 	void EnterShotFraming(const AActor* Shooter, const AActor* Target, float Duration);

@@ -16,6 +16,9 @@
 #include "Perception/AISense_Sight.h"
 #include "Navigation/PathFollowingComponent.h"
 #include "Navigation/CrowdFollowingComponent.h"
+#include "NavigationSystem.h"
+#include "GameFramework/Character.h"
+#include "Components/CapsuleComponent.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
 
@@ -120,6 +123,7 @@ void AUnitAIController::ExecuteUnitTurn(FSimpleDelegate OnFinished)
 {
 	TurnFinishedDelegate = MoveTemp(OnFinished);
 	bTurnMoveInProgress = false;
+	bCoverMoveDoneThisTurn = false;
 	AdvanceTurnStep();
 }
 
@@ -172,32 +176,183 @@ void AUnitAIController::AdvanceTurnStep()
 bool AUnitAIController::StepCombat(AUnitBase* Unit)
 {
 	AActor* Target = FindVisibleTarget();
-
-	// 1) Цель поражаема прямо сейчас — стреляем. Предикат ОБЩИЙ с игроком
-	// (дальность + LOS/Squadsight): AI не может выстрелить там, где HUD игрока
-	// показал бы «нет линии огня», и наоборот.
-	if (Target)
+	if (!Target)
 	{
-		LastKnownThreatLocation = Target->GetActorLocation();
-		bHasThreatLocation = true;
-
-		if (UGA_Attack::CanTargetActor(Unit, Target))
-		{
-			if (!TryFireAtTarget(Unit, Target))
-			{
-				return false; // способность отказала — ход завершаем, без зацикливания
-			}
-			ScheduleNextStep();
-			return true;
-		}
-
-		// 2) Цель видна, но стрелять нельзя (далеко/нет линии) — сближение.
-		return MoveWithBudget(Unit, Target->GetActorLocation(), Unit->AttackRange * 0.8f);
+		// Цели не видно — переходим к разведке последней известной точки.
+		AlertState = EUnitAlertState::Investigate;
+		return StepInvestigate(Unit);
 	}
 
-	// 3) Цели не видно — переходим к разведке последней известной точки.
-	AlertState = EUnitAlertState::Investigate;
-	return StepInvestigate(Unit);
+	LastKnownThreatLocation = Target->GetActorLocation();
+	bHasThreatLocation = true;
+
+	const UActionPointsComponent* ActionPoints = Unit->GetActionPoints();
+	const bool bCanShootNow = UGA_Attack::CanTargetActor(Unit, Target);
+
+	// 1) XCOM-манёвр «займи укрытие — потом стреляй»: если стоим открытыми к
+	// цели (или не простреливаем её отсюда) и хватает AP на «двинуться +
+	// выстрелить», сначала уходим в укрытие с линией огня. Один манёвр на ход.
+	if (!bCoverMoveDoneThisTurn && ActionPoints && ActionPoints->CurrentActionPoints >= 2)
+	{
+		const UCoverDetectionComponent* Cover = Unit->GetCoverDetection();
+		const bool bExposed = !Cover || Cover->GetCoverAgainst(Target) == ECoverType::None;
+		if (bExposed || !bCanShootNow)
+		{
+			FVector CoverPoint;
+			if (FindCoverPoint(Unit, Target, CoverPoint))
+			{
+				bCoverMoveDoneThisTurn = true;
+				if (MoveWithBudget(Unit, CoverPoint, /*AcceptanceRadius=*/40.f))
+				{
+					return true; // добежит — следующий шаг выстрелит уже из укрытия
+				}
+			}
+		}
+	}
+
+	// 2) Цель поражаема — стреляем. Предикат ОБЩИЙ с игроком (дальность +
+	// LOS/Squadsight): AI не может выстрелить там, где HUD игрока показал бы
+	// «нет линии огня», и наоборот.
+	if (bCanShootNow)
+	{
+		if (!TryFireAtTarget(Unit, Target))
+		{
+			return false; // способность отказала — ход завершаем, без зацикливания
+		}
+		ScheduleNextStep();
+		return true;
+	}
+
+	// 3) Стрелять нельзя (далеко/нет линии), укрытие не нашлось — сближение.
+	return MoveWithBudget(Unit, Target->GetActorLocation(), Unit->AttackRange * 0.8f);
+}
+
+bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, FVector& OutPoint)
+{
+	UWorld* World = GetWorld();
+	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+	const UCoverDetectionComponent* Cover = Unit ? Unit->GetCoverDetection() : nullptr;
+	if (!World || !NavSys || !Cover || !Threat)
+	{
+		return false;
+	}
+
+	const FVector UnitLocation = Unit->GetActorLocation();
+	const FVector ThreatLocation = Threat->GetActorLocation();
+
+	// Половина капсулы: Base оценки укрытия = точка пола + пол-капсулы — ровно
+	// там окажется ActorLocation, когда юнит туда встанет (план = факт).
+	float CapsuleHalfHeight = 88.f;
+	float EyeHeight = CapsuleHalfHeight + UTacticsCombatStatics::EyeHeightOffset;
+	if (const ACharacter* UnitCharacter = Cast<ACharacter>(Unit))
+	{
+		if (const UCapsuleComponent* Capsule = UnitCharacter->GetCapsuleComponent())
+		{
+			CapsuleHalfHeight = Capsule->GetScaledCapsuleHalfHeight();
+			EyeHeight = CapsuleHalfHeight + UTacticsCombatStatics::EyeHeightOffset;
+		}
+	}
+
+	// Занятость: один снимок на весь перебор.
+	TArray<FVector> Obstacles;
+	UTacticsCombatStatics::GetUnitObstacles(World, Unit, Obstacles);
+	const double ClearanceSq = FMath::Square(static_cast<double>(UTacticsCombatStatics::GetUnitClearance(Unit)));
+
+	// Ценность укрытия — числами защиты самого компонента (Full=40, Half=20):
+	// оценка манёвра в тех же единицах, что и модификатор шанса попадания.
+	auto CoverValue = [Cover](ECoverType Type)
+	{
+		switch (Type)
+		{
+		case ECoverType::Full: return Cover->FullCoverDefenseBonus;
+		case ECoverType::Half: return Cover->HalfCoverDefenseBonus;
+		default:               return 0.f;
+		}
+	};
+
+	// Оценка позиции: укрытие + возможность стрелять − цена манёвра − штраф за
+	// дистанцию до цели сверх комфортной. Веса подобраны так, что Half-укрытие
+	// (+20) не окупает потерю линии огня (−45), а Full (+40) против Half (+20)
+	// стоит пробежки до полутора сотен метров... то есть сантиметров: −0.015/см.
+	auto ScorePosition = [&](const FVector& FloorPoint, ECoverType CoverType, bool bCanShoot)
+	{
+		const float ThreatDistance = FVector::Dist(FloorPoint, ThreatLocation);
+		float Score = CoverValue(CoverType);
+		Score += bCanShoot ? 25.f : -45.f;
+		Score -= 0.015f * FVector::Dist2D(UnitLocation, FloorPoint);
+		Score -= 0.02f * FMath::Max(0.f, ThreatDistance - Unit->AttackRange * 0.75f);
+		return Score;
+	};
+
+	// Базовая линия — ТЕКУЩАЯ позиция теми же правилами + порог значимости:
+	// не дёргаемся ради косметики.
+	const float BaselineScore = ScorePosition(UnitLocation,
+		Cover->GetCoverAgainst(Threat), UGA_Attack::CanTargetActor(Unit, Threat));
+	float BestScore = BaselineScore + 10.f;
+	bool bFound = false;
+
+	// Кольцевой сэмплинг вокруг юнита в радиусе 1 AP.
+	const float Radii[] = {0.4f, 0.7f, 1.0f};
+	constexpr int32 AngleSteps = 12;
+	for (const float RadiusFactor : Radii)
+	{
+		const float Radius = Unit->MoveRange * RadiusFactor;
+		for (int32 Step = 0; Step < AngleSteps; ++Step)
+		{
+			const float Angle = 2.f * PI * Step / AngleSteps;
+			const FVector Candidate = UnitLocation + FVector(FMath::Cos(Angle), FMath::Sin(Angle), 0.f) * Radius;
+
+			FNavLocation Projected;
+			if (!NavSys->ProjectPointToNavigation(Candidate, Projected, FVector(100.f, 100.f, 300.f)))
+			{
+				continue;
+			}
+
+			// Точка занята/впритык к другому юниту — не кандидат.
+			bool bBlocked = false;
+			for (const FVector& Obstacle : Obstacles)
+			{
+				if (FVector::DistSquared2D(Obstacle, Projected.Location) < ClearanceSq)
+				{
+					bBlocked = true;
+					break;
+				}
+			}
+			if (bBlocked)
+			{
+				continue;
+			}
+
+			const FVector StandBase = Projected.Location + FVector(0.f, 0.f, CapsuleHalfHeight);
+			const ECoverType CoverType = Cover->EvaluateCoverAtLocation(StandBase, ThreatLocation);
+			const bool bCanShoot =
+				FVector::Dist(Projected.Location, ThreatLocation) <= Unit->AttackRange &&
+				UTacticsCombatStatics::HasLineOfSightFromLocation(World,
+					Projected.Location + FVector(0.f, 0.f, EyeHeight), Threat);
+
+			const float Score = ScorePosition(Projected.Location, CoverType, bCanShoot);
+			if (Score <= BestScore)
+			{
+				continue;
+			}
+
+			// Дорогая проверка — последней: точка должна быть ДОСТИЖИМА в бюджет
+			// 1 AP (путь с занятостью), иначе манёвр «в укрытие» оборвётся на
+			// полпути в чистом поле.
+			FVector Reachable;
+			if (!UTacticsCombatStatics::GetPointAlongPathBudget(this, Unit, UnitLocation,
+					Projected.Location, Unit->MoveRange, Reachable) ||
+				FVector::Dist2D(Reachable, Projected.Location) > 75.f)
+			{
+				continue;
+			}
+
+			BestScore = Score;
+			OutPoint = Projected.Location;
+			bFound = true;
+		}
+	}
+	return bFound;
 }
 
 bool AUnitAIController::TryFireAtTarget(AUnitBase* Unit, AActor* Target)

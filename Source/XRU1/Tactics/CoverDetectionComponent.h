@@ -82,6 +82,20 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Cover")
 	ECoverType GetCoverAgainst(const AActor* Threat) const;
 
+	/**
+	 * Укрытие В ПРОИЗВОЛЬНОЙ ТОЧКЕ против угрозы — той же математикой, что у
+	 * стоящего юнита (Base = где будет ActorLocation, т.е. точка пола + половина
+	 * капсулы). Нужна AI: «какое укрытие я получу, если встану сюда» — план и
+	 * факт обязаны считаться одинаково, иначе враг бежит в «укрытие», которого
+	 * по прибытии не окажется. Настройки (высоты/дистанция/канал) — с ЭТОГО
+	 * компонента: у кого спрашиваем, тем и мерим.
+	 */
+	ECoverType EvaluateCoverAtLocation(const FVector& Base, const FVector& ThreatLocation) const;
+
+	/** Общее ядро трейса укрытия (см. EvaluateCoverAtLocation). */
+	static ECoverType TraceCoverAtLocation(const UWorld* World, const FVector& Base, const FVector& Direction,
+		float TraceDistance, float HalfHeight, float FullHeight, ECollisionChannel Channel, const AActor* Ignored);
+
 	/** Численный бонус защиты против конкретного стрелка (0 / Half / Full). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Cover")
 	float GetDefenseBonusAgainst(const AActor* Threat) const;

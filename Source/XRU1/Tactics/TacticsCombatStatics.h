@@ -41,6 +41,24 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Tactics|Combat")
 	static float ComputeHitChance(const AActor* Shooter, const AActor* Target, float BaseHitChance);
 
+	// --- Модификаторы точности (XCOM 2-подобные, GDD §5.4) ---------------------
+
+	/** Преимущество высоты: стрелок выше цели минимум на столько (см)... */
+	static constexpr float HeightAdvantageZ = 150.f;
+
+	/** ...получает столько к точности (XCOM 2: +20 с высоты). Снизу вверх штрафа нет. */
+	static constexpr float HeightAdvantageAimBonus = 20.f;
+
+	/**
+	 * Модификатор точности от дистанции до цели (± к aim). Берётся из
+	 * `AimByDistanceCurve` юнита (дизайнерский профиль оружия: дробовик/снайперка),
+	 * а без кривой — встроенный профиль «винтовки»: +10 в упор, 0 на средней,
+	 * до −15 на дальней. Через него дистанция ВЛИЯЕТ на выстрел — раньше 30 см
+	 * и 3000 см давали одинаковые 75%.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Combat")
+	static float GetAimDistanceModifier(const AUnitBase* Shooter, float Distance);
+
 	/**
 	 * Разыгрывает выстрел: бросок на попадание против укрытия цели; при попадании
 	 * применяет DamageEffectClass (SetByCaller Data.Damage = -Damage ± 10%) к ASC
@@ -59,9 +77,35 @@ public:
 	 */
 	static constexpr float SquadVisionRange = 2500.f;
 
-	/** Есть ли прямая линия видимости между юнитами (трейс по Visibility). */
+	// --- Линия видимости (XCOM-правила) ---------------------------------------
+	//
+	// Не одиночный луч, а «выглядывание»: стрелок пробует ТРИ позиции (центр и
+	// шаг вбок в обе стороны — step-out XCOM из-за угла укрытия) по ДВУМ точкам
+	// цели (глаза/корпус), лучи — СФЕРЫ радиуса LosSphereRadius. Сфера решает
+	// баг «выстрел через щель на стыке мешей»: волосяная щель пропускала
+	// линейный трейс, но толщину ствола она не пропустит. Проверяется только
+	// геометрия мира (WorldStatic/WorldDynamic) — юниты выстрелам не мешают,
+	// как в XCOM (сквозь своих стрелять можно).
+
+	/** Высота глаз над ActorLocation юнита (см). */
+	static constexpr float EyeHeightOffset = 60.f;
+
+	/** Шаг «выглядывания» вбок от центра стрелка (см) — step-out XCOM. */
+	static constexpr float LosPeekOffset = 70.f;
+
+	/** Радиус сферы LOS-трейса (см): тоньше — снова появятся выстрелы сквозь щели. */
+	static constexpr float LosSphereRadius = 15.f;
+
+	/** Есть ли линия огня между юнитами (XCOM-правила выше). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Combat")
 	static bool HasLineOfSight(const AActor* Viewer, const AActor* Target);
+
+	/**
+	 * Линия огня из ПРОИЗВОЛЬНОЙ точки глаз (для AI: «увижу ли цель, если встану
+	 * туда»). Та же математика, что HasLineOfSight, — иначе AI планировал бы по
+	 * одним правилам, а стрелял по другим.
+	 */
+	static bool HasLineOfSightFromLocation(const UWorld* World, const FVector& EyeLocation, const AActor* Target);
 
 	/** Видит ли цель ХОТЬ ОДИН живой союзник юнита (для Squadsight снайпера). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Combat")

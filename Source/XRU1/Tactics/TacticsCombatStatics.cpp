@@ -16,6 +16,7 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/Character.h"
 #include "Components/CapsuleComponent.h"
+#include "Curves/CurveFloat.h"
 
 bool UTacticsCombatStatics::IsUnitAlive(const AActor* Unit)
 {
@@ -170,23 +171,106 @@ bool UTacticsCombatStatics::HasLineOfSight(const AActor* Viewer, const AActor* T
 	{
 		return false;
 	}
-	UWorld* World = Viewer->GetWorld();
+	const UWorld* World = Viewer->GetWorld();
 	if (!World)
 	{
 		return false;
 	}
+	return HasLineOfSightFromLocation(World,
+		Viewer->GetActorLocation() + FVector(0.f, 0.f, EyeHeightOffset), Target);
+}
 
-	FCollisionQueryParams Params(SCENE_QUERY_STAT(UnitLOS), true, Viewer);
-	Params.AddIgnoredActor(Target);
+bool UTacticsCombatStatics::HasLineOfSightFromLocation(const UWorld* World, const FVector& EyeLocation,
+	const AActor* Target)
+{
+	if (!World || !Target)
+	{
+		return false;
+	}
 
-	// Смотрим «с уровня глаз» — над полными укрытиями не видно, над низкими — да.
-	const FVector EyeOffset(0.f, 0.f, 60.f);
-	FHitResult Hit;
-	const bool bBlocked = World->LineTraceSingleByChannel(Hit,
-		Viewer->GetActorLocation() + EyeOffset,
-		Target->GetActorLocation() + EyeOffset,
-		ECC_Visibility, Params);
-	return !bBlocked;
+	// Только геометрия мира: юниты выстрел не блокируют (XCOM — сквозь своих
+	// стрелять можно), поэтому фильтруем по типу объекта, а не по каналу.
+	FCollisionObjectQueryParams ObjectParams;
+	ObjectParams.AddObjectTypesToQuery(ECC_WorldStatic);
+	ObjectParams.AddObjectTypesToQuery(ECC_WorldDynamic); // двигаемые пропсы-укрытия
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(UnitLOS), /*bTraceComplex=*/false);
+	const FCollisionShape Sphere = FCollisionShape::MakeSphere(LosSphereRadius);
+
+	auto SphereClear = [&](const FVector& From, const FVector& To)
+	{
+		FHitResult Hit;
+		return !World->SweepSingleByObjectType(Hit, From, To, FQuat::Identity, ObjectParams, Sphere, Params);
+	};
+
+	// Точки цели: глаза и корпус — цель за низкой стеной видна по глазам,
+	// цель на уступе — по корпусу.
+	const FVector TargetLocation = Target->GetActorLocation();
+	const FVector TargetPoints[2] = {
+		TargetLocation + FVector(0.f, 0.f, EyeHeightOffset),
+		TargetLocation - FVector(0.f, 0.f, 20.f)
+	};
+
+	// Позиции стрелка: центр + step-out вбок в обе стороны (выглядывание из-за
+	// угла укрытия, как в XCOM). Выглядывать можно только туда, куда юнит
+	// физически может податься: короткий трейс до точки выглядывания.
+	FVector ShotDirection = TargetLocation - EyeLocation;
+	ShotDirection.Z = 0.;
+	FVector Side = FVector::CrossProduct(ShotDirection.GetSafeNormal(), FVector::UpVector);
+	if (!Side.Normalize())
+	{
+		Side = FVector::RightVector;
+	}
+
+	TArray<FVector, TInlineAllocator<3>> EyePositions;
+	EyePositions.Add(EyeLocation);
+	for (const float PeekSign : {1.f, -1.f})
+	{
+		const FVector PeekPosition = EyeLocation + Side * (LosPeekOffset * PeekSign);
+		FHitResult PeekHit;
+		if (!World->SweepSingleByObjectType(PeekHit, EyeLocation, PeekPosition, FQuat::Identity,
+			ObjectParams, Sphere, Params))
+		{
+			EyePositions.Add(PeekPosition);
+		}
+	}
+
+	for (const FVector& Eye : EyePositions)
+	{
+		for (const FVector& Point : TargetPoints)
+		{
+			if (SphereClear(Eye, Point))
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+float UTacticsCombatStatics::GetAimDistanceModifier(const AUnitBase* Shooter, float Distance)
+{
+	if (!Shooter)
+	{
+		return 0.f;
+	}
+
+	// Дизайнерский профиль оружия (кривая в BP-классе юнита) — приоритетнее.
+	if (Shooter->AimByDistanceCurve)
+	{
+		return Shooter->AimByDistanceCurve->GetFloatValue(Distance);
+	}
+
+	// Встроенный профиль «винтовки» (XCOM 2-подобный): бонус в упор, ноль на
+	// средней дистанции, мягкий штраф на дальней. Числа согласованы с GDD §5.4.
+	if (Distance <= 300.f)
+	{
+		return 10.f;
+	}
+	if (Distance <= 1200.f)
+	{
+		return FMath::GetMappedRangeValueClamped(FVector2D(300., 1200.), FVector2D(10., 0.), Distance);
+	}
+	return FMath::GetMappedRangeValueClamped(FVector2D(1200., 2500.), FVector2D(0., -15.), Distance);
 }
 
 bool UTacticsCombatStatics::SquadHasLineOfSight(const AActor* Unit, const AActor* Target)
