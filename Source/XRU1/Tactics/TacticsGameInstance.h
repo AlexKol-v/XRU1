@@ -6,6 +6,7 @@
 #include "TacticsGameInstance.generated.h"
 
 class UTacticsSaveGame;
+class UTacticalHUDStyleData;
 
 /**
  * GameInstance проекта: владеет текущим слотом кампании (UTacticsSaveGame) и
@@ -18,6 +19,17 @@ class XRU1_API UTacticsGameInstance : public UGameInstance
 	GENERATED_BODY()
 
 public:
+	/**
+	 * Единая UI-тема проекта (DA_TacticalHUDStyle): иконки, портреты, экранный
+	 * арт, палитра, размеры и отступы. Назначается один раз в BP-наследнике.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|UI")
+	TObjectPtr<UTacticalHUDStyleData> UITheme;
+
+	/** Общая UI-тема для HUD и всех WBP-экранов. */
+	UFUNCTION(BlueprintPure, Category = "Tactics|UI")
+	UTacticalHUDStyleData* GetUITheme() const { return UITheme; }
+
 	/** Имя слота на диске. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Save")
 	FString SaveSlotName = TEXT("TacticsCampaign");

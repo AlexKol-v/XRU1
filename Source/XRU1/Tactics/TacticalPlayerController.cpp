@@ -202,7 +202,15 @@ void ATacticalPlayerController::PlayerTick(float DeltaTime)
 
 void ATacticalPlayerController::UpdateEdgeScroll()
 {
-	if (!bEdgeScrollEnabled)
+	if (!bEdgeScrollEnabled || IsTargetingAttack())
+	{
+		return;
+	}
+	// Курсор мог случайно остаться у края в момент кинематографичного выстрела.
+	// Пассивный edge scroll не считается осознанным manual override кадра.
+	if (const ATacticalCameraPawn* Camera =
+		Cast<ATacticalCameraPawn>(GetPawn());
+		Camera && Camera->IsFramingShot())
 	{
 		return;
 	}
@@ -256,7 +264,8 @@ void ATacticalPlayerController::UpdateHoverHighlight()
 		{
 			// В фазу врага свои юниты не интерактивны — наведением их не подсвечиваем
 			// (как в XCOM). Врагов подсвечиваем всегда, чтобы читать их ход.
-			const bool bAlly = Unit->GetGenericTeamId().GetId() == 1;
+			const bool bAlly =
+				Unit->GetGenericTeamId().GetId() == TacticsTeamIds::Player;
 			if (!(bAlly && IsEnemyPhaseNow()))
 			{
 				NewHovered = Unit;
@@ -305,8 +314,7 @@ void ATacticalPlayerController::UpdatePathPreviewUnderCursor()
 	}
 
 	// Превью уместно только когда юнит готов принять приказ и стоит на месте.
-	const bool bCanPreview = IsPlayerPhase() && SelectedUnit && !SelectedUnit->IsDowned()
-		&& !SelectedUnit->IsEvacuated() && !IsTargetingAbility() && !IsSelectedUnitMoving();
+	const bool bCanPreview = CanIssueCommand(ETacticalPlayerCommand::Move);
 	if (!bCanPreview)
 	{
 		MoveRangeVisualizer->HidePathPreview();
@@ -358,18 +366,10 @@ void ATacticalPlayerController::SelectUnit(AUnitBase* Unit)
 		SelectedUnit->SetSelectionHighlight(false);
 	}
 
-	// Смена бойца снимает прицеливание. Кадр камеры БРОСАЕМ (Abandon) ДО смены
-	// режима: FocusOnActor ниже сам увезёт камеру к новому бойцу, возврат «как
-	// было» тут не нужен (и был бы неверным). Abandon гасит bShotFraming, поэтому
-	// ExitTargetingMode внутри SetTargetingMode камеру уже не тронет — только
-	// снимет подсветку/баннер.
-	if (IsTargetingAttack())
-	{
-		if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
-		{
-			Camera->AbandonShotFraming();
-		}
-	}
+	// Сначала штатно выходим из модального targeting. ExitTargetingMode вернёт
+	// глобальный пользовательский yaw/zoom; FocusOnActor ниже заменит только XY
+	// цели полёта. Прежний pre-Abandon превращал временный yaw прицела в
+	// постоянный и потому визуально «сбрасывал» поворот при смене бойца.
 	SetTargetingMode(EPlayerTargetingMode::None);
 	SelectedUnit = Unit;
 
@@ -534,27 +534,17 @@ void ATacticalPlayerController::HandleSelectPressed()
 	// стреляет); клик мимо врагов — выход из режима.
 	if (IsTargetingAttack())
 	{
-		if (AUnitBase* ClickedEnemy = Cast<AUnitBase>(Clicked))
+		if (HandleAttackTargetClick(Clicked))
 		{
-			if (ClickedEnemy->GetGenericTeamId().GetId() != 1)
-			{
-				if (ClickedEnemy == CurrentAttackTarget.Get())
-				{
-					ConfirmAttack();
-				}
-				else if (UGA_Attack::CanTargetActor(SelectedUnit, ClickedEnemy))
-				{
-					SetAttackTarget(ClickedEnemy);
-				}
-				return;
-			}
+			return;
 		}
 		CancelTargeting();
 	}
 
 	if (AUnitBase* ClickedUnit = Cast<AUnitBase>(Clicked))
 	{
-		const bool bOwnUnit = ClickedUnit->GetGenericTeamId().GetId() == 1;
+		const bool bOwnUnit =
+			ClickedUnit->GetGenericTeamId().GetId() == TacticsTeamIds::Player;
 		if (bOwnUnit && !ClickedUnit->IsEvacuated() && !ClickedUnit->IsDead())
 		{
 			SelectUnit(ClickedUnit);
@@ -571,6 +561,26 @@ void ATacticalPlayerController::HandleSelectPressed()
 		// случайный клик мимо юнита гасил бы панель действий и зону хода.
 		SelectUnit(nullptr);
 	}
+}
+
+bool ATacticalPlayerController::HandleAttackTargetClick(AActor* ClickedActor)
+{
+	AUnitBase* ClickedEnemy = Cast<AUnitBase>(ClickedActor);
+	if (!ClickedEnemy ||
+		ClickedEnemy->GetGenericTeamId().GetId() == TacticsTeamIds::Player)
+	{
+		return false;
+	}
+
+	if (ClickedEnemy == CurrentAttackTarget.Get())
+	{
+		ConfirmAttack();
+	}
+	else if (UGA_Attack::CanTargetActor(SelectedUnit, ClickedEnemy))
+	{
+		SetAttackTarget(ClickedEnemy);
+	}
+	return true;
 }
 
 void ATacticalPlayerController::HandleCommandPressed()
@@ -598,6 +608,95 @@ bool ATacticalPlayerController::IsPlayerPhase() const
 	return TurnManager && TurnManager->IsInCombat() && TurnManager->GetCurrentPhase() == ETurnPhase::Player;
 }
 
+bool ATacticalPlayerController::CanIssueCommand(ETacticalPlayerCommand Command) const
+{
+	// Общий инвариант одной тактической активации. Он живёт здесь один раз и
+	// используется как Request*-методами, так и HUD.
+	if (!IsPlayerPhase() || !SelectedUnit || SelectedUnit->IsDead() ||
+		SelectedUnit->IsDowned() || SelectedUnit->IsEvacuated() ||
+		IsSelectedUnitMoving())
+	{
+		return false;
+	}
+
+	// Targeting — модальный режим. Разрешено только подтвердить ТО действие,
+	// для которого режим был открыт; все конкурирующие команды ждут ПКМ/Esc.
+	const bool bConfirmsCurrentTargeting =
+		(Command == ETacticalPlayerCommand::Attack &&
+			TargetingMode == EPlayerTargetingMode::Attack) ||
+		(Command == ETacticalPlayerCommand::ClassAbility &&
+			TargetingMode == EPlayerTargetingMode::Ability);
+	if (TargetingMode != EPlayerTargetingMode::None && !bConfirmsCurrentTargeting)
+	{
+		return false;
+	}
+
+	const UActionPointsComponent* ActionPoints = SelectedUnit->GetActionPoints();
+
+	// Блок выполняющейся тактической GA относится ко ВСЕМ приказам, а не только
+	// к запуску следующей способности: нельзя начать Move/Interact/Skip, пока
+	// текущая GA ещё не завершила свой lifecycle.
+	if (const UAbilitySystemComponent* ASC = SelectedUnit->GetAbilitySystemComponent())
+	{
+		FGameplayTagContainer ActionTags;
+		ActionTags.AddTag(TacticsGameplayTags::Ability_TacticalAction);
+		if (ASC->AreAbilityTagsBlocked(ActionTags))
+		{
+			return false;
+		}
+	}
+
+	auto CanUseAbility = [this, ActionPoints](
+		const TSubclassOf<UTacticalAbility>& AbilityClass)
+	{
+		if (!AbilityClass)
+		{
+			return false;
+		}
+
+		const UTacticalAbility* AbilityCDO =
+			AbilityClass->GetDefaultObject<UTacticalAbility>();
+		if (!AbilityCDO ||
+			(AbilityCDO->ActionPointCost > 0 &&
+				(!ActionPoints || !ActionPoints->CanSpend(AbilityCDO->ActionPointCost))) ||
+			SelectedUnit->GetAbilityUsesRemaining(AbilityClass) == 0)
+		{
+			return false;
+		}
+
+		return true;
+	};
+
+	switch (Command)
+	{
+	case ETacticalPlayerCommand::Move:
+	case ETacticalPlayerCommand::SkipUnitTurn:
+		return ActionPoints && ActionPoints->HasActionsLeft();
+
+	case ETacticalPlayerCommand::Attack:
+		return CanUseAbility(SelectedUnit->AttackAbilityClass) &&
+			UGA_Attack::HasAnyValidTarget(SelectedUnit);
+
+	case ETacticalPlayerCommand::Overwatch:
+		return CanUseAbility(SelectedUnit->OverwatchAbilityClass);
+
+	case ETacticalPlayerCommand::HunkerDown:
+		return CanUseAbility(SelectedUnit->HunkerAbilityClass);
+
+	case ETacticalPlayerCommand::ClassAbility:
+		return CanUseAbility(SelectedUnit->ClassAbilityClass);
+
+	case ETacticalPlayerCommand::Interact:
+	{
+		ABombObjective* Bomb = nullptr;
+		AEvacZone* Zone = nullptr;
+		return FindAvailableInteraction(Bomb, Zone) != EInteractionKind::None;
+	}
+	default:
+		return false;
+	}
+}
+
 bool ATacticalPlayerController::IsEnemyPhaseNow() const
 {
 	const UTurnManagerSubsystem* TurnManager = GetWorld() ? GetWorld()->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
@@ -616,19 +715,12 @@ void ATacticalPlayerController::RefreshSelectionHighlight()
 
 void ATacticalPlayerController::TryMoveSelectedUnit(const FVector& Goal)
 {
-	if (!IsPlayerPhase() || !SelectedUnit || SelectedUnit->IsDowned())
+	if (!CanIssueCommand(ETacticalPlayerCommand::Move))
 	{
 		return;
 	}
 	UActionPointsComponent* ActionPoints = SelectedUnit->GetActionPoints();
-	if (!ActionPoints || !ActionPoints->HasActionsLeft())
-	{
-		return;
-	}
-
-	// Приказ во время выполнения предыдущего не принимаем: зона в этот момент
-	// спрятана (позиция юнита устарела), значит и affordance у игрока нет.
-	if (IsSelectedUnitMoving())
+	if (!ActionPoints)
 	{
 		return;
 	}
@@ -661,7 +753,15 @@ void ATacticalPlayerController::TryMoveSelectedUnit(const FVector& Goal)
 	// Ведём бойца ПО ЛОМАНОЙ плана, а не «в точку»: приказ в конечную цель
 	// заставлял навмеш строить свою прямую — сквозь стоящих бойцов, которых
 	// он не видит. Боец упирался в них, а очко действия уже было списано.
-	if (UnitAI->MoveAlongRoute(Plan.PathPoints, /*AcceptanceRadius=*/50.f) == EPathFollowingRequestResult::RequestSuccessful)
+	// Радиус приёмки финала — 10 см, т.е. практически «ровно в точку клика».
+	// Прежние 50 см и были причиной «недобега»: path following считает цель
+	// достигнутой, как только центр бойца вошёл в этот радиус, — боец замирал в
+	// полуметре от курсора и не мог прижаться к укрытию. Ехать в саму точку
+	// безопасно: цель уже спроецирована на навмеш (PlanMoveTo), а навмеш отступает
+	// от стен на радиус агента — значит точка заведомо стояблая. Ноль не ставим:
+	// небольшой допуск гасит «подползание» на торможении CharacterMovement, а
+	// сорвавшийся финальный отрезок и так разбирается штатно в OnMoveCompleted.
+	if (UnitAI->MoveAlongRoute(Plan.PathPoints, /*AcceptanceRadius=*/10.f) == EPathFollowingRequestResult::RequestSuccessful)
 	{
 		// AP списываем сразу (как XCOM), укрытие пересчитается в OnMoveCompleted.
 		ActionPoints->TrySpendActionPoint(Plan.ActionPointCost);
@@ -677,7 +777,8 @@ void ATacticalPlayerController::TryMoveSelectedUnit(const FVector& Goal)
 
 void ATacticalPlayerController::TryAttackTarget(AActor* Target)
 {
-	if (!IsPlayerPhase() || !SelectedUnit || SelectedUnit->IsDowned() || !Target)
+	if (!Target || !CanIssueCommand(ETacticalPlayerCommand::Attack) ||
+		!UGA_Attack::CanTargetActor(SelectedUnit, Target))
 	{
 		return;
 	}
@@ -692,17 +793,34 @@ void ATacticalPlayerController::TryAttackTarget(AActor* Target)
 
 void ATacticalPlayerController::HandleAbilityTargetClick(AActor* ClickedActor)
 {
-	SetTargetingMode(EPlayerTargetingMode::None); // клик по цели закрывает режим способности
-	if (!IsPlayerPhase() || !SelectedUnit || !ClickedActor)
+	if (TargetingMode != EPlayerTargetingMode::Ability || !ClickedActor ||
+		!CanIssueCommand(ETacticalPlayerCommand::ClassAbility))
 	{
 		return;
 	}
 
+	AUnitBase* ActingUnit = SelectedUnit;
+	const UTacticalAbility* AbilityCDO = ActingUnit && ActingUnit->ClassAbilityClass
+		? ActingUnit->ClassAbilityClass->GetDefaultObject<UTacticalAbility>()
+		: nullptr;
+	if (!AbilityCDO || !AbilityCDO->bRequiresTargetActor ||
+		!AbilityCDO->TargetedActivationEventTag.IsValid() ||
+		!AbilityCDO->IsValidTargetActor(ActingUnit, ClickedActor))
+	{
+		// Невалидный клик не закрывает targeting: игрок может выбрать другую цель.
+		return;
+	}
+
 	FGameplayEventData Payload;
-	Payload.Instigator = SelectedUnit;
+	Payload.Instigator = ActingUnit;
 	Payload.Target = ClickedActor;
 	UAbilitySystemBlueprintLibrary::SendGameplayEventToActor(
-		SelectedUnit, TacticsGameplayTags::Event_Heal, Payload);
+		ActingUnit, AbilityCDO->TargetedActivationEventTag, Payload);
+
+	// Сначала отправляем событие зафиксированному юниту, потом броадкастим смену
+	// UI-режима. Так Blueprint-слушатель SetTargetingMode не может подменить
+	// SelectedUnit между проверкой и фактическим выполнением команды.
+	SetTargetingMode(EPlayerTargetingMode::None);
 }
 
 void ATacticalPlayerController::RequestEndTurn()
@@ -731,19 +849,17 @@ void ATacticalPlayerController::RequestAttack()
 	// входит в прицеливание (камера кадром «из-за плеча» СРАЗУ показывает цель —
 	// стрелять вслепую нельзя, видно по кому), второе нажатие ТЕМ ЖЕ пробелом
 	// подтверждает выстрел по взятой цели. Выход из режима — ПКМ/Esc.
+	if (!CanIssueCommand(ETacticalPlayerCommand::Attack))
+	{
+		return;
+	}
 	if (IsTargetingAttack())
 	{
 		ConfirmAttack();
 		return;
 	}
 
-	if (IsPlayerPhase() && SelectedUnit && !SelectedUnit->IsDowned() &&
-		SelectedUnit->GetActionPoints() && SelectedUnit->GetActionPoints()->HasActionsLeft())
-	{
-		// BeginAttackTargeting сам сделает SetTargetingMode(Attack) — а он
-		// корректно выйдет из Ability, если тот был активен.
-		BeginAttackTargeting();
-	}
+	BeginAttackTargeting();
 }
 
 // --- Единый источник правды: режим взаимодействия ----------------------------------
@@ -758,6 +874,10 @@ void ATacticalPlayerController::SetTargetingMode(EPlayerTargetingMode NewMode)
 	ExitTargetingMode(OldMode);
 	TargetingMode = NewMode;
 	EnterTargetingMode(NewMode);
+
+	// Зона/превью движения подчиняются тому же модальному арбитру: в targeting
+	// прячутся, после отмены строятся снова.
+	RefreshMoveRange();
 
 	// HUD один раз на переход: баннер прицела, серость кнопок, панель цели.
 	OnAvailableActionsChanged.Broadcast();
@@ -932,7 +1052,8 @@ void ATacticalPlayerController::CancelTargeting()
 void ATacticalPlayerController::ConfirmAttack()
 {
 	AUnitBase* Target = CurrentAttackTarget.Get();
-	if (TargetingMode != EPlayerTargetingMode::Attack || !Target)
+	if (TargetingMode != EPlayerTargetingMode::Attack || !Target ||
+		!CanIssueCommand(ETacticalPlayerCommand::Attack))
 	{
 		return;
 	}
@@ -942,18 +1063,12 @@ void ATacticalPlayerController::ConfirmAttack()
 		return;
 	}
 
-	// Переводим ДЕРЖАЩИЙСЯ кадр прицеливания в таймерный ДО выхода из режима:
-	// тогда ExitTargetingMode увидит кадр ВЫСТРЕЛА (не прицела) и НЕ станет
-	// возвращать камеру — кадр доиграет и вернёт ракурс сам. А если выстрел не
-	// состоится (способность откажет по AP), таймерный кадр всё равно истечёт,
-	// и бесконечный кадр не застрянет.
-	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
-	{
-		Camera->FrameShotForDuration(SelectedUnit, Target, /*Duration=*/-1.f);
-	}
-
-	SetTargetingMode(EPlayerTargetingMode::None); // выход из прицела (камеру не трогает — играет выстрел)
-	TryAttackTarget(Target); // событие Event.Attack; кадр выстрела переустановит NotifyShotFired
+	// Gameplay Event отправляется ДО броадкаста выхода из режима. Реальный
+	// GA_Attack синхронно вызовет NotifyShotFired и сам превратит удерживаемый
+	// кадр прицела в таймерный кадр выстрела. Если GA отклонит активацию,
+	// ExitTargetingMode просто снимет старый aim-frame без ложной задержки.
+	TryAttackTarget(Target);
+	SetTargetingMode(EPlayerTargetingMode::None);
 }
 
 void ATacticalPlayerController::NotifyShotFired(AActor* Shooter, AActor* Target)
@@ -968,44 +1083,43 @@ void ATacticalPlayerController::NotifyShotFired(AActor* Shooter, AActor* Target)
 
 void ATacticalPlayerController::RequestOverwatch()
 {
-	if (IsPlayerPhase() && SelectedUnit && !SelectedUnit->IsDowned() && SelectedUnit->OverwatchAbilityClass)
+	if (!CanIssueCommand(ETacticalPlayerCommand::Overwatch))
 	{
-		if (UAbilitySystemComponent* ASC = SelectedUnit->GetAbilitySystemComponent())
-		{
-			ASC->TryActivateAbilityByClass(SelectedUnit->OverwatchAbilityClass);
-		}
+		return;
+	}
+	if (UAbilitySystemComponent* ASC = SelectedUnit->GetAbilitySystemComponent())
+	{
+		ASC->TryActivateAbilityByClass(SelectedUnit->OverwatchAbilityClass);
 	}
 }
 
 void ATacticalPlayerController::RequestHunkerDown()
 {
-	if (IsPlayerPhase() && SelectedUnit && !SelectedUnit->IsDowned() && SelectedUnit->HunkerAbilityClass)
+	if (!CanIssueCommand(ETacticalPlayerCommand::HunkerDown))
 	{
-		if (UAbilitySystemComponent* ASC = SelectedUnit->GetAbilitySystemComponent())
-		{
-			ASC->TryActivateAbilityByClass(SelectedUnit->HunkerAbilityClass);
-		}
+		return;
+	}
+	if (UAbilitySystemComponent* ASC = SelectedUnit->GetAbilitySystemComponent())
+	{
+		ASC->TryActivateAbilityByClass(SelectedUnit->HunkerAbilityClass);
 	}
 }
 
 void ATacticalPlayerController::RequestClassAbility()
 {
-	if (!IsPlayerPhase() || !SelectedUnit || SelectedUnit->IsDowned() || !SelectedUnit->ClassAbilityClass)
+	if (!CanIssueCommand(ETacticalPlayerCommand::ClassAbility))
 	{
 		return;
 	}
 
 	// Способности с целью (медик) — режим выбора: следующий ЛКМ по союзнику.
-	// Перед входом в режим — те же проверки, что серят кнопку в HUD: без AP или
-	// зарядов хоткей R не должен включать пустое прицеливание.
+	// AP/заряды/взаимоисключение уже проверил общий арбитр.
 	const UTacticalAbility* AbilityCDO = SelectedUnit->ClassAbilityClass->GetDefaultObject<UTacticalAbility>();
 	if (AbilityCDO && AbilityCDO->bRequiresTargetActor)
 	{
-		const UActionPointsComponent* ActionPoints = SelectedUnit->GetActionPoints();
-		const bool bHasActionPoints = AbilityCDO->ActionPointCost <= 0 ||
-			(ActionPoints && ActionPoints->CanSpend(AbilityCDO->ActionPointCost));
-		const bool bHasUses = SelectedUnit->GetAbilityUsesRemaining(SelectedUnit->ClassAbilityClass) != 0;
-		if (bHasActionPoints && bHasUses)
+		// Targeted-способность обязана объявить свой Gameplay Event в своём CDO:
+		// контроллер больше не знает ни UGA_Heal, ни Event.Heal.
+		if (AbilityCDO->TargetedActivationEventTag.IsValid())
 		{
 			SetTargetingMode(EPlayerTargetingMode::Ability);
 		}
@@ -1020,12 +1134,13 @@ void ATacticalPlayerController::RequestClassAbility()
 
 void ATacticalPlayerController::RequestSkipUnitTurn()
 {
-	if (IsPlayerPhase() && SelectedUnit)
+	if (!CanIssueCommand(ETacticalPlayerCommand::SkipUnitTurn))
 	{
-		if (UActionPointsComponent* ActionPoints = SelectedUnit->GetActionPoints())
-		{
-			ActionPoints->SpendAllRemaining();
-		}
+		return;
+	}
+	if (UActionPointsComponent* ActionPoints = SelectedUnit->GetActionPoints())
+	{
+		ActionPoints->SpendAllRemaining();
 	}
 }
 
@@ -1068,6 +1183,11 @@ EInteractionKind ATacticalPlayerController::GetAvailableInteraction() const
 
 void ATacticalPlayerController::RequestInteract()
 {
+	if (!CanIssueCommand(ETacticalPlayerCommand::Interact))
+	{
+		return;
+	}
+
 	ABombObjective* Bomb = nullptr;
 	AEvacZone* Zone = nullptr;
 	switch (FindAvailableInteraction(Bomb, Zone))
@@ -1113,6 +1233,12 @@ void ATacticalPlayerController::RequestPause()
 
 void ATacticalPlayerController::HandleCameraPan(const FInputActionValue& Value)
 {
+	// Attack-targeting модален: панорама/edge scroll не должны бросать action
+	// camera, оставляя TargetingMode активным без кадра.
+	if (IsTargetingAttack())
+	{
+		return;
+	}
 	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
 	{
 		Camera->AddPanInput(Value.Get<FVector2D>());
@@ -1139,6 +1265,10 @@ void ATacticalPlayerController::HandleCameraRotate(const FInputActionValue& Valu
 
 void ATacticalPlayerController::HandleCameraZoom(const FInputActionValue& Value)
 {
+	if (IsTargetingAttack())
+	{
+		return;
+	}
 	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
 	{
 		Camera->AddZoomInput(Value.Get<float>());
@@ -1154,8 +1284,7 @@ void ATacticalPlayerController::RefreshMoveRange()
 
 	// Во время выполнения приказа зона прячется: она устарела (юнит уже не там)
 	// и перестроится по остановке (PlayerTick ловит конец перемещения).
-	const bool bShouldShow = SelectedUnit && IsPlayerPhase() && !SelectedUnit->IsDowned()
-		&& !SelectedUnit->IsEvacuated() && !IsSelectedUnitMoving();
+	const bool bShouldShow = CanIssueCommand(ETacticalPlayerCommand::Move);
 	if (!bShouldShow)
 	{
 		MoveRangeVisualizer->Hide();
@@ -1175,14 +1304,14 @@ void ATacticalPlayerController::HandleTurnStarted(ETurnPhase Phase)
 {
 	bPendingAutoAdvance = false; // фаза сменилась — отложенный переход не актуален
 
-	// Кадр прицела бросаем ДО смены режима: камера ниже сама встанет на отряд/
-	// бойца, возврат «как было» неуместен. Abandon гасит bShotFraming, поэтому
-	// SetTargetingMode(None) камеру уже не тронет — снимет только подсветку/баннер.
+	// Сначала штатно закрываем aim-mode (он вернёт глобальный yaw/zoom), затем
+	// бросаем только возможный таймерный кадр уже совершённого выстрела. Новый
+	// фазовый focus ниже заменит позицию, не ракурс игрока.
+	SetTargetingMode(EPlayerTargetingMode::None);
 	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
 	{
 		Camera->AbandonShotFraming();
 	}
-	SetTargetingMode(EPlayerTargetingMode::None);
 
 	// Смена фазы: камера бросает сопровождение (нового скажет следующий делегат).
 	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
@@ -1309,7 +1438,10 @@ void ATacticalPlayerController::HandleSelectedUnitAPChanged(int32 NewCurrent, in
 bool ATacticalPlayerController::IsCameraFramingShot() const
 {
 	const ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn());
-	return Camera && Camera->IsFramingShot();
+	// Автопереход ждёт только конечный кадр совершённого выстрела. Бессрочное
+	// прицеливание — UI-mode, оно не должно уметь навечно заблокировать ход даже
+	// при будущей ошибке в маршрутизации команды.
+	return Camera && Camera->IsPlayingShotFrame();
 }
 
 void ATacticalPlayerController::TryAutoEndTurn()
@@ -1348,6 +1480,12 @@ void ATacticalPlayerController::TryAutoEndTurn()
 
 void ATacticalPlayerController::HandleSelectedUnitStateChanged()
 {
+	// Любое изменение состояния может снять GAS-block (EndAbility) или вернуть
+	// юниту возможность принимать команды. Обновляем оба consumer единым сигналом:
+	// зона хода не остаётся скрытой после окончания Hunker/Taunt/Overwatch.
+	RefreshMoveRange();
+	OnAvailableActionsChanged.Broadcast();
+
 	// Выбранный погиб или эвакуирован — труп не принимает приказов: в свою фазу
 	// выбор переходит к следующему бойцу (XCOM). В фазу врага — просто снимаем
 	// (SelectUnit дёргает камеру, нельзя рвать показ хода врага; в начале

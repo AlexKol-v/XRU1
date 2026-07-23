@@ -1,9 +1,13 @@
 #include "UnitBase.h"
 #include "ActionPointsComponent.h"
 #include "CoverDetectionComponent.h"
+#include "GA_Attack.h"
+#include "GA_Overwatch.h"
 #include "TacticalAbility.h"
+#include "TacticalClassAbilities.h"
 #include "TacticsGameplayTags.h"
 #include "TDAttributeSet.h"
+#include "UnitClasses.h"
 #include "AbilitySystemComponent.h"
 #include "Abilities/GameplayAbility.h"
 #include "Components/CapsuleComponent.h"
@@ -16,6 +20,12 @@ AUnitBase::AUnitBase()
 {
 	ActionPoints = CreateDefaultSubobject<UActionPointsComponent>(TEXT("ActionPoints"));
 	CoverDetection = CreateDefaultSubobject<UCoverDetectionComponent>(TEXT("CoverDetection"));
+
+	// Общие способности — безопасные нативные дефолты. BP может заменить их
+	// наследниками с монтажами, но новый BP-юнит больше не останется без действий.
+	AttackAbilityClass = UGA_Attack::StaticClass();
+	OverwatchAbilityClass = UGA_Overwatch::StaticClass();
+	HunkerAbilityClass = UGA_HunkerDown::StaticClass();
 
 	// Кольцо-декаль выбора: проекция вниз под ногами. Материал (M_SelectionRing)
 	// и размер тюнингуются в BP; скрыто, пока контроллер не выберет юнита.
@@ -94,7 +104,8 @@ void AUnitBase::SetHoverHighlight(bool bHovered)
 	if (bHovered && !bIsDead && !bIsEvacuated)
 	{
 		// Цвет обводки выбирает post-process материал по stencil-значению.
-		const bool bAlly = GetGenericTeamId().GetId() == 1;
+		const bool bAlly =
+			GetGenericTeamId().GetId() == TacticsTeamIds::Player;
 		MeshComponent->SetCustomDepthStencilValue(bAlly ? HoverStencilAlly : HoverStencilEnemy);
 		MeshComponent->SetRenderCustomDepth(true);
 	}
@@ -104,9 +115,74 @@ void AUnitBase::SetHoverHighlight(bool bHovered)
 	}
 }
 
+void AUnitBase::NotifyUnitStateChanged()
+{
+	OnUnitStateChanged.Broadcast();
+}
+
+void AUnitBase::PostInitializeComponents()
+{
+	// BaseMaxHealth уже содержит итоговый C++/BP-дефолт конкретного класса.
+	// В APawn Super::PostInitializeComponents() создаёт default controller, а
+	// PossessedBy затем применяет StartupEffects. Поэтому базу GAS намеренно
+	// задаём ДО Super: будущие стартовые эффекты модифицируют её, а не стираются.
+	const float InitialHealth = FMath::Max(1.f, BaseMaxHealth);
+	if (UAbilitySystemComponent* ASC = GetAbilitySystemComponent())
+	{
+		ASC->SetNumericAttributeBase(UTDAttributeSet::GetMaxHealthAttribute(), InitialHealth);
+		ASC->SetNumericAttributeBase(UTDAttributeSet::GetHealthAttribute(), InitialHealth);
+	}
+	else if (Attributes)
+	{
+		// Защитный fallback для нестандартного наследника без ASC.
+		Attributes->InitMaxHealth(InitialHealth);
+		Attributes->InitHealth(InitialHealth);
+	}
+
+	Super::PostInitializeComponents();
+}
+
 void AUnitBase::BeginPlay()
 {
 	Super::BeginPlay();
+
+	// Класс юнита — источник истины для роли. Дополнительно восстанавливаем
+	// канонический позывной, если новый BP оставили пустым либо он унаследовал
+	// «Клин» после дублирования BP_Unit_Assault.
+	const bool bHasCopiedAssaultName = UnitDisplayName.ToString() == TEXT("Клин");
+	if (IsA<AUnit_Sniper>())
+	{
+		UnitRole = EUnitRole::Sniper;
+		if (UnitDisplayName.IsEmpty() || bHasCopiedAssaultName)
+		{
+			UnitDisplayName = NSLOCTEXT("XRU1Units", "SniperName", "Оса");
+		}
+	}
+	else if (IsA<AUnit_Healer>())
+	{
+		UnitRole = EUnitRole::Healer;
+		if (UnitDisplayName.IsEmpty() || bHasCopiedAssaultName)
+		{
+			UnitDisplayName = NSLOCTEXT("XRU1Units", "HealerName", "Шприц");
+		}
+	}
+	else if (IsA<AUnit_Tank>())
+	{
+		UnitRole = EUnitRole::Tank;
+		if (UnitDisplayName.IsEmpty() || bHasCopiedAssaultName)
+		{
+			UnitDisplayName = NSLOCTEXT("XRU1Units", "TankName", "Молот");
+		}
+	}
+	else if (IsA<AUnit_Assault>())
+	{
+		UnitRole = EUnitRole::Assault;
+		if (UnitDisplayName.IsEmpty())
+		{
+			UnitDisplayName = NSLOCTEXT("XRU1Units", "AssaultName", "Клин");
+		}
+	}
+
 	GrantClassAbilities();
 
 	// Гарантируем выключенный Custom Depth на старте: если в BP-меше стоит галка
@@ -175,6 +251,16 @@ void AUnitBase::HandleHealthChanged(const FOnAttributeChangeData& Data)
 		{
 			Die();
 		}
+		// SetDowned/Die уже отправили один итоговый refresh.
+		return;
+	}
+
+	// Обычный урон/лечение живого юнита меняет HPBar портрета. Переход
+	// 0 -> positive создаёт SetDowned(false), который уведомит один раз уже
+	// после снятия тега Downed, поэтому промежуточный delegate здесь пропускаем.
+	if (Data.OldValue > 0.f)
+	{
+		NotifyUnitStateChanged();
 	}
 }
 
@@ -221,7 +307,7 @@ void AUnitBase::SetDowned(bool bNewDowned, float ReviveHealth)
 	}
 
 	OnDownedChanged(bIsDowned);
-	OnUnitStateChanged.Broadcast();
+	NotifyUnitStateChanged();
 }
 
 void AUnitBase::Die()
@@ -251,7 +337,7 @@ void AUnitBase::Die()
 	}
 
 	OnDied();
-	OnUnitStateChanged.Broadcast();
+	NotifyUnitStateChanged();
 }
 
 void AUnitBase::Evacuate()
@@ -277,5 +363,5 @@ void AUnitBase::Evacuate()
 	}
 
 	OnEvacuated();
-	OnUnitStateChanged.Broadcast();
+	NotifyUnitStateChanged();
 }

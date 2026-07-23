@@ -45,6 +45,23 @@ enum class EPlayerTargetingMode : uint8
 };
 
 /**
+ * Команды, конкурирующие за одну тактическую активацию выбранного юнита.
+ * Их доступность вычисляет один арбитр CanIssueCommand: HUD и исполнение
+ * используют один и тот же ответ, а не поддерживают параллельные наборы if.
+ */
+UENUM(BlueprintType)
+enum class ETacticalPlayerCommand : uint8
+{
+	Move,
+	Attack,
+	Overwatch,
+	HunkerDown,
+	ClassAbility,
+	Interact,
+	SkipUnitTurn
+};
+
+/**
  * Контроллер игрока в тактическом бою (GDD §11): выбор юнита (ЛКМ/1–4/Tab),
  * приказ перемещения (ПКМ, бюджет по длине пути навмеша), атака (ЛКМ по врагу
  * или кнопка «Огонь» → GameplayEvent Event.Attack), хоткеи действий
@@ -96,9 +113,9 @@ public:
 	void RequestEndTurn();
 
 	/**
-	 * Кнопка «Огонь» (GDD §6: атака доступна и кликом, и кнопкой): включает
-	 * режим прицеливания — следующий ЛКМ по врагу стреляет. Прямой ЛКМ по
-	 * врагу работает и без кнопки.
+	 * Кнопка «Огонь»: первое нажатие включает прицеливание, повторное либо
+	 * ЛКМ по уже выбранной цели подтверждает выстрел. Прямой ЛКМ по врагу без
+	 * вооружённого режима только обновляет hover/прогноз и не стреляет.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Control")
 	void RequestAttack();
@@ -148,6 +165,14 @@ public:
 	 */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Control")
 	bool IsPlayerPhase() const;
+
+	/**
+	 * Единый арбитр команд: фаза, выбранный юнит, движение, модальный targeting,
+	 * AP/заряды/цели и GAS-блокировка выполняющейся способности. Этим же API
+	 * пользуются Request* и серость кнопок HUD.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Control")
+	bool CanIssueCommand(ETacticalPlayerCommand Command) const;
 
 	/** Текущий режим взаимодействия (единый источник правды, см. EPlayerTargetingMode). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Control")
@@ -252,6 +277,12 @@ protected:
 
 	/** Клик в режиме таргетинга способности (медик выбирает союзника). */
 	void HandleAbilityTargetClick(AActor* ClickedActor);
+
+	/**
+	 * Обработать клик по врагу в Attack-targeting. true = клик полностью
+	 * потреблён; false = это не вражеский юнит, режим нужно отменить.
+	 */
+	bool HandleAttackTargetClick(AActor* ClickedActor);
 
 	/**
 	 * ЕДИНСТВЕННОЕ место с приоритетом интеракций (бомба рядом → эвакуация в зоне):

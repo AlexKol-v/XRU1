@@ -1,0 +1,9 @@
+[mcp_servers.unrealclaude]
+command = "node"
+args = ["Plugins/UnrealClaude/Resources/mcp-bridge/index.js"]
+
+[mcp_servers.unrealclaude.env]
+UNREAL_MCP_URL = "http://localhost:3000"
+
+[mcp_servers.unrealclaude.tools.unreal_ue]
+approval_mode = "approve"

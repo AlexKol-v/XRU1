@@ -6,6 +6,7 @@
 #include "MenuWidgets.generated.h"
 
 class UTacticsGameInstance;
+class UTacticalHUDStyleData;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnDifficultyChosen, EDifficultyLevel, Difficulty);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnMenuAction);
@@ -33,6 +34,10 @@ public:
 	/** Проталкивает экран ScreenClass на слой Menu корневого лейаута. */
 	UFUNCTION(BlueprintCallable, Category = "Menu")
 	UCommonActivatableWidget* PushScreen(TSubclassOf<UCommonActivatableWidget> ScreenClass);
+
+	/** Единая UI-тема из GameInstance; доступна всем WBP-экранам меню. */
+	UFUNCTION(BlueprintPure, Category = "Menu|Style")
+	UTacticalHUDStyleData* GetUITheme() const;
 
 protected:
 	/** GameInstance проекта (nullptr, если проект настроен на другой класс). */
@@ -106,6 +111,18 @@ public:
 	FText ProjectInfo;
 };
 
+/** Экран проигрывания интро после выбора сложности. */
+UCLASS(Abstract, Blueprintable)
+class XRU1_API UIntroPlayerWidget : public UMenuScreenBase
+{
+	GENERATED_BODY()
+
+public:
+	/** Завершить/пропустить интро и перейти в хаб. */
+	UFUNCTION(BlueprintCallable, Category = "Menu|Intro")
+	void FinishIntro();
+};
+
 /** Экран выбора сложности при старте новой игры. */
 UCLASS(Abstract, Blueprintable)
 class XRU1_API UDifficultySelectWidget : public UMenuScreenBase
@@ -113,12 +130,16 @@ class XRU1_API UDifficultySelectWidget : public UMenuScreenBase
 	GENERATED_BODY()
 
 public:
+	/** Экран интро; если не назначен, после выбора сразу открывается хаб. */
+	UPROPERTY(EditDefaultsOnly, Category = "Menu|Screens")
+	TSubclassOf<UIntroPlayerWidget> IntroScreenClass;
+
 	UPROPERTY(BlueprintAssignable, Category = "Menu")
 	FOnDifficultyChosen OnDifficultyChosen;
 
 	/**
-	 * BP вызывает по нажатию кнопки конкретной сложности: создаёт новую кампанию
-	 * (UTacticsGameInstance::StartNewCampaign) и отправляет игрока в хаб.
+	 * BP вызывает по нажатию сложности: создаёт новую кампанию, затем пушит
+	 * IntroScreenClass. Если интро не назначено — сразу отправляет игрока в хаб.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Menu")
 	void ChooseDifficulty(EDifficultyLevel Difficulty);

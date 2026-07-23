@@ -73,12 +73,20 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
 	void FrameShotForDuration(const AActor* Shooter, const AActor* Target, float Duration);
 
-	/** Снимает кадр прицеливания и возвращает прежние поворот/зум. */
+	/** Снимает кадр и возвращает постоянный пользовательский ракурс и позицию до кадра. */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
 	void ClearShotFraming();
 
 	UFUNCTION(BlueprintPure, Category = "Tactics|Camera")
 	bool IsFramingShot() const { return bShotFraming; }
+
+	/**
+	 * Играется ли конечный по времени кадр самого выстрела. В отличие от
+	 * IsFramingShot не считает бессрочное прицеливание: автопереход бойца/хода
+	 * должен ждать кинематографичный выстрел, но не может зависнуть на aim-mode.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Camera")
+	bool IsPlayingShotFrame() const { return bShotFraming && ShotFrameTimeLeft >= 0.f; }
 
 	/**
 	 * Камера ДЕРЖИТ кадр прицеливания (бессрочно), а не проигрывает кадр
@@ -90,9 +98,8 @@ public:
 	bool IsHoldingAimFrame() const { return bShotFraming && ShotFrameTimeLeft < 0.f; }
 
 	/**
-	 * Бросить кадр БЕЗ возврата прежнего ракурса — на смену фазы/ручной ввод.
-	 * ClearShotFraming вернул бы поворот/зум и тем самым перечеркнул новое
-	 * состояние камеры, которое как раз и наступает.
+	 * Бросить кадр перед новым focus/follow/pan: позицию до кадра не возвращает,
+	 * но временные yaw/zoom/pitch всегда заменяет постоянным тактическим ракурсом.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
 	void AbandonShotFraming();
@@ -189,7 +196,14 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tactics|Camera")
 	TObjectPtr<UPostProcessComponent> PostProcess;
 
-	/** Целевые значения для плавной интерполяции. */
+	/**
+	 * Постоянный пользовательский ракурс тактической камеры. Он меняется только
+	 * ручным Q/E и колесом и не перезаписывается временным кадром выстрела.
+	 */
+	float TacticalYaw = 45.f;
+	float TacticalZoom = 1800.f;
+
+	/** Текущие цели интерполяции: обычный ракурс либо временный action-camera. */
 	float TargetYaw = 45.f;
 	float TargetZoom = 1800.f;
 
@@ -220,12 +234,10 @@ protected:
 	float ShotFrameTimeLeft = -1.f;
 
 	/**
-	 * Ракурс ДО кадра — поворот, зум И ПОЗИЦИЯ. По выходу возвращаем всё
-	 * (XCOM: после выстрела/отмены камера возвращается, как была, а не остаётся
-	 * в наезде на месте события).
+	 * Ракурс ДО кадра для параметров, которыми игрок напрямую не управляет.
+	 * Yaw/zoom хранятся отдельно в TacticalYaw/TacticalZoom и потому не могут
+	 * случайно «унаследовать» временный action-camera ракурс.
 	 */
-	float PreShotYaw = 45.f;
-	float PreShotZoom = 1800.f;
 	float PreShotPitch = -55.f;
 	float PreShotLookHeight = 0.f;
 	FVector PreShotLocation = FVector::ZeroVector;

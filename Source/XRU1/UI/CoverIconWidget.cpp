@@ -5,6 +5,8 @@
 #include "Components/Image.h"
 
 #include "CoverDetectionComponent.h"
+#include "TacticalHUDStyleData.h"
+#include "TacticsGameInstance.h"
 
 void UCoverIconWidget::NativeOnInitialized()
 {
@@ -24,11 +26,14 @@ void UCoverIconWidget::NativeOnInitialized()
 
 void UCoverIconWidget::ApplyStyle(const FVector2D& InSize, const FLinearColor& InColor)
 {
-    Super::ApplyStyle(InSize, InColor);
+    const UTacticalHUDStyleData* Theme = GetUITheme();
+    const FVector2D ResolvedSize = Theme ? Theme->UnitOverheadCoverIconSize : InSize;
+    Super::ApplyStyle(ResolvedSize, InColor);
 
     if (IconImage)
     {
         IconImage->SetColorAndOpacity(InColor);
+        IconImage->SetDesiredSizeOverride(ResolvedSize);
     }
 }
 
@@ -72,8 +77,26 @@ void UCoverIconWidget::Redraw()
         return;
     }
 
+    UTexture2D* Texture = nullptr;
+    if (const UTacticalHUDStyleData* Theme = GetUITheme())
+    {
+        Texture = Theme->GetCoverIcon(CoverType);
+    }
+    if (!Texture)
+    {
+        Texture = (CoverType == ECoverType::Full)
+            ? FullCoverTexture.Get()
+            : HalfCoverTexture.Get();
+    }
+
     // Ставим кисть безусловно: незаданная текстура даёт квадрат BaseColor,
     // но не залипшую иконку ПРЕДЫДУЩЕГО типа укрытия.
-    IconImage->SetBrushFromTexture((CoverType == ECoverType::Full) ? FullCoverTexture : HalfCoverTexture);
+    IconImage->SetBrushFromTexture(Texture);
     SetVisibility(ESlateVisibility::HitTestInvisible);
+}
+
+const UTacticalHUDStyleData* UCoverIconWidget::GetUITheme() const
+{
+    const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>();
+    return GameInstance ? GameInstance->GetUITheme() : nullptr;
 }

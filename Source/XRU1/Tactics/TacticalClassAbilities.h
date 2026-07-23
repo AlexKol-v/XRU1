@@ -99,6 +99,9 @@ public:
 		const FGameplayAbilityActivationInfo ActivationInfo,
 		const FGameplayEventData* TriggerData) override;
 
+	virtual bool IsValidTargetActor_Implementation(
+		AUnitBase* SourceUnit, AActor* TargetActor) const override;
+
 	/** Радиус применения (см). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Tactics|Heal", meta = (ClampMin = "0"))
 	float HealRange = 600.f;

@@ -29,6 +29,8 @@ public class XRU1 : ModuleRules
 			// CommonUI (migrated PrimaryGameLayout / GameUIManagerSubsystem + menu skeletons)
 			"CommonUI",
 			"CommonInput",
+			// Intro media source stored in the global UI theme DataAsset
+			"MediaAssets",
 			// PCG nodes (hub landscape scatter/slope filter)
 			"PCG",
 			// Move-range zone fill (Tactics/MoveRangeVisualizer)

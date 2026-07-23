@@ -7,6 +7,7 @@
 
 class UImage;
 class UCoverDetectionComponent;
+class UTacticalHUDStyleData;
 
 /**
  * Иконка укрытия для HUD'а над головой юнита: полущит при half cover,
@@ -14,7 +15,8 @@ class UCoverDetectionComponent;
  *
  * Источник данных — UCoverDetectionComponent юнита (через аватара ASC),
  * подписка на OnCoverStateChanged (стреляет после каждого перемещения).
- * Текстуры задаются в BP-наследнике; без них рисуется квадрат BaseColor.
+ * Текстуры и размер сначала берутся из общей UITheme GameInstance; локальные
+ * поля BP остаются fallback для автономного превью/старых ассетов.
  */
 UCLASS(BlueprintType)
 class XRU1_API UCoverIconWidget : public UUnitAttributeWidget
@@ -42,7 +44,8 @@ private:
     UFUNCTION()
     void OnCoverStateChanged(ECoverType NewBestCover);
 
-    void Redraw();
+	void Redraw();
+	const UTacticalHUDStyleData* GetUITheme() const;
 
     UPROPERTY(Transient)
     TObjectPtr<UImage> IconImage;

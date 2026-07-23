@@ -25,8 +25,10 @@ Content/
 
 ## 2. Настройки проекта (Project Settings) — этап 3
 
-1. **Maps & Modes**: Game Instance Class = `BP_TacticsGameInstance`;
-   Editor/Game Default Map = `L_MainMenu` (когда появится).
+1. **Maps & Modes**: `BP_TacticsGameInstance` уже назначен через
+   `Config/DefaultEngine.ini`; повторно выбирать его в Project Settings не
+   нужно. Editor/Game Default Map переключить на `L_MainMenu`, когда карта
+   будет создана.
 2. **Input**: убедиться, что Default Player Input Class = Enhanced Player Input
    (UE5.7 по умолчанию так).
 3. **Collision**: канал укрытий не нужен — используем `ECC_WorldStatic`
@@ -37,12 +39,17 @@ Content/
 ## 3. UI-каркас (этап 3)
 
 ### 3.1 BP_TacticsGameInstance
-`Content/XRU1Game/Core/` → BP от `UTacticsGameInstance`. В Details задать:
-`HubLevel = L_Hub`, `MainMenuLevel = L_MainMenu`. Прописать в Project Settings.
+`BP_TacticsGameInstance` уже создан в `Content/XRU1Game/Core/` от
+`UTacticsGameInstance`, а `UITheme` уже указывает на
+`/Game/XRU1Game/Data/DA_TacticalHUDStyle`. Класс уже назначен строкой
+`GameInstanceClass` в `Config/DefaultEngine.ini`; повторно выбирать его в
+Project Settings не нужно. После создания карт останется задать только
+`HubLevel = L_Hub` и `MainMenuLevel = L_MainMenu`.
 
 ### 3.2 WBP_PrimaryGameLayout
-`Content/XRU1Game/UI/` → Widget Blueprint, **Parent Class = `UPrimaryGameLayout`**.
-Иерархия (Overlay на весь экран), имена ДОЛЖНЫ совпадать (BindWidget):
+`WBP_PrimaryGameLayout` уже существует в `Content/XRU1Game/UI/` с
+**Parent Class = `UPrimaryGameLayout`**. В Designer сверить иерархию; имена
+ДОЛЖНЫ совпадать (BindWidget):
 ```
 Overlay
  ├─ CommonActivatableWidgetStack  «GameStack»      (Fill)
@@ -52,14 +59,18 @@ Overlay
 ```
 
 ### 3.3 Экраны меню
-`Content/XRU1Game/UI/Menus/`, каждый — Widget Blueprint от своего C++ класса
-(`UMainMenuWidget`, `UDifficultySelectWidget`, `USettingsMenuWidget`,
-`UAboutMenuWidget`, `UPauseMenuWidget`). Кнопки (CommonButtonBase) вешают
+Пять BP уже существуют в `Content/XRU1Game/UI/Menus/`:
+`WBP_MainMenu`, `WBP_DifficultySelect`, `WBP_Settings`,
+`WBP_AboutMenuWidget`, `WBP_PauseMenuWidget`. Их C++ родители правильные:
+`UMainMenuWidget`, `UDifficultySelectWidget`, `USettingsMenuWidget`,
+`UAboutMenuWidget`, `UPauseMenuWidget`. Кнопки (CommonButtonBase) вешают
 события на **готовые методы**: `RequestNewGame`, `RequestContinue`,
 `RequestSettings`, `RequestAbout`, `RequestQuit`, `RequestBack`,
 `ChooseDifficulty(Easy/Medium/Hard)`.
 В WBP_MainMenu в Details заполнить `SettingsScreenClass`, `AboutScreenClass`,
 `DifficultyScreenClass`. Доступность «Продолжить» — бинд на `CanContinue`.
+В WBP_DifficultySelect заполнить `IntroScreenClass = WBP_IntroPlayer` после
+создания интро. Полная схема темы/арта — `10_UI_THEME_GUIDE.md`.
 
 ### 3.4 Уровень меню
 - `BP_MenuPlayerController` от `AMenuPlayerController`: задать
@@ -68,25 +79,25 @@ Overlay
   Default Pawn = None, HUD = None.
 - Карта `L_MainMenu`: пустая сцена с фоном (камера смотрит на декорацию из
   кита) → World Settings → GameMode Override = GM_MainMenu.
-- Пауза в игровых уровнях: по Esc пушить WBP_PauseMenu на слой Menu
+- Пауза в игровых уровнях: по Esc пушить `WBP_PauseMenuWidget` на слой Menu
   (после этапа 1 это делает `ATacticalPlayerController`; в хабе — контроллер хаба).
 
 ### 3.5 Интро-видео (после выбора сложности)
-1. Готовый ролик (07_CONTENT_PROMPTS §2) положить как `Content/Movies/Intro.mp4`
-   (папка Movies пакуется в билд как есть; LFS подхватит mp4).
-2. Создать: **FileMediaSource** (`MS_Intro`, путь `./Movies/Intro.mp4`),
-   **MediaPlayer** (`MP_Intro`, ✔ автосоздание MediaTexture `MT_Intro`),
-   Material `M_IntroVideo` (Unlit, Emissive = MT_Intro).
-3. `WBP_IntroPlayer` (наследник `UMenuScreenBase`): Image на весь экран с
-   `M_IntroVideo`; в Construct — `MP_Intro.OpenSource(MS_Intro)` + Play;
-   OnEndReached ИЛИ любой клик (OnMouseButtonDown) → `GetTacticsGameInstance()
-   → TravelToHub()`. Подсказка «Пропустить — клик» в углу.
-4. В `WBP_DifficultySelect.ChooseDifficulty` BP-достройка: вместо мгновенного
-   `TravelToHub` (C++ уже сделал кампанию и трэвел) — ПРОЩЕ: перед вызовом
-   `ChooseDifficulty` пушить WBP_IntroPlayer, а его завершение вызывает
-   `ChooseDifficulty(выбранная)`. Либо (ещё проще): хранить выбор в переменной
-   экрана, интро → по окончании вызвать ChooseDifficulty. Fallback без видео —
-   те же кадры слайдами (Image + таймер 6 сек/кадр).
+1. Ролик уже добавлен как `Content/Movies/TU_Intro.mp4`, а FileMediaSource —
+   `/Game/Movies/FMS_TU_Intro` (папка Movies пакуется как есть; LFS хранит mp4).
+2. Создать **MediaPlayer** (`MP_TU_Intro`, ✔ автосоздание MediaTexture
+   `MT_TU_Intro`), затем Material `M_IntroVideo`: `Material Domain = User
+   Interface`, RGB `MT_TU_Intro` подключить в `Final Color` (не в Emissive).
+3. В `DA_TacticalHUDStyle`: `IntroMediaSource = FMS_TU_Intro`,
+   `IntroVideoMaterial = M_IntroVideo`, заполнить `IntroFallbackArt`.
+4. `WBP_IntroPlayer` (наследник `UIntroPlayerWidget`): Image на весь экран с
+   `M_IntroVideo`; в Construct — `MP_TU_Intro.OpenSource(FMS_TU_Intro)` + Play;
+   OnEndReached ИЛИ любой клик (OnMouseButtonDown) → `FinishIntro`.
+   Подсказка «Пропустить — клик» в углу.
+5. `WBP_DifficultySelect` → Class Defaults →
+   `IntroScreenClass = WBP_IntroPlayer`. C++ создаёт кампанию, пушит интро и
+   переходит в хаб только после `FinishIntro`; если класс не задан — сразу хаб.
+   Fallback без видео — `IntroFallbackArt` + кнопка «Продолжить».
 
 ## 4. Юниты (этап 4)
 
@@ -152,27 +163,78 @@ ABP шаблона. Двигает юнита `AIController`, поэтому в 
 6. Назначить ABP_Soldier в Mesh всех BP-юнитов (взамен стокового).
 
 ### 4.2 BP-классы юнитов
-`Content/XRU1Game/Units/` → BP от `AUnit_Assault` / `AUnit_Sniper` /
-`AUnit_Healer` / `AUnit_Tank`:
-1. Mesh = SKM_Manny_Simple (медик/снайпер — Quinn для разнообразия), ABP_Soldier.
-2. Прицепить меш винтовки в сокет руки (создать сокет `weapon_r` на скелете).
-3. **Team**: `DefaultTeamId = 1`.
-4. **AI**: AIControllerClass = `AUnitAIController`, Auto Possess AI =
-   Placed in World or Spawned (перцепция нужна и юнитам игрока — Overwatch;
-   приказы игрока идут через этот же контроллер).
-5. Статы (категория Tactics|Stats): BaseAim/ShotDamage/AttackRange/MoveRange
-   уже заданы в C++ по GDD §7 — в BP только проверить/подстроить. HP — через
-   `StartupEffects` (GE-инициализация атрибутов) по GDD §7.
-6. **Способности** (категория Tactics|Abilities) — заполнить классы:
-   - `AttackAbilityClass` = BP_GA_Attack (BP-наследник `UGA_Attack` с монтажом),
-   - `OverwatchAbilityClass` = BP_GA_Overwatch,
-   - `HunkerAbilityClass` = BP_GA_HunkerDown,
-   - `ClassAbilityClass`: медик BP_GA_Heal, штурмовик BP_GA_RunAndGun,
-     танк BP_GA_Taunt, снайпер — ПУСТО (Squadsight — пассивка, bHasSquadsight
-     уже true в C++).
-7. HUD над головой: `HUDWidgetClass` уже есть у `ATDCombatant` — расширить WBP
-   пипсами AP (`OnActionPointsChanged`), иконкой укрытия (`OnCoverStateChanged`)
-   и статуса (`OnUnitStateChanged`: ранен/эвакуирован).
+
+Актуальное состояние: в `/Game/XRU1Game/Units/` уже созданы и сохранены
+`BP_Unit_Assault`, `BP_Unit_Sniper`, `BP_Unit_Medic` (родитель
+`Unit_Healer`) и `BP_Unit_Tank`. На `Lvl_TopDown` уже стоит по одному экземпляру
+каждого класса; три лишних Assault заменены с сохранением Transform. Повторять
+создание и замену сейчас не нужно.
+
+#### Если при запуске открылось «Восстановить пакеты»
+
+Это штатное окно после некорректного завершения Editor, а не признак порчи
+проекта. Для текущих autosave `BP_Unit_Sniper`, `BP_Unit_Medic`,
+`BP_Unit_Tank` от 2026-07-23 выбрать **«Пропустить восстановление»**: актуальная
+карта уже содержит все четыре класса с правильными Transform, а повторная
+попытка восстановления одного пакета ранее частично прошла и только запутывает
+состояние.
+
+После открытия проекта:
+
+1. В `World Outliner` убедиться, что есть `BP_Unit_Assault`,
+   `BP_Unit_Sniper`, `BP_Unit_Medic`, `BP_Unit_Tank` и два
+   `BP_Unit_Marauder`.
+2. Нажать **File → Save All**.
+3. Помнить, что World Partition хранит размещённых юнитов как External Actors:
+   при переносе на вторую машину в коммит должны войти не только
+   `Lvl_TopDown.umap`, но **все** изменения (`M`, `D`, `??`) в
+   `Content/__ExternalActors__/TopDown/Lvl_TopDown/`: удаления относятся к
+   заменённым старым Assault, добавления — к новым классам.
+
+Важно: класс размещённого Actor нельзя поменять полем в `Details`. `UnitRole`
+тоже не является переключателем класса. `GetPortraitForUnit` определяет тип по
+реальному C++-классу (`IsA`), поэтому Assault с вручную изменённым названием
+всё равно останется Assault.
+
+Если в будущем понадобится заменить класс юнита вручную:
+
+1. В `Content Browser` открыть `/Game/XRU1Game/Units/`.
+2. В `World Outliner` выбрать старого юнита. В `Details → Transform` нажать
+   правой кнопкой по заголовку `Transform` → `Copy`.
+3. Перетащить нужный `BP_Unit_*` из Content Browser во viewport.
+4. Выбрать нового Actor, правой кнопкой по заголовку `Transform` → `Paste`.
+5. Убедиться, что новый Actor появился в той же точке, и только после этого
+   удалить старый Actor. Нажать `Ctrl+S`.
+
+Если нужен новый BP-класс, а не экземпляр на карте:
+
+1. `Content Browser → /Game/XRU1Game/Units/ → Add (+) → Blueprint Class`.
+2. В окне выбора нажать `All Classes` и найти ровно один из классов:
+   `Unit_Assault`, `Unit_Sniper`, `Unit_Healer`, `Unit_Tank`.
+3. Назвать ассет `BP_Unit_Assault/Sniper/Medic/Tank` соответственно. Для медика
+   имя ассета `Medic`, но Parent Class должен быть именно `Unit_Healer`.
+4. Открыть BP → `Class Defaults` и проверить:
+   - `DefaultTeamId = 1`;
+   - `AIControllerClass = UnitAIController`;
+   - `Auto Possess AI = Placed in World or Spawned`;
+   - `HUDWidgetClass = WBP_UnitHUD`, layout = `DA_UnitHUD_Squad`;
+   - `Tactics|Stats → BaseMaxHealth`: Assault `100`, Sniper `80`, Medic `90`,
+     Tank `150` (это стартовые `Health` и `MaxHealth`, не `StartupEffects`);
+   - `AttackAbilityClass = GA_Attack`;
+   - `OverwatchAbilityClass = GA_Overwatch`;
+   - `HunkerAbilityClass = GA_HunkerDown`;
+   - Assault: `ClassAbilityClass = GA_RunAndGun`;
+   - Sniper: `ClassAbilityClass = None`, `bHasSquadsight = true`;
+   - Medic: `ClassAbilityClass = GA_Heal`;
+   - Tank: `ClassAbilityClass = GA_Taunt`.
+5. HP, позывные и базовые способности имеют нативные C++-defaults. Поэтому у
+   нового BP с правильным Parent Class уже будут `100/80/90/150`, `Клин`,
+   `Оса`, `Шприц`, `Молот` и соответствующие способности. Если нужен другой
+   позывной, изменить только `Tactics|Unit → UnitDisplayName`; класс от этого
+   не изменится.
+6. Меш/AnimBP/оружие относятся к визуальной полировке: сейчас четыре BP уже
+   используют `SKM_Manny_Simple` + `ABP_Unarmed` и общий HUD. Позже заменить их
+   на `ABP_Soldier` и прикрепить винтовку в сокет `weapon_r` по §4.1.
 
 ### 4.3 Враг
 `BP_Unit_Marauder` от `AUnitBase` (не от AUnit_*): `DefaultTeamId = 2`, меш
@@ -183,7 +245,7 @@ Manny с тёмным материалом, статы: BaseAim 65 / ShotDamage 
 `PatrolPoints` (TargetPoint'ы уровня) — без точек юнит стоит на посту;
 тревога поднимется от шума выстрелов или визуального контакта (GDD §8).
 
-## 4.5 Боевой контроллер, ввод и GameMode (после этапа 1 — классы готовы)
+### 4.4 Боевой контроллер, ввод и GameMode (после этапа 1 — классы готовы)
 
 1. **IMC_Tactical** (`Content/XRU1Game/Input/`) + Input Actions:
    `IA_Select` (ЛКМ, Digital), `IA_Command` (ПКМ), `IA_EndTurn` (Enter),
@@ -199,7 +261,7 @@ Manny с тёмным материалом, статы: BaseAim 65 / ShotDamage 
    `EdgeScrollMarginPx`).
 3. **BP_TacticalPlayerController** от `ATacticalPlayerController`: назначить
    IMC + все IA (слоты 1–4 — в массив `SelectSlotActions` по порядку),
-   `RootLayoutClass = WBP_PrimaryGameLayout`, `PauseMenuClass = WBP_PauseMenu`,
+   `RootLayoutClass = WBP_PrimaryGameLayout`, `PauseMenuClass = WBP_PauseMenuWidget`,
    `MoveRangeVisualizerClass = BP_MoveRangeVisualizer`.
 4. **BP_MoveRangeVisualizer** от `AMoveRangeVisualizer`: материалы зон —
    полупрозрачные unlit (`ZoneOneMaterial` = синий M_MoveZone_Blue,
@@ -226,8 +288,21 @@ Manny с тёмным материалом, статы: BaseAim 65 / ShotDamage 
    InteractRadius ~200) и `BP_EvacZone` (радиус ~400, `bActiveFromStart=false`;
    в туториале зону активирует скрипт: GameMode->`ActivateEvacuation()`).
    Юнит рядом с бомбой / в зоне жмёт **F**.
+8. После C++ build/restart проверить новую защиту команд без Blueprint-узлов:
+   - Q/E → выбрать другого бойца: угол камеры сохраняется;
+   - «Огонь» → во время прицеливания Overwatch/Hunker/ClassAbility disabled,
+     их хоткеи ничего не запускают; ПКМ/Esc отменяет mode;
+   - после отмены Overwatch снова доступен и активируется;
+   - timed shot доигрывается, а выбор следующего бойца не наследует его yaw.
+   В `WBP_TacticalHUD` верхнеправая картинка уже называется
+   `EnemyCountIcon` и имеет **Is Variable**. Строка с `EnemyCountIcon` и
+   `EnemyCountText` уже обёрнута в `Border` с именем
+   `EnemyCounterBackground` и **Is Variable**.
+   Если уже есть внешний `EnemyCounterBorder` для `EnemyCounterLayout`, оставить
+   его снаружи: внешний Border отвечает за позиционный layout, внутренний —
+   только за texture/color/internal padding из `DA_TacticalHUDStyle`.
 
-## 4.6 Подсветка юнитов: обводка при наведении + кольцо выбора ✅ сделано
+### 4.5 Подсветка юнитов: обводка при наведении + кольцо выбора ✅ сделано
 
 Материалы созданы, назначены и проверены в PIE (2026-07-15) — в репозитории
 через LFS, на новой машине пересоздавать не нужно. Логика на стороне C++
@@ -258,7 +333,9 @@ Manny с тёмным материалом, статы: BaseAim 65 / ShotDamage 
    сценарию 02_LORE_SCRIPT §4 — A: старт + «пустырь» + бетонный блок (full);
    B: дальняя дистанция с мешками (half) для танка/снайпера; C: окопавшийся
    враг за укрытием; D: сектор для overwatch + площадка эвакуации у выхода.
-   Низкие укрытия ~60 см, высокие ~150 см (блокируют WorldStatic).
+   Целевые низкие укрытия ~60 см, высокие ~150 см (блокируют WorldStatic).
+   До исправления Ф2 из `11_COVER_AND_ENEMY_PLAN.md` текущий детектор ошибочно
+   требует примерно 148/238 см; финальную карту под этот дефект не подгонять.
 2. NavMeshBoundsVolume на всю площадку (P — проверить покрытие).
 3. Спавны: 4 бойца (tag «SquadSpawn»), 4 врага-голограммы — по одному на
    секции A–D (полупрозрачный материал, BaseAim 40 / урон 10 в BP), каждый
@@ -323,7 +400,9 @@ Manny с тёмным материалом, статы: BaseAim 65 / ShotDamage 
 - **BindWidget**: имена стеков в WBP_PrimaryGameLayout должны в точности
   совпадать с C++ (`GameStack`, `GameMenuStack`, `MenuStack`, `ModalStack`).
 - **Перцепция не видит врагов** → проверь `DefaultTeamId` (1 vs 2) на ОБОИХ BP.
-- **Юнит не в укрытии** → стена не блокирует WorldStatic или ниже 60 см.
+- **Юнит не в укрытии** → проверить `WorldStatic`, затем известный дефект
+  высот: до Ф2 из `11_COVER_AND_ENEMY_PLAN.md` ящик 60 см не срабатывает,
+  временные пороги около 148/238 см вместо целевых 60/150.
 - **AI не ходит** → нет NavMeshBoundsVolume/не сгенерился навмеш (клавиша P).
 - **После смены уровня нет UI** → layout пересоздаётся контроллером уровня;
   у контроллера должен быть задан `RootLayoutClass`.

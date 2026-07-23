@@ -1,5 +1,6 @@
 #include "MenuWidgets.h"
 #include "TacticsGameInstance.h"
+#include "TacticalHUDStyleData.h"
 #include "GameUIManagerSubsystem.h"
 #include "PrimaryGameLayout.h"
 #include "Kismet/GameplayStatics.h"
@@ -36,6 +37,12 @@ UCommonActivatableWidget* UMenuScreenBase::PushScreen(TSubclassOf<UCommonActivat
 UTacticsGameInstance* UMenuScreenBase::GetTacticsGameInstance() const
 {
 	return GetGameInstance<UTacticsGameInstance>();
+}
+
+UTacticalHUDStyleData* UMenuScreenBase::GetUITheme() const
+{
+	const UTacticsGameInstance* GameInstance = GetTacticsGameInstance();
+	return GameInstance ? GameInstance->GetUITheme() : nullptr;
 }
 
 // --- UMainMenuWidget --------------------------------------------------------
@@ -86,6 +93,16 @@ void UMainMenuWidget::RequestQuit()
 	UKismetSystemLibrary::QuitGame(this, GetOwningPlayer(), EQuitPreference::Quit, false);
 }
 
+// --- UIntroPlayerWidget -----------------------------------------------------
+
+void UIntroPlayerWidget::FinishIntro()
+{
+	if (UTacticsGameInstance* GI = GetTacticsGameInstance())
+	{
+		GI->TravelToHub();
+	}
+}
+
 // --- UDifficultySelectWidget ------------------------------------------------
 
 void UDifficultySelectWidget::ChooseDifficulty(EDifficultyLevel Difficulty)
@@ -95,7 +112,14 @@ void UDifficultySelectWidget::ChooseDifficulty(EDifficultyLevel Difficulty)
 	if (UTacticsGameInstance* GI = GetTacticsGameInstance())
 	{
 		GI->StartNewCampaign(Difficulty);
-		GI->TravelToHub();
+		if (IntroScreenClass)
+		{
+			PushScreen(IntroScreenClass);
+		}
+		else
+		{
+			GI->TravelToHub();
+		}
 	}
 }
 

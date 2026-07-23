@@ -67,14 +67,25 @@ void ATacticalCameraPawn::AddRotationStep(float Direction)
 {
 	if (!FMath::IsNearlyZero(Direction))
 	{
-		// Нормализуем сразу, иначе TargetYaw копится без ограничений (см. Tick).
-		TargetYaw = FRotator::NormalizeAxis(TargetYaw + RotationStep * FMath::Sign(Direction));
+		// Нормализуем сразу, иначе yaw копится без ограничений (см. Tick).
+		// TacticalYaw — постоянный выбор игрока; action-camera меняет только
+		// TargetYaw и после себя всегда возвращается к TacticalYaw.
+		TacticalYaw = FRotator::NormalizeAxis(
+			TacticalYaw + RotationStep * FMath::Sign(Direction));
+		if (!bShotFraming)
+		{
+			TargetYaw = TacticalYaw;
+		}
 	}
 }
 
 void ATacticalCameraPawn::AddZoomInput(float Input)
 {
-	TargetZoom = FMath::Clamp(TargetZoom - Input * ZoomStep, MinZoom, MaxZoom);
+	TacticalZoom = FMath::Clamp(TacticalZoom - Input * ZoomStep, MinZoom, MaxZoom);
+	if (!bShotFraming)
+	{
+		TargetZoom = TacticalZoom;
+	}
 }
 
 void ATacticalCameraPawn::FocusOnActor(const AActor* Target, bool bInstant)
@@ -208,13 +219,11 @@ void ATacticalCameraPawn::EnterShotFraming(const AActor* Shooter, const AActor* 
 		return;
 	}
 
-	// Прежний ракурс (поворот, зум, позиция) запоминаем ОДИН раз за вход в кадр:
+	// Позицию/наклон до кадра запоминаем ОДИН раз за вход в кадр:
 	// повторный FrameShot (переключение цели табом) не должен затирать его уже
 	// кадровыми значениями — иначе после выхода игрок останется в наезде навсегда.
 	if (!bShotFraming)
 	{
-		PreShotYaw = TargetYaw;
-		PreShotZoom = TargetZoom;
 		PreShotPitch = TargetPitch;
 		PreShotLookHeight = TargetLookHeight;
 		// Если камера СЕЙЧАС летит к цели (только что выбрали бойца — glide ещё
@@ -260,11 +269,11 @@ void ATacticalCameraPawn::AbandonShotFraming()
 	bShotFraming = false;
 	ShotFrameTimeLeft = -1.f;
 
-	// Наклон и высота обзора принадлежат ТОЛЬКО кадру выстрела — у игрока нет
-	// ввода, который бы их менял, поэтому «бросить как есть» их нельзя: камера
-	// навсегда осталась бы в плечевом наклоне (баг «ход врага кончился, а камера
-	// зависла в режиме атаки»). Возвращаем их ВСЕГДА. Yaw/зум/позицию не трогаем:
-	// ими игрок управляет сам, и новый интент (фокус/follow/панорама) их уже ведёт.
+	// Новый focus/follow/pan может перечеркнуть ПОЗИЦИЮ старого кадра, но не имеет
+	// права превращать временный yaw/zoom action-camera в глобальный ракурс.
+	// Возвращаем постоянные пользовательские значения и обычный наклон.
+	TargetYaw = TacticalYaw;
+	TargetZoom = TacticalZoom;
 	TargetPitch = PreShotPitch;
 	TargetLookHeight = PreShotLookHeight;
 }
@@ -280,8 +289,8 @@ void ATacticalCameraPawn::ClearShotFraming()
 
 	// Полный возврат ракурса (XCOM): поворот, наклон, зум, высота обзора и
 	// позиция — как до кадра. Плавно, тем же glide-механизмом, что и фокус.
-	TargetYaw = PreShotYaw;
-	TargetZoom = PreShotZoom;
+	TargetYaw = TacticalYaw;
+	TargetZoom = TacticalZoom;
 	TargetPitch = PreShotPitch;
 	TargetLookHeight = PreShotLookHeight;
 	FocusGoal = PreShotLocation;

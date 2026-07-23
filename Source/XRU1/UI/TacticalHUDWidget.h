@@ -11,7 +11,9 @@ class ATacticalPlayerController;
 class UTurnManagerSubsystem;
 class UTacticalHUDStyleData;
 class UActionPointsComponent;
+class UCoverDetectionComponent;
 class UButton;
+class UBorder;
 class UImage;
 class UTextBlock;
 class UProgressBar;
@@ -66,6 +68,14 @@ public:
 	int32 GetAliveEnemyCount() const;
 
 	/**
+	 * Единая UI-тема: в runtime сначала UITheme из UTacticsGameInstance,
+	 * локальный Style WBP — только fallback для Designer/ошибочной конфигурации.
+	 * Даёт BP доступ к портретам, статусам и layout-блокам.
+	 */
+	UFUNCTION(BlueprintPure, Category = "HUD|Style")
+	UTacticalHUDStyleData* GetUITheme() const;
+
+	/**
 	 * Пересчитать доступность кнопок действий по выбранному юниту (AP, Downed,
 	 * лимит способности, вид интеракции F). Зовётся из C++ по всем событиям
 	 * (фаза/выбор/AP/статусы); из BP дергать не нужно.
@@ -98,8 +108,21 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UHorizontalBox> SquadPanel;
 
 	/**
-	 * Баннер режима прицеливания (P0): «ВЫБЕРИТЕ ЦЕЛЬ · Tab — след. · ЛКМ/Enter —
-	 * огонь · ПКМ/Esc — отмена». Опциональный виджет в Designer; C++ лишь
+	 * Иконка рядом со счётчиком живых врагов. Brush и размер всегда задаёт
+	 * общая UITheme; Designer-картинка служит только preview/fallback.
+	 */
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UImage> EnemyCountIcon;
+
+	/**
+	 * Border вокруг строки EnemyCountIcon + EnemyCountText. Texture, tint и
+	 * padding всегда приходят из общей UITheme.
+	 */
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional))
+	TObjectPtr<UBorder> EnemyCounterBackground;
+
+	/**
+	 * Баннер режима прицеливания (P0): «ВЫБЕРИТЕ ЦЕЛЬ · Tab — след. · ЛКМ/Огонь —
+	 * подтвердить · ПКМ/Esc — отмена». Опциональный виджет в Designer; C++ лишь
 	 * показывает/прячет его по режиму. Нет виджета — работает и без него.
 	 */
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UWidget> TargetingBanner;
@@ -113,7 +136,11 @@ protected:
 
 	// --- Настройки (Class Defaults WBP-наследника) ------------------------------
 
-	/** Единый стиль HUD: размеры и текстуры иконок (DA_TacticalHUDStyle). */
+	/**
+	 * Необязательный локальный fallback общей темы. Оставьте тот же
+	 * DA_TacticalHUDStyle для превью Designer либо очистите — корректно
+	 * настроенный runtime всегда возьмёт UITheme из BP_TacticsGameInstance.
+	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "HUD|Style")
 	TObjectPtr<UTacticalHUDStyleData> Style;
 
@@ -173,6 +200,10 @@ private:
 	UFUNCTION()
 	void HandleUnitStateChanged();
 
+	/** Локальное укрытие юнита изменилось — обновить cover badge карточки. */
+	UFUNCTION()
+	void HandleUnitCoverStateChanged(ECoverType NewCover);
+
 	/** Выбранный боец добежал: пересчитать серость кнопок и панель цели. */
 	UFUNCTION()
 	void HandleAvailableActionsChanged();
@@ -216,6 +247,12 @@ private:
 	/** Применить Style (размеры/иконки) к виджетам. Работает и в превью Designer. */
 	void ApplyStyle();
 
+	/** Применить layout вложенных карточек после их создания/пересборки BP. */
+	void ApplyPortraitCardLayout();
+
+	/** Обновить glyph классовой способности при смене выбранного бойца. */
+	void RefreshAbilityIcon(AUnitBase* Selected);
+
 	/** Панель цели у курсора: показать по врагу при выбранном бойце, иначе спрятать. */
 	void UpdateTargetPanel(AUnitBase* Hovered);
 
@@ -227,6 +264,9 @@ private:
 
 	/** Юниты обеих сторон, на чей OnUnitStateChanged мы подписаны (для отписки). */
 	TArray<TWeakObjectPtr<AUnitBase>> StateSubscribedUnits;
+
+	/** Cover-компоненты, на чью смену локального укрытия подписана карточка. */
+	TArray<TWeakObjectPtr<UCoverDetectionComponent>> CoverSubscribedComponents;
 
 	/** AP-компоненты отряда, на чей OnActionPointsChanged мы подписаны (для отписки). */
 	TArray<TWeakObjectPtr<UActionPointsComponent>> APSubscribedComponents;

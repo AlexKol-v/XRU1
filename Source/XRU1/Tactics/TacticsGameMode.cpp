@@ -100,7 +100,7 @@ void ATacticsGameMode::StartMissionCombat()
 			*GetNameSafe(this), static_cast<int32>(Difficulty));
 	}
 
-	// Сбор сторон по TeamId: 1 — отряд игрока, 2 — враги.
+	// Сбор сторон по каноническим TacticsTeamIds.
 	PlayerUnits.Reset();
 	TArray<AActor*> Players;
 	TArray<AActor*> Enemies;
@@ -108,12 +108,12 @@ void ATacticsGameMode::StartMissionCombat()
 	{
 		AUnitBase* Unit = *It;
 		const uint8 TeamId = Unit->GetGenericTeamId().GetId();
-		if (TeamId == 1)
+		if (TeamId == TacticsTeamIds::Player)
 		{
 			Players.Add(Unit);
 			PlayerUnits.Add(Unit);
 		}
-		else if (TeamId == 2)
+		else if (TeamId == TacticsTeamIds::Enemy)
 		{
 			if (Params)
 			{

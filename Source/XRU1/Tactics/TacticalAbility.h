@@ -5,6 +5,7 @@
 #include "TacticalAbility.generated.h"
 
 class UActionPointsComponent;
+class AUnitBase;
 
 /**
  * Базовая способность тактического юнита. Привязывает экономику Action Points
@@ -42,6 +43,22 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Targeting")
 	bool bRequiresTargetActor = false;
 
+	/**
+	 * Gameplay Event, которым контроллер активирует способность после выбора цели.
+	 * Заполняется только у bRequiresTargetActor-способностей; контроллер не должен
+	 * знать конкретный класс способности или хардкодить Event.Heal.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Targeting",
+		meta = (EditCondition = "bRequiresTargetActor", EditConditionHides, Categories = "Event"))
+	FGameplayTag TargetedActivationEventTag;
+
+	/**
+	 * Единый контракт проверки цели до закрытия targeting-режима. Финальная
+	 * проверка всё равно повторяется внутри ActivateAbility перед CommitAbility.
+	 */
+	UFUNCTION(BlueprintNativeEvent, BlueprintPure, Category = "Tactics|Targeting")
+	bool IsValidTargetActor(AUnitBase* SourceUnit, AActor* TargetActor) const;
+
 	/** Осталось применений в этой миссии (реплика UI; -1 = без лимита). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Cost")
 	int32 GetUsesRemaining() const { return MaxUsesPerMission > 0 ? UsesRemaining : -1; }
@@ -63,6 +80,13 @@ public:
 
 	virtual void OnAvatarSet(const FGameplayAbilityActorInfo* ActorInfo,
 		const FGameplayAbilitySpec& Spec) override;
+
+	virtual void EndAbility(
+		const FGameplayAbilitySpecHandle Handle,
+		const FGameplayAbilityActorInfo* ActorInfo,
+		const FGameplayAbilityActivationInfo ActivationInfo,
+		bool bReplicateEndAbility,
+		bool bWasCancelled) override;
 
 protected:
 	/** Компонент очков действия на аватаре способности (nullptr, если его нет). */

@@ -47,6 +47,10 @@ public:
 
 	// --- Боевые статы (GDD §7/§10; правятся в BP-наследниках) ----------------
 
+	/** Максимальное и стартовое здоровье класса. Применяется до BeginPlay. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Stats", meta = (ClampMin = "1"))
+	float BaseMaxHealth = 100.f;
+
 	/** Базовый шанс попадания до модификаторов укрытия, %. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactics|Stats", meta = (ClampMin = "0", ClampMax = "100"))
 	float BaseAim = 75.f;
@@ -147,6 +151,14 @@ public:
 	FOnUnitStateChanged OnUnitStateChanged;
 
 	/**
+	 * Сообщает HUD, что изменился любой отображаемый статус юнита: жизненное
+	 * состояние, стойка GAS, Overwatch или движение. Сами системы меняют
+	 * состояние первыми и вызывают этот метод только после фактического изменения.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|State")
+	void NotifyUnitStateChanged();
+
+	/**
 	 * Остаток применений способности за миссию (для серости кнопки HUD).
 	 * -1 = без лимита или способность юниту не выдана.
 	 */
@@ -167,12 +179,13 @@ public:
 	void SetHoverHighlight(bool bHovered);
 
 protected:
+	virtual void PostInitializeComponents() override;
 	virtual void BeginPlay() override;
 
 	/** Выдаёт общий набор + классовые способности через ASC. */
 	void GrantClassAbilities();
 
-	/** Реакция на изменение Health: 0 → смерть или тяжёлое ранение. */
+	/** Реакция на Health: обновляет HUD; 0 → смерть или тяжёлое ранение. */
 	void HandleHealthChanged(const struct FOnAttributeChangeData& Data);
 
 	/** Переход в смерть: коллизия/AI выключаются, BP играет анимацию. */

@@ -27,6 +27,13 @@ namespace TacticsGameplayTags
 	/** Юнит тяжело ранен (Downed): лежит, не действует, ждёт медика. */
 	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Downed);
 
+	/**
+	 * Все выполняющиеся тактические действия юнита (выстрел, Overwatch,
+	 * HunkerDown, классовая способность). Активная способность блокирует
+	 * запуск другой способности с этим тегом через штатный GAS-механизм.
+	 */
+	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_TacticalAction);
+
 	/** SetByCaller-тег величины урона для UGE_ShotDamage. */
 	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Data_Damage);
 

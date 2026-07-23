@@ -39,7 +39,7 @@
 **Пайплайн:** (1) сгенерировать 6 ключевых кадров (стиль-блок §1) →
 (2) каждый кадр оживить image-to-video 5–8 сек (промты ниже) →
 (3) склейка + закадровый голос (§6) + музыка (§7) в **DaVinci Resolve
-(бесплатный)** → (4) экспорт MP4 1080p → `Content/Movies/Intro.mp4`
+(бесплатный)** → (4) экспорт MP4 1080p → `Content/Movies/TU_Intro.mp4`
 (проигрывание — 05_EDITOR_GUIDE §3.5). Опционально тем же способом:
 6-сек victory-шот для эпилога и 10-сек луп для фона главного меню.
 
@@ -161,6 +161,14 @@ thin cyan outer glow, XCOM-style minimalism, no text: …"
 | Счётчик врагов | "minimal skull, front view" |
 
 Куда: `UI/Icons/T_Icon_<Name>`.
+
+Опционально можно сгенерировать `T_UI_StatusBadgeBackground`: **белая или
+светло-серая alpha-mask** квадратной плашки с мягкими углами и прозрачными
+внешними краями, без запечённого цвета, glyph и текста. Куда:
+`UI/Icons/T_UI_StatusBadgeBackground`. Она **не обязательна**: runtime
+`UUnitStatusIconWidget` умеет рисовать однотонную подложку сам. Текущее поле
+темы принимает обычную растягиваемую Texture2D, не 9-slice, и умножает её на
+`UnitOverheadStatusBackgroundColor`.
 
 ## 6. Озвучка (TTS: ElevenLabs Starter ~$5 / Silero бесплатно, RU)
 

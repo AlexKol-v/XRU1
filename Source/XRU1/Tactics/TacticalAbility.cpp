@@ -1,5 +1,6 @@
 #include "TacticalAbility.h"
 #include "ActionPointsComponent.h"
+#include "TacticsGameplayTags.h"
 #include "TurnManagerSubsystem.h"
 #include "UnitBase.h"
 #include "Engine/World.h"
@@ -9,6 +10,23 @@ UTacticalAbility::UTacticalAbility()
 {
 	// Пошаговая одиночная игра: один инстанс на юнита, состояние живёт между активациями.
 	InstancingPolicy = EGameplayAbilityInstancingPolicy::InstancedPerActor;
+
+	// Последняя линия защиты от одновременного запуска двух действий. Контроллер
+	// управляет UI-режимами ДО активации (Attack/Ability targeting), а GAS
+	// гарантирует взаимоисключение уже ВЫПОЛНЯЮЩИХСЯ способностей независимо от
+	// того, откуда пришёл вызов: HUD, хоткей, GameplayEvent или AI.
+	FGameplayTagContainer ActionTags;
+	ActionTags.AddTag(TacticsGameplayTags::Ability_TacticalAction);
+	SetAssetTags(ActionTags);
+	BlockAbilitiesWithTag.AddTag(TacticsGameplayTags::Ability_TacticalAction);
+}
+
+bool UTacticalAbility::IsValidTargetActor_Implementation(
+	AUnitBase* SourceUnit, AActor* TargetActor) const
+{
+	// Базовый контракт не навязывает правил конкретной способности, но не
+	// разрешает отправлять событие без владельца или цели.
+	return SourceUnit != nullptr && TargetActor != nullptr;
 }
 
 bool UTacticalAbility::CheckCost(const FGameplayAbilitySpecHandle Handle,
@@ -68,6 +86,26 @@ void UTacticalAbility::OnAvatarSet(const FGameplayAbilityActorInfo* ActorInfo,
 	Super::OnAvatarSet(ActorInfo, Spec);
 	// Новый аватар = новая миссия для этого инстанса — сброс лимита применений.
 	UsesRemaining = MaxUsesPerMission;
+}
+
+void UTacticalAbility::EndAbility(
+	const FGameplayAbilitySpecHandle Handle,
+	const FGameplayAbilityActorInfo* ActorInfo,
+	const FGameplayAbilityActivationInfo ActivationInfo,
+	bool bReplicateEndAbility,
+	bool bWasCancelled)
+{
+	// Сначала GAS снимает BlockAbilitiesWithTag, только потом обновляем HUD.
+	// Это единый lifecycle-путь и для мгновенных, и для длительных тактических GA:
+	// кнопки не остаются серыми после Attack/Heal/RunAndGun и разблокируются после
+	// завершения Overwatch/Hunker/Taunt.
+	TWeakObjectPtr<AUnitBase> Unit = Cast<AUnitBase>(
+		ActorInfo ? ActorInfo->AvatarActor.Get() : nullptr);
+	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
+	if (Unit.IsValid())
+	{
+		Unit->NotifyUnitStateChanged();
+	}
 }
 
 bool UTacticalAbility::CanActivateAbility(const FGameplayAbilitySpecHandle Handle,

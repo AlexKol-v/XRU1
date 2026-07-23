@@ -9,6 +9,7 @@
 
 #include "UnitAttributeWidget.h"
 #include "UnitHUDLayoutData.h"
+#include "UnitStatusIconWidget.h"
 
 void UUnitHUDWidget::NativeOnInitialized()
 {
@@ -34,6 +35,52 @@ void UUnitHUDWidget::InitFromLayout(UUnitHUDLayoutData* Layout, UAbilitySystemCo
 
     // Сортируем стабильно: сначала по строке (V), затем по колонке (H).
     TArray<FUnitHUDWidgetSlot> Slots = Layout->WidgetSlots;
+
+    // Tactical status — системный consumer того же статуса, что показывается
+    // в Unit Flag. По умолчанию встаёт справа от последнего слота последней строки,
+    // но конкретный DataAsset может задать явные V/H, размер и padding.
+    const bool bHasExplicitStatusSlot = Slots.ContainsByPredicate(
+        [](const FUnitHUDWidgetSlot& SlotDef)
+        {
+            return SlotDef.WidgetClass &&
+                SlotDef.WidgetClass->IsChildOf(UUnitStatusIconWidget::StaticClass());
+        });
+    if (Layout->bShowTacticalStatusIcon &&
+        Layout->TacticalStatusWidgetClass &&
+        !bHasExplicitStatusSlot)
+    {
+        int32 LastRow = 0;
+        for (const FUnitHUDWidgetSlot& Existing : Slots)
+        {
+            LastRow = FMath::Max(LastRow, Existing.VerticalIndex);
+        }
+
+        const int32 StatusRow = Layout->TacticalStatusVerticalIndex >= 0
+            ? Layout->TacticalStatusVerticalIndex
+            : LastRow;
+        int32 AppendColumn = 0;
+        for (const FUnitHUDWidgetSlot& Existing : Slots)
+        {
+            if (Existing.VerticalIndex == StatusRow)
+            {
+                AppendColumn =
+                    FMath::Max(AppendColumn, Existing.HorizontalIndex + 1);
+            }
+        }
+
+        FUnitHUDWidgetSlot StatusSlot;
+        StatusSlot.WidgetClass = Layout->TacticalStatusWidgetClass.Get();
+        StatusSlot.Size = Layout->TacticalStatusSlotSize;
+        StatusSlot.Color = Layout->TacticalStatusColor;
+        StatusSlot.Padding = Layout->TacticalStatusSlotPadding;
+        StatusSlot.VerticalIndex = StatusRow;
+        StatusSlot.HorizontalIndex =
+            Layout->TacticalStatusHorizontalIndex >= 0
+                ? Layout->TacticalStatusHorizontalIndex
+                : AppendColumn;
+        Slots.Add(StatusSlot);
+    }
+
     Slots.StableSort([](const FUnitHUDWidgetSlot& A, const FUnitHUDWidgetSlot& B)
     {
         if (A.VerticalIndex != B.VerticalIndex) return A.VerticalIndex < B.VerticalIndex;
@@ -75,7 +122,12 @@ void UUnitHUDWidget::InitFromLayout(UUnitHUDLayoutData* Layout, UAbilitySystemCo
         SizeWrap->SetHeightOverride(SlotDef.Size.Y);
         SizeWrap->AddChild(Child);
 
-        CurrentRow->AddChildToHorizontalBox(SizeWrap);
+        if (UHorizontalBoxSlot* RowSlot =
+            CurrentRow->AddChildToHorizontalBox(SizeWrap))
+        {
+            RowSlot->SetPadding(SlotDef.Padding);
+            RowSlot->SetVerticalAlignment(VAlign_Center);
+        }
         ChildWidgets.Add(Child);
     }
 }

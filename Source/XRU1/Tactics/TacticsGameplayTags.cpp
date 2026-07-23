@@ -8,6 +8,8 @@ namespace TacticsGameplayTags
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_HunkeredDown, "State.HunkeredDown", "Глухая оборона: бонус укрытия удвоен.");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Taunting, "State.Taunting", "Провокация: приоритетная цель, урон снижен.");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(State_Downed, "State.Downed", "Тяжело ранен: не действует, ждёт медика.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Ability_TacticalAction, "Ability.TacticalAction",
+		"Взаимоисключающее выполняющееся тактическое действие юнита.");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Data_Damage, "Data.Damage", "SetByCaller: величина урона выстрела.");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Data_Heal, "Data.Heal", "SetByCaller: величина лечения.");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Attack, "Event.Attack", "Приказ атаки: активирует GA_Attack с целью.");

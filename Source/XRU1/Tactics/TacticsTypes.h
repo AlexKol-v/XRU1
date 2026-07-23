@@ -3,6 +3,16 @@
 #include "CoreMinimal.h"
 #include "TacticsTypes.generated.h"
 
+/**
+ * Канонические GenericTeamId тактического режима. BP-юниты и GameMode должны
+ * использовать те же значения; игровые проверки не должны размножать magic 1/2.
+ */
+namespace TacticsTeamIds
+{
+	inline constexpr uint8 Player = 1;
+	inline constexpr uint8 Enemy = 2;
+}
+
 /** Уровень сложности, выбирается при старте новой игры. Хранится в UTacticsSaveGame. */
 UENUM(BlueprintType)
 enum class EDifficultyLevel : uint8

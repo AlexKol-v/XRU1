@@ -1,5 +1,6 @@
 #include "TacticalHUDWidget.h"
 #include "TacticalHUDStyleData.h"
+#include "TacticsGameInstance.h"
 #include "TacticalPlayerController.h"
 #include "TurnManagerSubsystem.h"
 #include "UnitBase.h"
@@ -10,12 +11,15 @@
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Components/Border.h"
 #include "Components/Button.h"
 #include "Components/Image.h"
 #include "Components/TextBlock.h"
 #include "Components/ProgressBar.h"
 #include "Components/HorizontalBox.h"
+#include "Components/HorizontalBoxSlot.h"
 #include "Components/PanelWidget.h"
+#include "Components/SizeBox.h"
 #include "Styling/SlateTypes.h"
 #include "UObject/UnrealType.h"
 
@@ -46,8 +50,9 @@ namespace
 	}
 
 	/**
-	 * Юнит карточки отряда. Портрет — WBP (переменная «Unit», Expose on Spawn),
-	 * C++ базы у него нет — читаем свойство по имени через рефлексию.
+	 * Юнит карточки отряда. WBP_TacticalHUD уже передаёт переменную «Unit»
+	 * через существующий pin CreateWidget; C++ базы у карточки нет, поэтому
+	 * читаем свойство по имени через рефлексию.
 	 * bOutResolved = false, если свойства «Unit» в WBP нет (переименовали) —
 	 * вызывающий обязан в этом случае НЕ прятать карточку (fail-open).
 	 */
@@ -113,67 +118,225 @@ int32 UTacticalHUDWidget::GetAliveEnemyCount() const
 	return TurnManager ? TurnManager->GetAliveEnemyCount() : 0;
 }
 
+UTacticalHUDStyleData* UTacticalHUDWidget::GetUITheme() const
+{
+	// Runtime source of truth is the GameInstance. The local property exists only
+	// because Designer preview has no project GameInstance.
+	if (const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>())
+	{
+		if (UTacticalHUDStyleData* GlobalTheme = GameInstance->GetUITheme())
+		{
+			return GlobalTheme;
+		}
+	}
+	return Style;
+}
+
 // --- Стиль из DataAsset -----------------------------------------------------------
 
 void UTacticalHUDWidget::ApplyStyle()
 {
-	if (!Style)
+	const UTacticalHUDStyleData* Theme = GetUITheme();
+	if (!Theme)
 	{
 		return;
 	}
 
-	// Кнопка действия: иконка/размер из ассета + единый отступ + фикс «прыжка».
-	auto StyleActionButton = [this](UButton* Button, UTexture2D* IconTexture)
+	// Сохраняем shape/resource брашей из Designer, но цвет каждого состояния
+	// берём из темы. PNG использует Button Foreground: прозрачный glyph остаётся
+	// ярким в Normal и меняет tint на Hovered/Pressed/Disabled автоматически.
+	auto StyleIconButton = [](UButton* Button, UTexture2D* IconTexture,
+		const FVector2D& IconSize, const FMargin& NormalPadding,
+		const FMargin& PressedPadding, bool bUnifyPadding,
+		const FXRU1UIButtonPalette& Palette)
 	{
 		if (!Button)
 		{
 			return;
 		}
+
 		FButtonStyle ButtonStyle = Button->GetStyle();
-		ButtonStyle.NormalPadding = Style->ActionButtonPadding;
-		ButtonStyle.PressedPadding = Style->bUnifyPressedPadding
-			? Style->ActionButtonPadding
-			: ButtonStyle.PressedPadding;
+		ButtonStyle.NormalPadding = NormalPadding;
+		ButtonStyle.PressedPadding = bUnifyPadding ? NormalPadding : PressedPadding;
+		ButtonStyle.Normal.TintColor = FSlateColor(Palette.NormalBackground);
+		ButtonStyle.Hovered.TintColor = FSlateColor(Palette.HoveredBackground);
+		ButtonStyle.Pressed.TintColor = FSlateColor(Palette.PressedBackground);
+
+		// У многих стандартных UButton Disabled — пустой brush. Клонируем форму
+		// Normal, чтобы отключённая кнопка оставалась читаемой, но явно приглушённой.
+		ButtonStyle.Disabled = ButtonStyle.Normal;
+		ButtonStyle.Disabled.TintColor = FSlateColor(Palette.DisabledBackground);
+		ButtonStyle.NormalForeground = FSlateColor(Palette.NormalForeground);
+		ButtonStyle.HoveredForeground = FSlateColor(Palette.HoveredForeground);
+		ButtonStyle.PressedForeground = FSlateColor(Palette.PressedForeground);
+		ButtonStyle.DisabledForeground = FSlateColor(Palette.DisabledForeground);
 		Button->SetStyle(ButtonStyle);
+		Button->SetBackgroundColor(FLinearColor::White);
+		Button->SetColorAndOpacity(FLinearColor::White);
+
 		if (UImage* Icon = FindFirstChildImage(Button))
 		{
 			if (IconTexture)
 			{
 				Icon->SetBrushFromTexture(IconTexture);
 			}
-			Icon->SetDesiredSizeOverride(Style->ActionIconSize);
+			Icon->SetDesiredSizeOverride(IconSize);
+			Icon->SetColorAndOpacity(FLinearColor::White);
+			Icon->SetBrushTintColor(FSlateColor::UseForeground());
 		}
 	};
 
-	StyleActionButton(AttackBtn, Style->AttackIcon);
-	StyleActionButton(OverwatchBtn, Style->OverwatchIcon);
-	StyleActionButton(HunkerBtn, Style->HunkerIcon);
-	StyleActionButton(AbilityBtn, Style->AbilityIcon);
-	StyleActionButton(InteractBtn, Style->InteractDefuseIcon);
-	StyleActionButton(SkipBtn, Style->SkipIcon);
+	StyleIconButton(AttackBtn, Theme->AttackIcon, Theme->ActionIconSize,
+		Theme->ActionButtonPadding, Theme->ActionButtonPressedPadding,
+		Theme->bUnifyPressedPadding, Theme->ActionButtonPalette);
+	StyleIconButton(OverwatchBtn, Theme->OverwatchIcon, Theme->ActionIconSize,
+		Theme->ActionButtonPadding, Theme->ActionButtonPressedPadding,
+		Theme->bUnifyPressedPadding, Theme->ActionButtonPalette);
+	StyleIconButton(HunkerBtn, Theme->HunkerIcon, Theme->ActionIconSize,
+		Theme->ActionButtonPadding, Theme->ActionButtonPressedPadding,
+		Theme->bUnifyPressedPadding, Theme->ActionButtonPalette);
+	StyleIconButton(AbilityBtn, Theme->AbilityIcon, Theme->ActionIconSize,
+		Theme->ActionButtonPadding, Theme->ActionButtonPressedPadding,
+		Theme->bUnifyPressedPadding, Theme->ActionButtonPalette);
+	StyleIconButton(InteractBtn, Theme->InteractDefuseIcon, Theme->ActionIconSize,
+		Theme->ActionButtonPadding, Theme->ActionButtonPressedPadding,
+		Theme->bUnifyPressedPadding, Theme->ActionButtonPalette);
+	StyleIconButton(SkipBtn, Theme->SkipIcon, Theme->ActionIconSize,
+		Theme->ActionButtonPadding, Theme->ActionButtonPressedPadding,
+		Theme->bUnifyPressedPadding, Theme->ActionButtonPalette);
 
-	// «Завершить ход»: свой размер иконки (кнопка с текстом), тот же единый отступ.
-	if (EndTurnBtn)
+	StyleIconButton(EndTurnBtn, Theme->EndTurnIcon, Theme->EndTurnIconSize,
+		Theme->EndTurnButtonPadding, Theme->EndTurnButtonPressedPadding,
+		Theme->bUnifyEndTurnPressedPadding, Theme->EndTurnButtonPalette);
+
+	if (EnemyCountIcon)
 	{
-		FButtonStyle ButtonStyle = EndTurnBtn->GetStyle();
-		ButtonStyle.NormalPadding = Style->ActionButtonPadding;
-		ButtonStyle.PressedPadding = Style->bUnifyPressedPadding
-			? Style->ActionButtonPadding
-			: ButtonStyle.PressedPadding;
-		EndTurnBtn->SetStyle(ButtonStyle);
-		if (UImage* Icon = FindFirstChildImage(EndTurnBtn))
+		if (Theme->EnemyCountIcon)
 		{
-			if (Style->EndTurnIcon)
-			{
-				Icon->SetBrushFromTexture(Style->EndTurnIcon);
-			}
-			Icon->SetDesiredSizeOverride(Style->EndTurnIconSize);
+			EnemyCountIcon->SetBrushFromTexture(Theme->EnemyCountIcon);
 		}
+		EnemyCountIcon->SetDesiredSizeOverride(Theme->EnemyCounterIconSize);
+		EnemyCountIcon->SetColorAndOpacity(FLinearColor::White);
+		EnemyCountIcon->SetBrushTintColor(FSlateColor(FLinearColor::White));
+	}
+	if (EnemyCounterBackground)
+	{
+		// Даже при Texture=None UBorder использует свой однотонный Slate brush:
+		// shape остаётся в Designer, а визуальные параметры — только в UITheme.
+		EnemyCounterBackground->SetBrushFromTexture(
+			Theme->EnemyCounterBackgroundTexture);
+		EnemyCounterBackground->SetBrushColor(
+			Theme->EnemyCounterBackgroundColor);
+		EnemyCounterBackground->SetPadding(
+			Theme->EnemyCounterBackgroundPadding);
 	}
 
 	if (TargetCoverIcon)
 	{
-		TargetCoverIcon->SetDesiredSizeOverride(Style->TargetCoverIconSize);
+		TargetCoverIcon->SetDesiredSizeOverride(Theme->TargetCoverIconSize);
+	}
+}
+
+void UTacticalHUDWidget::ApplyPortraitCardLayout()
+{
+	const UTacticalHUDStyleData* Theme = GetUITheme();
+	if (!Theme || !SquadPanel)
+	{
+		return;
+	}
+
+	// Status/Cover — WidgetTree-переменные вложенного WBP. Родительский HUD
+	// применяет общую тему после того, как BP уже создал портреты. Cover-ветка
+	// создаётся программно, если её ещё нет в старой версии WBP_UnitPortrait:
+	// это сохраняет совместимость и не требует хрупкой большой BP-цепочки.
+	for (int32 Index = 0; Index < SquadPanel->GetChildrenCount(); ++Index)
+	{
+		UUserWidget* Card = Cast<UUserWidget>(SquadPanel->GetChildAt(Index));
+		if (!Card || !Card->WidgetTree)
+		{
+			continue;
+		}
+		if (USizeBox* StatusSizeBox = Cast<USizeBox>(
+			Card->WidgetTree->FindWidget(TEXT("StatusSizeBox"))))
+		{
+			StatusSizeBox->SetWidthOverride(Theme->PortraitStatusIconSize.X);
+			StatusSizeBox->SetHeightOverride(Theme->PortraitStatusIconSize.Y);
+			if (UHorizontalBoxSlot* StatusSlot =
+				Cast<UHorizontalBoxSlot>(StatusSizeBox->Slot))
+			{
+				StatusSlot->SetPadding(Theme->PortraitStatusIconPadding);
+				StatusSlot->SetVerticalAlignment(VAlign_Center);
+			}
+		}
+
+		USizeBox* CoverSizeBox = Cast<USizeBox>(
+			Card->WidgetTree->FindWidget(TEXT("CoverSizeBox")));
+		UImage* CoverIcon = Cast<UImage>(
+			Card->WidgetTree->FindWidget(TEXT("CoverIcon")));
+		UHorizontalBox* HeaderRow = Cast<UHorizontalBox>(
+			Card->WidgetTree->FindWidget(TEXT("HeaderRow")));
+
+		if (!CoverSizeBox && HeaderRow)
+		{
+			CoverSizeBox = Card->WidgetTree->ConstructWidget<USizeBox>(
+				USizeBox::StaticClass(), TEXT("CoverSizeBox"));
+			if (UHorizontalBoxSlot* CoverSlot =
+				HeaderRow->AddChildToHorizontalBox(CoverSizeBox))
+			{
+				CoverSlot->SetPadding(Theme->PortraitCoverIconPadding);
+				CoverSlot->SetVerticalAlignment(VAlign_Center);
+			}
+		}
+		if (!CoverIcon && CoverSizeBox)
+		{
+			CoverIcon = Card->WidgetTree->ConstructWidget<UImage>(
+				UImage::StaticClass(), TEXT("CoverIcon"));
+			CoverSizeBox->AddChild(CoverIcon);
+		}
+
+		if (!CoverSizeBox || !CoverIcon)
+		{
+			continue;
+		}
+
+		CoverSizeBox->SetWidthOverride(Theme->PortraitCoverIconSize.X);
+		CoverSizeBox->SetHeightOverride(Theme->PortraitCoverIconSize.Y);
+		if (UHorizontalBoxSlot* CoverSlot =
+			Cast<UHorizontalBoxSlot>(CoverSizeBox->Slot))
+		{
+			CoverSlot->SetPadding(Theme->PortraitCoverIconPadding);
+			CoverSlot->SetVerticalAlignment(VAlign_Center);
+		}
+		CoverIcon->SetDesiredSizeOverride(Theme->PortraitCoverIconSize);
+		CoverIcon->SetColorAndOpacity(FLinearColor::White);
+
+		bool bResolved = false;
+		const AUnitBase* Unit = GetPortraitUnit(Card, bResolved);
+		UTexture2D* CoverTexture =
+			bResolved ? Theme->GetCoverIconForUnit(Unit) : nullptr;
+		if (CoverTexture)
+		{
+			CoverIcon->SetBrushFromTexture(CoverTexture);
+			CoverSizeBox->SetVisibility(ESlateVisibility::HitTestInvisible);
+		}
+		else
+		{
+			CoverSizeBox->SetVisibility(ESlateVisibility::Collapsed);
+		}
+	}
+}
+
+void UTacticalHUDWidget::RefreshAbilityIcon(AUnitBase* Selected)
+{
+	const UTacticalHUDStyleData* Theme = GetUITheme();
+	UImage* Icon = AbilityBtn ? FindFirstChildImage(AbilityBtn) : nullptr;
+	if (!Theme || !Icon)
+	{
+		return;
+	}
+	if (UTexture2D* AbilityTexture = Theme->GetAbilityIconForUnit(Selected))
+	{
+		Icon->SetBrushFromTexture(AbilityTexture);
 	}
 }
 
@@ -189,9 +352,8 @@ void UTacticalHUDWidget::RefreshActionButtons()
 	// C++ самодостаточен, а disabled-панель в BP — просто дублирующая страховка.
 	const ATacticalPlayerController* Controller = GetTacticalController();
 	AUnitBase* Selected = Controller ? Controller->GetSelectedUnit() : nullptr;
-	const UActionPointsComponent* ActionPoints = Selected ? Selected->GetActionPoints() : nullptr;
-	const bool bCanAct = Controller && Controller->IsPlayerPhase() &&
-		Selected && !Selected->IsDowned() && ActionPoints && ActionPoints->CanSpend(1);
+	const UTacticalHUDStyleData* Theme = GetUITheme();
+	RefreshAbilityIcon(Selected);
 
 	auto SetEnabled = [](UWidget* Widget, bool bEnabled)
 	{
@@ -203,27 +365,28 @@ void UTacticalHUDWidget::RefreshActionButtons()
 
 	// Кнопка «Огонь» гасится и без единой доступной цели (как в XCOM) — иначе
 	// игрок вооружает прицеливание вслепую и узнаёт об этом только по ховеру.
-	SetEnabled(AttackBtn, bCanAct && Selected && UGA_Attack::HasAnyValidTarget(Selected));
-	SetEnabled(OverwatchBtn, bCanAct);
-	SetEnabled(HunkerBtn, bCanAct);
-	SetEnabled(SkipBtn, bCanAct);
-
-	// Способность класса: дополнительно лимит использований (0 — потрачена).
-	const int32 AbilityUses = Selected
-		? Selected->GetAbilityUsesRemaining(Selected->ClassAbilityClass)
-		: 0;
-	SetEnabled(AbilityBtn, bCanAct && AbilityUses != 0);
+	SetEnabled(AttackBtn, Controller &&
+		Controller->CanIssueCommand(ETacticalPlayerCommand::Attack));
+	SetEnabled(OverwatchBtn, Controller &&
+		Controller->CanIssueCommand(ETacticalPlayerCommand::Overwatch));
+	SetEnabled(HunkerBtn, Controller &&
+		Controller->CanIssueCommand(ETacticalPlayerCommand::HunkerDown));
+	SetEnabled(SkipBtn, Controller &&
+		Controller->CanIssueCommand(ETacticalPlayerCommand::SkipUnitTurn));
+	SetEnabled(AbilityBtn, Controller &&
+		Controller->CanIssueCommand(ETacticalPlayerCommand::ClassAbility));
 
 	// Контекстное F: вид интеракции определяет и доступность, и иконку.
 	const EInteractionKind Interaction = Controller
 		? Controller->GetAvailableInteraction()
 		: EInteractionKind::None;
-	SetEnabled(InteractBtn, bCanAct && Interaction != EInteractionKind::None);
-	if (InteractIcon && Style)
+	SetEnabled(InteractBtn, Controller &&
+		Controller->CanIssueCommand(ETacticalPlayerCommand::Interact));
+	if (InteractIcon && Theme)
 	{
 		UTexture2D* KindIcon = (Interaction == EInteractionKind::Evacuate)
-			? Style->InteractEvacIcon.Get()
-			: Style->InteractDefuseIcon.Get();
+			? Theme->InteractEvacIcon.Get()
+			: Theme->InteractDefuseIcon.Get();
 		if (KindIcon)
 		{
 			InteractIcon->SetBrushFromTexture(KindIcon);
@@ -299,11 +462,9 @@ void UTacticalHUDWidget::UpdateTargetPanel(AUnitBase* Hovered)
 		// (фланкирована/открыта — иконки нет), как в XCOM 2.
 		const ECoverType Cover = GetTargetCoverAgainstSelected(Hovered);
 		UTexture2D* CoverTexture = nullptr;
-		if (Style)
+		if (const UTacticalHUDStyleData* Theme = GetUITheme())
 		{
-			CoverTexture = (Cover == ECoverType::Full) ? Style->FullCoverIcon.Get()
-				: (Cover == ECoverType::Half) ? Style->HalfCoverIcon.Get()
-				: nullptr;
+			CoverTexture = Theme->GetCoverIcon(Cover);
 		}
 		if (Cover != ECoverType::None)
 		{
@@ -391,6 +552,14 @@ void UTacticalHUDWidget::SubscribeToUnitStates()
 				Unit->OnUnitStateChanged.AddDynamic(this, &UTacticalHUDWidget::HandleUnitStateChanged);
 				StateSubscribedUnits.Add(Unit);
 			}
+			UCoverDetectionComponent* Cover =
+				Unit ? Unit->GetCoverDetection() : nullptr;
+			if (Cover && !CoverSubscribedComponents.Contains(Cover))
+			{
+				Cover->OnCoverStateChanged.AddDynamic(
+					this, &UTacticalHUDWidget::HandleUnitCoverStateChanged);
+				CoverSubscribedComponents.Add(Cover);
+			}
 		}
 	};
 	SubscribeSide(TurnManager->GetPlayerSideUnits());
@@ -451,6 +620,7 @@ void UTacticalHUDWidget::NativeConstruct()
 
 	// Клавиатура принадлежит игре, а не кнопкам HUD (фикс «пробел повторяет
 	// последнее нажатое действие»).
+	ApplyPortraitCardLayout();
 	EnsureButtonsDontStealFocus();
 }
 
@@ -517,6 +687,16 @@ void UTacticalHUDWidget::NativeDestruct()
 		}
 	}
 	StateSubscribedUnits.Reset();
+	for (const TWeakObjectPtr<UCoverDetectionComponent>& Component :
+		CoverSubscribedComponents)
+	{
+		if (UCoverDetectionComponent* Alive = Component.Get())
+		{
+			Alive->OnCoverStateChanged.RemoveDynamic(
+				this, &UTacticalHUDWidget::HandleUnitCoverStateChanged);
+		}
+	}
+	CoverSubscribedComponents.Reset();
 	for (const TWeakObjectPtr<UActionPointsComponent>& Component : APSubscribedComponents)
 	{
 		if (UActionPointsComponent* Alive = Component.Get())
@@ -579,10 +759,18 @@ void UTacticalHUDWidget::HandleUnitStateChanged()
 {
 	OnUnitsStateChanged();
 	RefreshActionButtons();
+	ApplyPortraitCardLayout();
 
 	// BP мог пересобрать портреты (смерть/эвакуация) — у новых кнопок тоже
 	// не должно оставаться фокуса после клика (AddUniqueDynamic, дубли не страшны).
 	EnsureButtonsDontStealFocus();
+}
+
+void UTacticalHUDWidget::HandleUnitCoverStateChanged(ECoverType /*NewCover*/)
+{
+	// Overhead cover-widget обновляется своим delegate; здесь нужен только
+	// второй consumer — cover badge внутри Unit Flag выбранного бойца.
+	ApplyPortraitCardLayout();
 }
 
 void UTacticalHUDWidget::HandleSquadAPChanged(int32 NewCurrent, int32 Max)

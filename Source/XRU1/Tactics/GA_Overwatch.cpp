@@ -53,6 +53,11 @@ void UGA_Overwatch::ActivateAbility(
 			TurnManager->OnCombatEnded.AddDynamic(this, &UGA_Overwatch::HandleCombatEnded);
 		}
 	}
+
+	if (AUnitBase* Unit = Cast<AUnitBase>(GetAvatarActorFromActorInfo()))
+	{
+		Unit->NotifyUnitStateChanged();
+	}
 }
 
 void UGA_Overwatch::EndAbility(

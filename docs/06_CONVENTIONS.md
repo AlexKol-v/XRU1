@@ -6,6 +6,7 @@
 |---|---|---|
 | `BP_` | Blueprint-класс (акторы, компоненты, GameMode `GM_`) | `BP_Unit_Assault`, `GM_Tactics` |
 | `WBP_` | Widget Blueprint | `WBP_MainMenu`, `WBP_TacticalHUD` |
+| `CBS_` / `CTS_` | CommonButtonStyle / CommonTextStyle Blueprint | `CBS_Menu_Primary`, `CTS_Title` |
 | `ABP_` | Animation Blueprint | `ABP_Soldier` |
 | `AM_` | Anim Montage | `AM_Fire` |
 | `BS_` | Blend Space | `BS_Idle_Walk_Run` |

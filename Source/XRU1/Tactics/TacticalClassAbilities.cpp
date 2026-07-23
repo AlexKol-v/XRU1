@@ -24,12 +24,20 @@ void UGA_SelfBuffUntilNextTurn::ActivateAbility(
 	}
 
 	UAbilitySystemComponent* ASC = GetAbilitySystemComponentFromActorInfo();
-	if (ASC)
+	if (!ASC)
 	{
-		FGameplayEffectContextHandle Context = ASC->MakeEffectContext();
-		Context.AddSourceObject(this);
-		AppliedEffectHandle = ASC->ApplyGameplayEffectToSelf(
-			BuffEffect->GetDefaultObject<UGameplayEffect>(), 1.f, Context);
+		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
+		return;
+	}
+
+	FGameplayEffectContextHandle Context = ASC->MakeEffectContext();
+	Context.AddSourceObject(this);
+	AppliedEffectHandle = ASC->ApplyGameplayEffectToSelf(
+		BuffEffect->GetDefaultObject<UGameplayEffect>(), 1.f, Context);
+	if (!AppliedEffectHandle.IsValid())
+	{
+		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
+		return;
 	}
 
 	// Стойка держится до начала следующего хода нашей стороны.
@@ -44,6 +52,10 @@ void UGA_SelfBuffUntilNextTurn::ActivateAbility(
 
 	OnBuffApplied();
 	OnBuffActivated();
+	if (AUnitBase* Unit = Cast<AUnitBase>(GetAvatarActorFromActorInfo()))
+	{
+		Unit->NotifyUnitStateChanged();
+	}
 	// Способность остаётся активной, EndAbility снимет GE.
 }
 
@@ -132,8 +144,15 @@ UGA_Heal::UGA_Heal()
 	ActionPointCost = 1;
 	MaxUsesPerMission = 2;
 	bRequiresTargetActor = true;
+	TargetedActivationEventTag = TacticsGameplayTags::Event_Heal;
 
 	HealEffect = UGE_Heal::StaticClass();
+}
+
+bool UGA_Heal::IsValidTargetActor_Implementation(
+	AUnitBase* SourceUnit, AActor* TargetActor) const
+{
+	return CanHealTarget(SourceUnit, TargetActor, HealRange);
 }
 
 bool UGA_Heal::CanHealTarget(const AUnitBase* Healer, const AActor* Target, float Range)

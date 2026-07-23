@@ -559,6 +559,7 @@ bool AUnitAIController::MoveWithBudget(AUnitBase* Unit, const FVector& Goal, flo
 	if (Result == EPathFollowingRequestResult::RequestSuccessful)
 	{
 		bTurnMoveInProgress = true; // AP спишется в OnMoveCompleted
+		Unit->NotifyUnitStateChanged();
 		return true;
 	}
 	if (Result == EPathFollowingRequestResult::AlreadyAtGoal)
@@ -606,6 +607,10 @@ EPathFollowingRequestResult::Type AUnitAIController::MoveAlongRoute(const TArray
 		StopRoute();
 		return EPathFollowingRequestResult::Failed;
 	}
+	if (AUnitBase* Unit = Cast<AUnitBase>(GetPawn()))
+	{
+		Unit->NotifyUnitStateChanged();
+	}
 	return EPathFollowingRequestResult::RequestSuccessful;
 }
 
@@ -627,10 +632,20 @@ bool AUnitAIController::RequestNextRouteLeg()
 		const bool bFinalLeg = (RouteLegIndex == RouteLegs.Num() - 1);
 		++RouteLegIndex;
 
-		// Промежуточные вершины проходим ТОЧНЕЕ финальной: радиус приёмки — это
-		// ровно то, на сколько path following срежет угол, а поворотные вершины
-		// стоят у занятых клеток с запасом всего ~26 см (см. RouteCornerAcceptance).
+		// Промежуточные углы стоят у занятых клеток с запасом всего ~26 см — их
+		// проходим с малым радиусом приёмки (RouteCornerAcceptance), это ровно то,
+		// на сколько path following срежет угол. Финальную вершину проходим ТОЧНО
+		// в цель клика: у неё запаса клиренса нет — это ровно та точка, куда игрок
+		// ткнул, и юнит обязан встать на неё (в т.ч. вплотную к укрытию).
 		const float Acceptance = bFinalLeg ? RouteAcceptanceRadius : RouteCornerAcceptance;
+
+		// bStopOnOverlap для ФИНАЛА выключаем. Движок считает достижение как
+		// AcceptanceRadius + MinAgentRadiusPct * радиус капсулы (MinAgentRadiusPct
+		// = 0.05, т.е. всего ~2 см) — вклад мал, но на финальной точке не нужен
+		// вообще никакой люфт от капсулы: боец обязан встать ровно в точку клика.
+		// Промежуточные углы оставляем с прибавкой (true) — там небольшой люфт
+		// как раз помогает срезать угол мимо занятых клеток.
+		const bool bStopOnOverlap = !bFinalLeg;
 
 		// Вершина фактически уже пройдена (боец стартовал рядом с ней) — пропускаем,
 		// иначе получили бы приказ «идти туда, где стоим» и ложный финиш отрезка.
@@ -639,7 +654,7 @@ bool AUnitAIController::RequestNextRouteLeg()
 			continue;
 		}
 
-		if (MoveToLocation(Leg, Acceptance) == EPathFollowingRequestResult::RequestSuccessful)
+		if (MoveToLocation(Leg, Acceptance, bStopOnOverlap) == EPathFollowingRequestResult::RequestSuccessful)
 		{
 			return true;
 		}
@@ -683,6 +698,8 @@ void AUnitAIController::OnMoveCompleted(FAIRequestID RequestID, const FPathFollo
 		{
 			Cover->EvaluateSurroundings();
 		}
+		// Один атомарный refresh: HUD видит уже и остановку, и итоговое укрытие.
+		Unit->NotifyUnitStateChanged();
 
 		// Диск занятости юнита встал на новую позицию — контроллер игрока
 		// пересчитает зону хода выбранного бойца (синхронно, без задержек).
