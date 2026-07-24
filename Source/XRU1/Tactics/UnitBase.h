@@ -9,6 +9,7 @@ class UActionPointsComponent;
 class UCoverDetectionComponent;
 class UCurveFloat;
 class UDecalComponent;
+class UNavigationInvokerComponent;
 class UGameplayAbility;
 class UTacticalAbility;
 
@@ -215,6 +216,24 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tactics|Unit")
 	TObjectPtr<UCoverDetectionComponent> CoverDetection;
 
+	/**
+	 * Navigation Invoker: при RuntimeGeneration=Dynamic навмеш генерится вокруг
+	 * юнита. На демо-карте инертен (навмеш строится по всему NavMeshBoundsVolume);
+	 * при включении bGenerateNavigationOnlyAroundNavigationInvokers=True масштабирует
+	 * навмеш на большие карты — тайлы собираются только в окрестности юнитов.
+	 * Радиусы (Tactics|Nav) заданы с запасом под зону хода (MoveRange×2) и обзор.
+	 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tactics|Unit")
+	TObjectPtr<UNavigationInvokerComponent> NavInvoker;
+
+	/** Радиус генерации навмеша вокруг юнита (см). Покрывает зону хода и обзор. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Nav", meta = (ClampMin = "500"))
+	float NavInvokerGenerationRadius = 4000.f;
+
+	/** Радиус удаления тайлов навмеша (см). Должен быть больше радиуса генерации. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Nav", meta = (ClampMin = "600"))
+	float NavInvokerRemovalRadius = 5500.f;
+
 	/** Кольцо-декаль выбранного юнита (скрыто по умолчанию; материал — в BP). */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tactics|Highlight")
 	TObjectPtr<UDecalComponent> SelectionDecal;
@@ -222,6 +241,14 @@ protected:
 	/** Stencil-значения обводки (совпадают с ветками в M_OutlinePP). */
 	static constexpr int32 HoverStencilAlly = 1;
 	static constexpr int32 HoverStencilEnemy = 2;
+
+	/**
+	 * Делает выбывшего юнита (труп/тяжелораненый) «проходимым»: капсула без
+	 * коллизии, меш пропускает Pawn, и — ГЛАВНОЕ при RuntimeGeneration=Dynamic —
+	 * тело НЕ режет навмеш (иначе вокруг трупа появляется дыра и живые об него
+	 * спотыкаются). bDefeated=false восстанавливает коллизию/навмеш при подъёме.
+	 */
+	void ApplyDefeatedCollision(bool bDefeated);
 
 	bool bIsDead = false;
 	bool bIsDowned = false;

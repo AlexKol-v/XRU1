@@ -1,11 +1,35 @@
 #include "CoverDetectionComponent.h"
+#include "CoverTuningDataAsset.h"
+#include "TacticsCombatStatics.h"
 #include "TacticsGameplayTags.h"
 #include "TacticsGameplayEffects.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemGlobals.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/Character.h"
+#include "Components/CapsuleComponent.h"
 #include "Engine/World.h"
 #include "CollisionQueryParams.h"
+
+namespace
+{
+	/**
+	 * Половина капсулы владельца (см), фолбэк — дефолт ACharacter (88). Нужна,
+	 * чтобы из ActorLocation (центр капсулы) получить точку ПОЛА: высоты укрытия
+	 * отсчитываются от пола (§II.3, Ф2).
+	 */
+	float OwnerCapsuleHalfHeight(const AActor* Owner)
+	{
+		if (const ACharacter* Character = Cast<ACharacter>(Owner))
+		{
+			if (const UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
+			{
+				return Capsule->GetScaledCapsuleHalfHeight();
+			}
+		}
+		return 88.f;
+	}
+}
 
 UCoverDetectionComponent::UCoverDetectionComponent()
 {
@@ -72,12 +96,23 @@ ECoverType UCoverDetectionComponent::GetCoverAgainst(const AActor* Threat) const
 
 float UCoverDetectionComponent::GetDefenseBonusAgainst(const AActor* Threat) const
 {
+	const UCoverTuningDataAsset* Tuning = GetTuning();
 	switch (GetCoverAgainst(Threat))
 	{
-	case ECoverType::Half: return HalfCoverDefenseBonus;
-	case ECoverType::Full: return FullCoverDefenseBonus;
+	case ECoverType::Half: return Tuning->HalfCoverDefenseBonus;
+	case ECoverType::Full: return Tuning->FullCoverDefenseBonus;
 	default:               return 0.f;
 	}
+}
+
+const UCoverTuningDataAsset* UCoverDetectionComponent::GetTuning() const
+{
+	// Пер-юнит → глобальный → CDO. GetCoverTuning сам подстрахует пустой мир.
+	if (TuningOverride)
+	{
+		return TuningOverride;
+	}
+	return UTacticsCombatStatics::GetCoverTuning(GetWorld());
 }
 
 ECoverType UCoverDetectionComponent::TraceCoverInDirection(const FVector& Direction) const
@@ -87,9 +122,14 @@ ECoverType UCoverDetectionComponent::TraceCoverInDirection(const FVector& Direct
 	{
 		return ECoverType::None;
 	}
-	// Общее ядро: юнит на месте — Base и есть его ActorLocation.
-	return TraceCoverAtLocation(Owner->GetWorld(), Owner->GetActorLocation(), Direction,
-		CoverTraceDistance, HalfCoverHeight, FullCoverHeight, CoverTraceChannel, Owner);
+	// Base — точка ПОЛА (ActorLocation − половина капсулы). Высоты Half/Full
+	// отсчитываются от пола, как задумано (§II.3): раньше Base был центром
+	// капсулы, и низкое укрытие (ящик 60 см) не детектилось вообще.
+	const UCoverTuningDataAsset* Tuning = GetTuning();
+	const FVector FloorBase = Owner->GetActorLocation() - FVector(0.f, 0.f, OwnerCapsuleHalfHeight(Owner));
+	return TraceCoverAtLocation(Owner->GetWorld(), FloorBase, Direction,
+		Tuning->CoverTraceDistance, Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
+		Tuning->CoverTraceChannel, Owner);
 }
 
 ECoverType UCoverDetectionComponent::EvaluateCoverAtLocation(const FVector& Base, const FVector& ThreatLocation) const
@@ -100,8 +140,10 @@ ECoverType UCoverDetectionComponent::EvaluateCoverAtLocation(const FVector& Base
 	{
 		return ECoverType::None;
 	}
+	const UCoverTuningDataAsset* Tuning = GetTuning();
 	return TraceCoverAtLocation(Owner->GetWorld(), Base, ToThreat,
-		CoverTraceDistance, HalfCoverHeight, FullCoverHeight, CoverTraceChannel, Owner);
+		Tuning->CoverTraceDistance, Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
+		Tuning->CoverTraceChannel, Owner);
 }
 
 ECoverType UCoverDetectionComponent::TraceCoverAtLocation(const UWorld* World, const FVector& Base,

@@ -216,10 +216,15 @@ protected:
 	 * огня, цена пути, дистанция до цели. bRetreat инвертирует дистанцию
 	 * (награда за удаление, потеря LOS не штрафуется) — режим «отойти и
 	 * спрятаться» при низком HP.
+	 * bAdvance — режим «наступать от укрытия к укрытию»: потеря LOS НЕ штрафуется
+	 * (иначе бот отвергает промежуточное укрытие без выстрела и бежит напролом),
+	 * дистанция по-прежнему тянет ближе к цели. Так враг сближается, оставаясь в
+	 * укрытии (XCOM), а не открытой пробежкой.
 	 * false — ничего значимо лучше текущей позиции (порог RelocateBias):
 	 * стоим где стоим, а не мечемся ради +0 к укрытию.
 	 */
-	bool FindCoverPoint(AUnitBase* Unit, const AActor* Threat, float PathBudget, bool bRetreat, FVector& OutPoint);
+	bool FindCoverPoint(AUnitBase* Unit, const AActor* Threat, float PathBudget, bool bRetreat,
+		FVector& OutPoint, bool bAdvance = false);
 
 	/** Старт манёвра к точке: помечает ход и запоминает точку для продолжения. */
 	bool StartManeuverTo(AUnitBase* Unit, const FVector& Point, const TCHAR* Reason);

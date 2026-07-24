@@ -457,11 +457,27 @@ protected:
 	 */
 	bool bPendingAutoAdvance = false;
 
+	/**
+	 * Номер кадра, на котором взведён bPendingAutoAdvance. PlayerTick НЕ разрешает
+	 * переход в тот же кадр: кадр выстрела стартует синхронно чуть ПОЗЖE списания
+	 * AP (ResolveShot после CommitAbility), и без этой метки отложенный переход
+	 * успел бы сработать до начала кинематографа, снова оборвав его.
+	 */
+	uint64 PendingAutoAdvanceFrame = 0;
+
 	/** Последняя точка превью пути (троттлинг перзапроса FindPath). */
 	FVector LastPathPreviewGoal = FVector(TNumericLimits<float>::Max());
 
 	/** Двигался ли выбранный юнит в прошлый тик (ловим остановку → перестроить зону). */
 	bool bSelectedUnitWasMoving = false;
+
+	/**
+	 * Троттлинг непрерывной дебаг-отрисовки LOS (xru1.LOS.Debug): раз в
+	 * LOSDebugInterval, а не каждый кадр — иначе лог (см. UE_LOG внутри
+	 * HasLineOfSightFromLocation) захлёстывает при 60 FPS.
+	 */
+	float LastLOSDebugTime = -1000.f;
+	static constexpr float LOSDebugInterval = 0.25f;
 
 
 	/** Стартовый фокус камеры на отряд уже выполнен (не повторять каждый ход). */

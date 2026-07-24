@@ -119,6 +119,24 @@ UGA_HunkerDown::UGA_HunkerDown()
 	ActivationBlockedTags.AddTag(TacticsGameplayTags::State_HunkeredDown);
 }
 
+bool UGA_HunkerDown::CanActivateAbility(const FGameplayAbilitySpecHandle Handle,
+	const FGameplayAbilityActorInfo* ActorInfo,
+	const FGameplayTagContainer* SourceTags,
+	const FGameplayTagContainer* TargetTags,
+	FGameplayTagContainer* OptionalRelevantTags) const
+{
+	if (!Super::CanActivateAbility(Handle, ActorInfo, SourceTags, TargetTags, OptionalRelevantTags))
+	{
+		return false;
+	}
+	// XCOM 2: глухая оборона только в укрытии. Тег Cover.Half/Full вешает
+	// UCoverDetectionComponent по BestCoverAround — без укрытия отказываем,
+	// чтобы игрок не сжёг ход впустую (§II.5).
+	const UAbilitySystemComponent* ASC = ActorInfo ? ActorInfo->AbilitySystemComponent.Get() : nullptr;
+	return ASC && (ASC->HasMatchingGameplayTag(TacticsGameplayTags::Cover_Half) ||
+		ASC->HasMatchingGameplayTag(TacticsGameplayTags::Cover_Full));
+}
+
 // --- UGA_Taunt ----------------------------------------------------------------
 
 UGA_Taunt::UGA_Taunt()

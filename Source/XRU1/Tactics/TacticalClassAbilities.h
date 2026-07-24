@@ -63,6 +63,18 @@ class XRU1_API UGA_HunkerDown : public UGA_SelfBuffUntilNextTurn
 
 public:
 	UGA_HunkerDown();
+
+	/**
+	 * Глухая оборона ТРЕБУЕТ укрытия (XCOM 2: «can only be used in cover»). Без
+	 * укрытия ComputeHitChance не удваивает нулевой бонус — активация сожгла бы
+	 * весь ход впустую (§II.5). Требуем тег Cover.Half/Full (его вешает
+	 * UCoverDetectionComponent по BestCoverAround).
+	 */
+	virtual bool CanActivateAbility(const FGameplayAbilitySpecHandle Handle,
+		const FGameplayAbilityActorInfo* ActorInfo,
+		const FGameplayTagContainer* SourceTags,
+		const FGameplayTagContainer* TargetTags,
+		FGameplayTagContainer* OptionalRelevantTags) const override;
 };
 
 /**

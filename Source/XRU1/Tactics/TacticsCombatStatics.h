@@ -2,10 +2,13 @@
 
 #include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
+#include "CoverTypes.h"
 #include "TacticsCombatStatics.generated.h"
 
 class UGameplayEffect;
 class AUnitBase;
+class UCoverDetectionComponent;
+class UCoverTuningDataAsset;
 
 /**
  * Общие боевые расчёты выстрела: шанс попадания с учётом укрытия цели
@@ -41,13 +44,19 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Tactics|Combat")
 	static float ComputeHitChance(const AActor* Shooter, const AActor* Target, float BaseHitChance);
 
-	// --- Модификаторы точности (XCOM 2-подобные, GDD §5.4) ---------------------
+	// --- Тюнинг укрытий/LOS/высоты (Data Asset, Ф3) ----------------------------
+	//
+	// Все числовые параметры укрытий, линии видимости, выглядывания и высоты
+	// теперь живут в UCoverTuningDataAsset. Раньше они были размазаны: static
+	// constexpr здесь, UPROPERTY на UCoverDetectionComponent, литерал множителя
+	// hunker в ComputeHitChance. Единый доступ — через GetCoverTuning.
 
-	/** Преимущество высоты: стрелок выше цели минимум на столько (см)... */
-	static constexpr float HeightAdvantageZ = 150.f;
-
-	/** ...получает столько к точности (XCOM 2: +20 с высоты). Снизу вверх штрафа нет. */
-	static constexpr float HeightAdvantageAimBonus = 20.f;
+	/**
+	 * Ассет тюнинга укрытий: GameInstance->CoverTuning, иначе CDO (дефолты равны
+	 * прежним числам — без назначенного ассета поведение не меняется). НИКОГДА не
+	 * возвращает nullptr. Функции статические, мира может не быть — тогда CDO.
+	 */
+	static const UCoverTuningDataAsset* GetCoverTuning(const UWorld* World);
 
 	/**
 	 * Модификатор точности от дистанции до цели (± к aim). Берётся из
@@ -87,25 +96,61 @@ public:
 	// геометрия мира (WorldStatic/WorldDynamic) — юниты выстрелам не мешают,
 	// как в XCOM (сквозь своих стрелять можно).
 
-	/** Высота глаз над ActorLocation юнита (см). */
-	static constexpr float EyeHeightOffset = 60.f;
-
-	/** Шаг «выглядывания» вбок от центра стрелка (см) — step-out XCOM. */
-	static constexpr float LosPeekOffset = 70.f;
-
-	/** Радиус сферы LOS-трейса (см): тоньше — снова появятся выстрелы сквозь щели. */
-	static constexpr float LosSphereRadius = 15.f;
+	// EyeHeightOffset / LosPeekOffset / LosSphereRadius переехали в
+	// UCoverTuningDataAsset (Ф3), читаются через GetCoverTuning.
 
 	/** Есть ли линия огня между юнитами (XCOM-правила выше). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Combat")
 	static bool HasLineOfSight(const AActor* Viewer, const AActor* Target);
 
 	/**
+	 * Включён ли CVar `xru1.LOS.Debug` (см. .cpp). Даёт вызывающему коду дёшево
+	 * проверить флаг БЕЗ прямого доступа к приватной static-переменной другого
+	 * файла — используется, например, PlayerTick контроллера, чтобы каждый кадр
+	 * перерисовывать огневые позиции выбранного юнита (иначе дебаг виден только
+	 * в момент реального запроса LOS — при смене выбора/наведении).
+	 */
+	static bool IsLOSDebugEnabled();
+
+	/**
 	 * Линия огня из ПРОИЗВОЛЬНОЙ точки глаз (для AI: «увижу ли цель, если встану
 	 * туда»). Та же математика, что HasLineOfSight, — иначе AI планировал бы по
 	 * одним правилам, а стрелял по другим.
+	 *
+	 * Два пути. БЫСТРЫЙ (поведение как раньше, дословно): центр + грубый step-out
+	 * ±LosPeekOffset против двух точек цели. ЗАПАСНОЙ (только если быстрый не дал
+	 * результата и Shooter задан): огневые позиции стрелка × позиции цели, обе
+	 * через GetFiringPositions (края укрытий, симметричное выглядывание — Ф5).
+	 * Запасной путь — надмножество быстрого, поэтому включать его после неудачи
+	 * безопасно, а стоит он лишь когда прямой видимости нет. Shooter по умолчанию
+	 * nullptr — старые вызовы (AI-план до Ф9) остаются на быстром пути.
 	 */
-	static bool HasLineOfSightFromLocation(const UWorld* World, const FVector& EyeLocation, const AActor* Target);
+	static bool HasLineOfSightFromLocation(const UWorld* World, const FVector& EyeLocation,
+		const AActor* Target, const AActor* Shooter = nullptr);
+
+	/**
+	 * ЕДИНЫЙ источник позиций выглядывания. Собирает точки ГЛАЗ, из которых Unit
+	 * может стрелять/быть виден, и НИЧЕГО не решает про видимость (перебор пар —
+	 * в HasLineOfSightFromLocation). Зовётся ДВАЖДЫ с переставленными аргументами:
+	 * для стрелка (§III.1) и для цели (§III.2, Ф5) — отдельной функции для цели
+	 * заводить не нужно.
+	 *
+	 * Список НИКОГДА не пуст: минимум центр (EyeLocation). Порядок ЗНАЧИМ —
+	 * центр → быстрый step-out → края укрытия: по нему GetFiringStance различает
+	 * OverCover и StepOut. Unit == nullptr → только центр (нет капсулы — нет peek).
+	 */
+	static void GetFiringPositions(const UWorld* World, const AActor* Unit,
+		const FVector& EyeLocation, const FVector& OtherLocation,
+		TArray<FVector, TInlineAllocator<4>>& OutEyePositions);
+
+	/**
+	 * Стойка выстрела и точка глаз, из которой стрелок реально стреляет (для
+	 * анимации Ф10 и превью Ф11). LOS из центра + half/full между стрелком и
+	 * целью → OverCover; LOS из центра без укрытия → Open; LOS только из
+	 * выглядывания у края → StepOut. Нет LOS → Open, точка = центр глаз.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Combat")
+	static EFiringStance GetFiringStance(const AActor* Shooter, const AActor* Target, FVector& OutFiringEyeLocation);
 
 	/** Видит ли цель ХОТЬ ОДИН живой союзник юнита (для Squadsight снайпера). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Combat")

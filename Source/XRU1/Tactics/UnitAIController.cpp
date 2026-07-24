@@ -3,6 +3,7 @@
 #include "TacticalPlayerController.h"
 #include "ActionPointsComponent.h"
 #include "CoverDetectionComponent.h"
+#include "CoverTuningDataAsset.h"
 #include "TacticsCombatStatics.h"
 #include "TacticsGameplayEffects.h"
 #include "TacticsGameplayTags.h"
@@ -240,6 +241,7 @@ bool AUnitAIController::StepCombat(AUnitBase* Unit)
 	}
 
 	// 2) МАНЁВР «в укрытие с линией огня» на 1 AP — выстрел вторым AP (XCOM).
+	// Нужно 2 AP (манёвр + выстрел) и смысл лишь если открыт или отсюда не стрелять.
 	if (!bCoverMoveDoneThisTurn && PointsLeft >= 2 && (bExposed || !bCanShootNow))
 	{
 		FVector CoverPoint;
@@ -248,26 +250,10 @@ bool AUnitAIController::StepCombat(AUnitBase* Unit)
 		{
 			return true;
 		}
-
-		// 3) РЫВОК: рядом стрелять неоткуда — идём к укрытию ближе к цели на
-		// оба AP (в этом ходу уже не выстрелим, зато следующий начнём в укрытии).
-		if (!bCanShootNow && !bCoverMoveDoneThisTurn &&
-			FindCoverPoint(Unit, Target, Unit->MoveRange * PointsLeft, /*bRetreat=*/false, CoverPoint) &&
-			StartManeuverTo(Unit, CoverPoint, TEXT("рывок к дальнему укрытию (2 AP)")))
-		{
-			return true;
-		}
-
-		if (bLogAI)
-		{
-			UE_LOG(LogTemp, Log, TEXT("[AI] %s: открыт=%d, можно_стрелять=%d — укрытие не найдено ")
-				TEXT("(нужны WorldStatic-стены высотой Half/Full CoverDetection в радиусе хода)"),
-				*GetNameSafe(Unit), bExposed, bCanShootNow);
-		}
 	}
 
-	// 4) ВЫСТРЕЛ. Предикат ОБЩИЙ с игроком (дальность + LOS/Squadsight): AI не
-	// может выстрелить там, где HUD игрока показал бы «нет линии огня».
+	// 3) ВЫСТРЕЛ с текущей позиции. Предикат ОБЩИЙ с игроком (дальность +
+	// LOS/Squadsight): AI не стреляет там, где HUD игрока показал бы «нет линии».
 	if (bCanShootNow)
 	{
 		if (bLogAI)
@@ -283,10 +269,32 @@ bool AUnitAIController::StepCombat(AUnitBase* Unit)
 		return true;
 	}
 
-	// 5) СБЛИЖЕНИЕ: стрелять нельзя и укрытие не нашлось.
+	// 4) НАСТУПЛЕНИЕ К УКРЫТИЮ (в т.ч. на 1 AP): стрелять нельзя — сближаемся, но
+	// ЗАКАНЧИВАЕМ ход в укрытии, а не открытой пробежкой (XCOM: наступать от
+	// укрытия к укрытию). bAdvance: промежуточное укрытие без линии огня не
+	// штрафуется, дистанция тянет ближе к цели. Заменяет прежний открытый «рывок».
+	if (!bCoverMoveDoneThisTurn && PointsLeft >= 1)
+	{
+		FVector AdvancePoint;
+		if (FindCoverPoint(Unit, Target, Unit->MoveRange * PointsLeft, /*bRetreat=*/false,
+				AdvancePoint, /*bAdvance=*/true) &&
+			StartManeuverTo(Unit, AdvancePoint, TEXT("наступление к укрытию")))
+		{
+			return true;
+		}
+		if (bLogAI)
+		{
+			UE_LOG(LogTemp, Log, TEXT("[AI] %s: открыт=%d, можно_стрелять=%d — укрытие по пути не найдено ")
+				TEXT("(нужны WorldStatic-стены высотой Half/Full в радиусе хода)"),
+				*GetNameSafe(Unit), bExposed, bCanShootNow);
+		}
+	}
+
+	// 5) СБЛИЖЕНИЕ (последний резерв): укрытий по пути нет — прямо к цели.
 	if (bLogAI)
 	{
-		UE_LOG(LogTemp, Log, TEXT("[AI] %s: решение — сближение с целью"), *GetNameSafe(Unit));
+		UE_LOG(LogTemp, Log, TEXT("[AI] %s: решение — сближение с целью (нет укрытий по пути)"),
+			*GetNameSafe(Unit));
 	}
 	return MoveWithBudget(Unit, Target->GetActorLocation(), Unit->AttackRange * 0.8f);
 }
@@ -311,7 +319,7 @@ bool AUnitAIController::StartManeuverTo(AUnitBase* Unit, const FVector& Point, c
 }
 
 bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, float PathBudget,
-	bool bRetreat, FVector& OutPoint)
+	bool bRetreat, FVector& OutPoint, bool bAdvance)
 {
 	UWorld* World = GetWorld();
 	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
@@ -321,19 +329,23 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 		return false;
 	}
 
+	// Тюнинг укрытий/LOS этого юнита (Ф3): TuningOverride → глобальный → CDO.
+	const UCoverTuningDataAsset* Tuning = Cover->GetTuning();
+
 	const FVector UnitLocation = Unit->GetActorLocation();
 	const FVector ThreatLocation = Threat->GetActorLocation();
 
-	// Половина капсулы: Base оценки укрытия = точка пола + пол-капсулы — ровно
-	// там окажется ActorLocation, когда юнит туда встанет (план = факт).
+	// Половина капсулы нужна только для высоты ГЛАЗ (LOS): глаза = пол +
+	// пол-капсулы + EyeHeightOffset. Укрытие теперь считается от точки ПОЛА
+	// навмеша напрямую (§II.3, Ф2), поэтому в Base укрытия капсулу не прибавляем.
 	float CapsuleHalfHeight = 88.f;
-	float EyeHeight = CapsuleHalfHeight + UTacticsCombatStatics::EyeHeightOffset;
+	float EyeHeight = CapsuleHalfHeight + Tuning->EyeHeightOffset;
 	if (const ACharacter* UnitCharacter = Cast<ACharacter>(Unit))
 	{
 		if (const UCapsuleComponent* Capsule = UnitCharacter->GetCapsuleComponent())
 		{
 			CapsuleHalfHeight = Capsule->GetScaledCapsuleHalfHeight();
-			EyeHeight = CapsuleHalfHeight + UTacticsCombatStatics::EyeHeightOffset;
+			EyeHeight = CapsuleHalfHeight + Tuning->EyeHeightOffset;
 		}
 	}
 
@@ -344,12 +356,12 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 
 	// Ценность укрытия — числами защиты самого компонента (Full=40, Half=20):
 	// оценка манёвра в тех же единицах, что и модификатор шанса попадания.
-	auto CoverValue = [Cover](ECoverType Type)
+	auto CoverValue = [Tuning](ECoverType Type)
 	{
 		switch (Type)
 		{
-		case ECoverType::Full: return Cover->FullCoverDefenseBonus;
-		case ECoverType::Half: return Cover->HalfCoverDefenseBonus;
+		case ECoverType::Full: return Tuning->FullCoverDefenseBonus;
+		case ECoverType::Half: return Tuning->HalfCoverDefenseBonus;
 		default:               return 0.f;
 		}
 	};
@@ -362,7 +374,9 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 	{
 		const float ThreatDistance = FVector::Dist(FloorPoint, ThreatLocation);
 		float Score = CoverValue(CoverType) * CoverDefenseWeight;
-		Score += bCanShoot ? LineOfFireBonus : (bRetreat ? 0.f : -LoseLineOfFirePenalty);
+		// При отступлении И при наступлении отсутствие линии огня НЕ штрафуется:
+		// иначе бот отвергает промежуточное укрытие без выстрела и бежит напролом.
+		Score += bCanShoot ? LineOfFireBonus : ((bRetreat || bAdvance) ? 0.f : -LoseLineOfFirePenalty);
 		Score -= TravelCostPerCm * FVector::Dist2D(UnitLocation, FloorPoint);
 		if (bRetreat)
 		{
@@ -415,12 +429,15 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 				continue;
 			}
 
-			const FVector StandBase = Projected.Location + FVector(0.f, 0.f, CapsuleHalfHeight);
-			const ECoverType CoverType = Cover->EvaluateCoverAtLocation(StandBase, ThreatLocation);
+			// Base укрытия — точка пола навмеша напрямую (§II.3, Ф2).
+			const ECoverType CoverType = Cover->EvaluateCoverAtLocation(Projected.Location, ThreatLocation);
+			// План == факт (Ф9): передаём Unit как Shooter, чтобы AI оценивал точку
+			// по ТЕМ ЖЕ огневым позициям (peek/края укрытия), из которых потом
+			// стреляет. Иначе план по центру, а выстрел из-за края — расхождение.
 			const bool bCanShoot =
 				FVector::Dist(Projected.Location, ThreatLocation) <= Unit->AttackRange &&
 				UTacticsCombatStatics::HasLineOfSightFromLocation(World,
-					Projected.Location + FVector(0.f, 0.f, EyeHeight), Threat);
+					Projected.Location + FVector(0.f, 0.f, EyeHeight), Threat, Unit);
 
 			const float Score = ScorePosition(Projected.Location, CoverType, bCanShoot);
 			if (Score <= BestScore)

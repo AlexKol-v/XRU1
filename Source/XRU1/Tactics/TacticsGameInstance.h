@@ -7,6 +7,7 @@
 
 class UTacticsSaveGame;
 class UTacticalHUDStyleData;
+class UCoverTuningDataAsset;
 
 /**
  * GameInstance проекта: владеет текущим слотом кампании (UTacticsSaveGame) и
@@ -29,6 +30,15 @@ public:
 	/** Общая UI-тема для HUD и всех WBP-экранов. */
 	UFUNCTION(BlueprintPure, Category = "Tactics|UI")
 	UTacticalHUDStyleData* GetUITheme() const { return UITheme; }
+
+	/**
+	 * Единый тюнинг укрытий/LOS/выглядывания/высоты (DA_CoverTuning). Назначается
+	 * один раз в BP-наследнике GameInstance. Если не назначен —
+	 * UTacticsCombatStatics::GetCoverTuning отдаёт CDO (дефолты = прежние числа),
+	 * и поведение игры не меняется.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Cover")
+	TObjectPtr<UCoverTuningDataAsset> CoverTuning;
 
 	/** Имя слота на диске. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Save")

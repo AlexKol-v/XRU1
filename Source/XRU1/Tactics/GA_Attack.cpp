@@ -3,6 +3,7 @@
 #include "TacticsGameplayTags.h"
 #include "TacticsGameplayEffects.h"
 #include "TacticsCombatStatics.h"
+#include "CoverTuningDataAsset.h"
 #include "TurnManagerSubsystem.h"
 #include "AbilitySystemComponent.h"
 #include "Engine/World.h"
@@ -44,14 +45,15 @@ float UGA_Attack::ComputeEffectiveAim(const AUnitBase* Shooter, const AActor* Ta
 		// → −20. (В XCOM 2 штрафа снизу нет, только бонус сверху; симметрия —
 		// осознанное отклонение, зафиксировано в GDD §5.4: позиция на высоте
 		// должна читаться как преимущество с обеих сторон.)
+		const UCoverTuningDataAsset* Tuning = UTacticsCombatStatics::GetCoverTuning(Shooter->GetWorld());
 		const float HeightDelta = Shooter->GetActorLocation().Z - Target->GetActorLocation().Z;
-		if (HeightDelta >= UTacticsCombatStatics::HeightAdvantageZ)
+		if (HeightDelta >= Tuning->HeightAdvantageZ)
 		{
-			Aim += UTacticsCombatStatics::HeightAdvantageAimBonus;
+			Aim += Tuning->HeightAdvantageAimBonus;
 		}
-		else if (HeightDelta <= -UTacticsCombatStatics::HeightAdvantageZ)
+		else if (Tuning->bSymmetricHeightPenalty && HeightDelta <= -Tuning->HeightAdvantageZ)
 		{
-			Aim -= UTacticsCombatStatics::HeightAdvantageAimBonus;
+			Aim -= Tuning->HeightAdvantageAimBonus;
 		}
 
 		// 3) Squadsight-выстрел без собственной LOS — штраф. Берём из CDO

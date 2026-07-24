@@ -8,6 +8,7 @@
 #include "CoverDetectionComponent.generated.h"
 
 class UGameplayEffect;
+class UCoverTuningDataAsset;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCoverStateChanged, ECoverType, NewBestCover);
 
@@ -31,29 +32,14 @@ class XRU1_API UCoverDetectionComponent : public UActorComponent
 public:
 	UCoverDetectionComponent();
 
-	/** Дистанция трейса до стены, за которой считаем, что юнит «в укрытии». */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactics|Cover")
-	float CoverTraceDistance = 120.f;
-
-	/** Высота трейса «половинчатого» укрытия (низкая стена) от пола юнита. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactics|Cover")
-	float HalfCoverHeight = 60.f;
-
-	/** Высота трейса «полного» укрытия (высокая стена) от пола юнита. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactics|Cover")
-	float FullCoverHeight = 150.f;
-
-	/** Канал трейса для поиска стен-укрытий. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactics|Cover")
-	TEnumAsByte<ECollisionChannel> CoverTraceChannel = ECC_WorldStatic;
-
-	/** Бонус защиты половинчатого укрытия: вычитается из шанса попадания стрелка (XCOM: 20). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactics|Cover", meta = (ClampMin = "0", ClampMax = "100"))
-	float HalfCoverDefenseBonus = 20.f;
-
-	/** Бонус защиты полного укрытия (XCOM: 40). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactics|Cover", meta = (ClampMin = "0", ClampMax = "100"))
-	float FullCoverDefenseBonus = 40.f;
+	/**
+	 * Пер-юнитное переопределение тюнинга укрытий/LOS. Пусто → глобальный
+	 * CoverTuning с GameInstance, иначе CDO (Ф3). Геометрия детекта (дистанция,
+	 * высоты Half/Full, канал) и числа защиты (20/40) живут в ассете, не здесь —
+	 * единый источник правды, тюнится дизайнером.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Cover")
+	TObjectPtr<UCoverTuningDataAsset> TuningOverride;
 
 	/** GE, навешиваемый при половинчатом укрытии (выдаёт тег Cover.Half). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Cover")
@@ -84,11 +70,13 @@ public:
 
 	/**
 	 * Укрытие В ПРОИЗВОЛЬНОЙ ТОЧКЕ против угрозы — той же математикой, что у
-	 * стоящего юнита (Base = где будет ActorLocation, т.е. точка пола + половина
-	 * капсулы). Нужна AI: «какое укрытие я получу, если встану сюда» — план и
-	 * факт обязаны считаться одинаково, иначе враг бежит в «укрытие», которого
-	 * по прибытии не окажется. Настройки (высоты/дистанция/канал) — с ЭТОГО
-	 * компонента: у кого спрашиваем, тем и мерим.
+	 * стоящего юнита. Base = точка ПОЛА (куда проецируется навмеш): высоты
+	 * укрытия отсчитываются от пола (§II.3, Ф2), поэтому передавать сюда надо
+	 * именно floor-точку, без прибавки половины капсулы. Нужна AI: «какое
+	 * укрытие я получу, если встану сюда» — план и факт обязаны считаться
+	 * одинаково, иначе враг бежит в «укрытие», которого по прибытии не окажется.
+	 * Настройки (высоты/дистанция/канал) — с ЭТОГО компонента: у кого
+	 * спрашиваем, тем и мерим.
 	 */
 	ECoverType EvaluateCoverAtLocation(const FVector& Base, const FVector& ThreatLocation) const;
 
@@ -99,6 +87,12 @@ public:
 	/** Численный бонус защиты против конкретного стрелка (0 / Half / Full). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Cover")
 	float GetDefenseBonusAgainst(const AActor* Threat) const;
+
+	/**
+	 * Эффективный тюнинг укрытий этого юнита: TuningOverride → глобальный
+	 * (GameInstance->CoverTuning) → CDO. НИКОГДА не nullptr.
+	 */
+	const UCoverTuningDataAsset* GetTuning() const;
 
 protected:
 	virtual void BeginPlay() override;

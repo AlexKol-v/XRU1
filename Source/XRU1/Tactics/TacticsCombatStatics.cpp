@@ -1,6 +1,8 @@
 #include "TacticsCombatStatics.h"
 #include "TacticsGameplayTags.h"
 #include "CoverDetectionComponent.h"
+#include "CoverTuningDataAsset.h"
+#include "TacticsGameInstance.h"
 #include "TurnManagerSubsystem.h"
 #include "UnitBase.h"
 #include "UnitAIController.h"
@@ -17,6 +19,38 @@
 #include "GameFramework/Character.h"
 #include "Components/CapsuleComponent.h"
 #include "Curves/CurveFloat.h"
+#include "DrawDebugHelpers.h"
+#include "HAL/IConsoleManager.h"
+
+/**
+ * Диагностика линии огня (Ф4): при `xru1.LOS.Debug 1` логировать по запасному
+ * пути число огневых позиций и итог видимости, а также рисовать позиции
+ * DrawDebugSphere; GetFiringStance печатает выбранную стойку. Образец —
+ * `xru1.AI.LogCombat` в UnitAIController.cpp. Без этого критерии приёмки про
+ * стойку (Ф4 №4) и взаимность (Ф5 №6) не наблюдаемы в PIE.
+ */
+static TAutoConsoleVariable<int32> CVarLOSDebug(
+	TEXT("xru1.LOS.Debug"),
+	0,
+	TEXT("1 — логировать/рисовать огневые позиции и стойку при расчёте линии огня."),
+	ECVF_Default);
+
+const UCoverTuningDataAsset* UTacticsCombatStatics::GetCoverTuning(const UWorld* World)
+{
+	// Глобальный тюнинг с GameInstance (обычно BP-наследник), иначе CDO. CDO
+	// несёт дефолты = прежние числа кода, поэтому фолбэк не меняет поведение.
+	if (World)
+	{
+		if (const UTacticsGameInstance* GI = World->GetGameInstance<UTacticsGameInstance>())
+		{
+			if (const UCoverTuningDataAsset* Tuning = GI->CoverTuning)
+			{
+				return Tuning;
+			}
+		}
+	}
+	return GetDefault<UCoverTuningDataAsset>();
+}
 
 bool UTacticsCombatStatics::IsUnitAlive(const AActor* Unit)
 {
@@ -72,7 +106,7 @@ float UTacticsCombatStatics::ComputeHitChance(const AActor* Shooter, const AActo
 			{
 				if (TargetASC->HasMatchingGameplayTag(TacticsGameplayTags::State_HunkeredDown))
 				{
-					DefenseBonus *= 2.f;
+					DefenseBonus *= GetCoverTuning(Target->GetWorld())->HunkerDownMultiplier;
 				}
 			}
 		}
@@ -174,6 +208,148 @@ void UTacticsCombatStatics::FaceActorTowards(AActor* Actor, const FVector& Targe
 	}
 }
 
+void UTacticsCombatStatics::GetFiringPositions(const UWorld* World, const AActor* Unit,
+	const FVector& EyeLocation, const FVector& OtherLocation,
+	TArray<FVector, TInlineAllocator<4>>& OutEyePositions)
+{
+	OutEyePositions.Reset();
+	OutEyePositions.Add(EyeLocation); // ЦЕНТР — ВСЕГДА и первым (порядок значим, см. .h)
+	if (!World)
+	{
+		return;
+	}
+
+	// Тюнинг: у юнита свой (TuningOverride) → глобальный → CDO.
+	const UCoverTuningDataAsset* Tuning = nullptr;
+	if (const UCoverDetectionComponent* Cover =
+		Unit ? Unit->FindComponentByClass<UCoverDetectionComponent>() : nullptr)
+	{
+		Tuning = Cover->GetTuning();
+	}
+	if (!Tuning)
+	{
+		Tuning = GetCoverTuning(World);
+	}
+
+	// Направление на «другого» и боковая ось выглядывания.
+	FVector Dir = OtherLocation - EyeLocation;
+	Dir.Z = 0.;
+	const FVector DirToOther = Dir.GetSafeNormal();
+	// Без капсулы (Unit==nullptr) или без направления выглядывание не построить —
+	// остаётся только центр (прямая видимость).
+	if (!Unit || DirToOther.IsNearlyZero())
+	{
+		return;
+	}
+	FVector Side = FVector::CrossProduct(DirToOther, FVector::UpVector);
+	if (!Side.Normalize())
+	{
+		Side = FVector::RightVector;
+	}
+
+	float CapsuleHalfHeight = 88.f;
+	float CapsuleRadius = 34.f;
+	if (const ACharacter* Character = Cast<ACharacter>(Unit))
+	{
+		if (const UCapsuleComponent* Capsule = Character->GetCapsuleComponent())
+		{
+			CapsuleHalfHeight = Capsule->GetScaledCapsuleHalfHeight();
+			CapsuleRadius = Capsule->GetScaledCapsuleRadius();
+		}
+	}
+
+	// Точка ПОЛА (§II.3): EyeLocation = пол + пол-капсулы + EyeHeightOffset.
+	const FVector FootBase = EyeLocation - FVector(0.f, 0.f, Tuning->EyeHeightOffset + CapsuleHalfHeight);
+
+	// ⚠️ ГЛАВНОЕ ПРАВИЛО (по замечанию игрока, XCOM): выглядывать можно только
+	// из УКРЫТИЯ. Юнит в открытом поле видит/виден ТОЛЬКО по прямой (центр).
+	// Поэтому и step-out, и края укрытия добавляются лишь если юнит реально в
+	// укрытии в сторону «другого». Раньше step-out ±LosPeekOffset добавлялся
+	// всегда — отсюда «стреляет со стороны, стоя без укрытия».
+	if (UCoverDetectionComponent::TraceCoverAtLocation(World, FootBase, DirToOther,
+		Tuning->CoverTraceDistance, Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
+		Tuning->CoverTraceChannel, Unit) == ECoverType::None)
+	{
+		return; // не в укрытии — только прямая видимость из центра
+	}
+
+	// Свип мира: юниты выстрел не блокируют — фильтр по типам объектов, как в LOS.
+	FCollisionObjectQueryParams ObjectParams;
+	ObjectParams.AddObjectTypesToQuery(ECC_WorldStatic);
+	ObjectParams.AddObjectTypesToQuery(ECC_WorldDynamic);
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(FiringPeek), /*bTraceComplex=*/false);
+	const FCollisionShape Sphere = FCollisionShape::MakeSphere(Tuning->LosSphereRadius);
+	auto SweepClear = [&](const FVector& From, const FVector& To)
+	{
+		FHitResult Hit;
+		return !World->SweepSingleByObjectType(Hit, From, To, FQuat::Identity, ObjectParams, Sphere, Params);
+	};
+
+	// В укрытии: небольшой step-out ±LosPeekOffset (привстать/качнуться у края).
+	for (const float PeekSign : {1.f, -1.f})
+	{
+		const FVector Peek = EyeLocation + Side * (Tuning->LosPeekOffset * PeekSign);
+		if (SweepClear(EyeLocation, Peek))
+		{
+			OutEyePositions.Add(Peek);
+		}
+	}
+
+	// Занятость — один снимок, чтобы peek не встал в другого юнита.
+	TArray<FVector> Obstacles;
+	GetUnitObstacles(const_cast<UWorld*>(World), Unit, Obstacles);
+	const double ClearanceSq = FMath::Square(static_cast<double>(GetUnitClearance(Unit)));
+	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(const_cast<UWorld*>(World));
+
+	// По каждой стороне шагаем вдоль укрытия до края, там пробуем выглянуть.
+	for (const float SideSign : {1.f, -1.f})
+	{
+		for (float Offset = Tuning->PeekEdgeStep; Offset <= Tuning->PeekEdgeMaxDistance;
+			Offset += Tuning->PeekEdgeStep)
+		{
+			const FVector P = FootBase + Side * (SideSign * Offset);
+			if (UCoverDetectionComponent::TraceCoverAtLocation(World, P, DirToOther,
+				Tuning->CoverTraceDistance, Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
+				Tuning->CoverTraceChannel, Unit) != ECoverType::None)
+			{
+				continue; // ещё за укрытием — шагаем к краю
+			}
+
+			// Укрытие кончилось — это точка сразу за краем. Одна попытка на сторону:
+			// дальше только открытое пространство, нового края там нет.
+			const FVector PeekFoot = P + Side * (SideSign * (CapsuleRadius + Tuning->PeekOutwardOffset));
+			FNavLocation Projected;
+			if (NavSys && NavSys->ProjectPointToNavigation(PeekFoot, Projected, FVector(60.f, 60.f, 200.f)))
+			{
+				bool bOccupied = false;
+				for (const FVector& Obstacle : Obstacles)
+				{
+					if (FVector::DistSquared2D(Obstacle, Projected.Location) < ClearanceSq)
+					{
+						bOccupied = true;
+						break;
+					}
+				}
+				if (!bOccupied)
+				{
+					const FVector PeekEye =
+						Projected.Location + FVector(0.f, 0.f, CapsuleHalfHeight + Tuning->EyeHeightOffset);
+					if (SweepClear(EyeLocation, PeekEye))
+					{
+						OutEyePositions.Add(PeekEye);
+					}
+				}
+			}
+			break; // край на этой стороне найден
+		}
+	}
+}
+
+bool UTacticsCombatStatics::IsLOSDebugEnabled()
+{
+	return CVarLOSDebug.GetValueOnGameThread() != 0;
+}
+
 bool UTacticsCombatStatics::HasLineOfSight(const AActor* Viewer, const AActor* Target)
 {
 	if (!Viewer || !Target)
@@ -186,16 +362,18 @@ bool UTacticsCombatStatics::HasLineOfSight(const AActor* Viewer, const AActor* T
 		return false;
 	}
 	return HasLineOfSightFromLocation(World,
-		Viewer->GetActorLocation() + FVector(0.f, 0.f, EyeHeightOffset), Target);
+		Viewer->GetActorLocation() + FVector(0.f, 0.f, GetCoverTuning(World)->EyeHeightOffset), Target, Viewer);
 }
 
 bool UTacticsCombatStatics::HasLineOfSightFromLocation(const UWorld* World, const FVector& EyeLocation,
-	const AActor* Target)
+	const AActor* Target, const AActor* Shooter)
 {
 	if (!World || !Target)
 	{
 		return false;
 	}
+
+	const UCoverTuningDataAsset* Tuning = GetCoverTuning(World);
 
 	// Только геометрия мира: юниты выстрел не блокируют (XCOM — сквозь своих
 	// стрелять можно), поэтому фильтруем по типу объекта, а не по каналу.
@@ -203,7 +381,7 @@ bool UTacticsCombatStatics::HasLineOfSightFromLocation(const UWorld* World, cons
 	ObjectParams.AddObjectTypesToQuery(ECC_WorldStatic);
 	ObjectParams.AddObjectTypesToQuery(ECC_WorldDynamic); // двигаемые пропсы-укрытия
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(UnitLOS), /*bTraceComplex=*/false);
-	const FCollisionShape Sphere = FCollisionShape::MakeSphere(LosSphereRadius);
+	const FCollisionShape Sphere = FCollisionShape::MakeSphere(Tuning->LosSphereRadius);
 
 	auto SphereClear = [&](const FVector& From, const FVector& To)
 	{
@@ -215,45 +393,178 @@ bool UTacticsCombatStatics::HasLineOfSightFromLocation(const UWorld* World, cons
 	// цель на уступе — по корпусу.
 	const FVector TargetLocation = Target->GetActorLocation();
 	const FVector TargetPoints[2] = {
-		TargetLocation + FVector(0.f, 0.f, EyeHeightOffset),
+		TargetLocation + FVector(0.f, 0.f, Tuning->EyeHeightOffset),
 		TargetLocation - FVector(0.f, 0.f, 20.f)
 	};
 
-	// Позиции стрелка: центр + step-out вбок в обе стороны (выглядывание из-за
-	// угла укрытия, как в XCOM). Выглядывать можно только туда, куда юнит
-	// физически может податься: короткий трейс до точки выглядывания.
-	FVector ShotDirection = TargetLocation - EyeLocation;
-	ShotDirection.Z = 0.;
-	FVector Side = FVector::CrossProduct(ShotDirection.GetSafeNormal(), FVector::UpVector);
-	if (!Side.Normalize())
+	// БЫСТРЫЙ ПУТЬ — ПРЯМАЯ видимость из ЦЕНТРА глаз к точкам цели (глаза/корпус).
+	// Никаких step-out: выглядывание вбок — это механика УКРЫТИЯ и живёт только в
+	// запасном пути через GetFiringPositions (гейтед фактом укрытия). Так юнит в
+	// открытом поле видит/виден строго по прямой (по замечанию игрока), а не
+	// «из-за угла, стоя без укрытия».
+	for (const FVector& Point : TargetPoints)
 	{
-		Side = FVector::RightVector;
-	}
-
-	TArray<FVector, TInlineAllocator<3>> EyePositions;
-	EyePositions.Add(EyeLocation);
-	for (const float PeekSign : {1.f, -1.f})
-	{
-		const FVector PeekPosition = EyeLocation + Side * (LosPeekOffset * PeekSign);
-		FHitResult PeekHit;
-		if (!World->SweepSingleByObjectType(PeekHit, EyeLocation, PeekPosition, FQuat::Identity,
-			ObjectParams, Sphere, Params))
+		if (SphereClear(EyeLocation, Point))
 		{
-			EyePositions.Add(PeekPosition);
+			return true;
 		}
 	}
 
-	for (const FVector& Eye : EyePositions)
+	// ЗАПАСНОЙ ПУТЬ (только если быстрый не прошёл и есть стрелок): огневые
+	// позиции у краёв укрытия стрелка. Надмножество быстрого пути, поэтому
+	// запуск после неудачи безопасен и стоит лишь когда прямой видимости нет.
+	if (!Shooter)
 	{
-		for (const FVector& Point : TargetPoints)
+		return false;
+	}
+
+	TArray<FVector, TInlineAllocator<4>> PositionsA;
+	GetFiringPositions(World, Shooter, EyeLocation, TargetLocation, PositionsA);
+
+	// Ф5 — симметрия: цель тоже высовывается из-за своего края. ТА ЖЕ функция с
+	// переставленными аргументами (§III.2), отдельной логики для цели нет.
+	// Укрытие цели при этом считается от её НАСТОЯЩЕЙ позиции (в ComputeHitChance),
+	// а не отсюда — peek нужен только для луча (§II.6 п.5).
+	TArray<FVector, TInlineAllocator<4>> PositionsB;
+	GetFiringPositions(World, Target, TargetPoints[0], EyeLocation, PositionsB);
+	// Точка КОРПУСА цели (нужна для целей на уступе, легко теряется при переборе пар).
+	PositionsB.Add(TargetPoints[1]);
+
+	bool bVisible = false;
+	int32 WinAIdx = -1;
+	int32 WinBIdx = -1;
+	for (int32 ai = 0; ai < PositionsA.Num() && !bVisible; ++ai)
+	{
+		for (int32 bi = 0; bi < PositionsB.Num(); ++bi)
 		{
-			if (SphereClear(Eye, Point))
+			if (SphereClear(PositionsA[ai], PositionsB[bi]))
 			{
-				return true;
+				bVisible = true;
+				WinAIdx = ai;
+				WinBIdx = bi;
+				break;
 			}
 		}
 	}
-	return false;
+
+#if ENABLE_DRAW_DEBUG
+	if (CVarLOSDebug.GetValueOnAnyThread() > 0)
+	{
+		// Визуальный разбор LOS: видно ГДЕ огневые позиции и КАКОЙ луч дал
+		// видимость. Стрелок: центр (0) — белый, step-out/края — голубые. Цель:
+		// центр (0) — жёлтый, корпус (последний) — оранжевый, края — маджента.
+		// Победивший луч — толстая зелёная линия. Индексы winA/winB — в логе.
+		UWorld* DbgWorld = const_cast<UWorld*>(World);
+		// Живёт чуть дольше троттлинга непрерывного дебага в PlayerTick
+		// (LOSDebugInterval = 0.25с) — без нахлёста был бы мигающий разрыв
+		// между перерисовками (0.12с видно / 0.13с пусто).
+		const float DbgDur = 0.35f;
+		for (int32 i = 0; i < PositionsA.Num(); ++i)
+		{
+			DrawDebugSphere(DbgWorld, PositionsA[i], 14.f, 6,
+				i == 0 ? FColor::White : FColor::Cyan, false, DbgDur);
+		}
+		for (int32 i = 0; i < PositionsB.Num(); ++i)
+		{
+			const FColor PointColor = (i == 0) ? FColor::Yellow
+				: (i == PositionsB.Num() - 1) ? FColor::Orange : FColor::Magenta;
+			DrawDebugSphere(DbgWorld, PositionsB[i], 12.f, 6, PointColor, false, DbgDur);
+		}
+		if (bVisible)
+		{
+			DrawDebugLine(DbgWorld, PositionsA[WinAIdx], PositionsB[WinBIdx],
+				FColor::Green, false, DbgDur, 0, 3.f);
+		}
+		UE_LOG(LogTemp, Log,
+			TEXT("[LOS] %s -> %s: shooterPos=%d targetPos=%d visible=%d winA=%d winB=%d"),
+			*GetNameSafe(Shooter), *GetNameSafe(Target), PositionsA.Num(), PositionsB.Num(),
+			bVisible ? 1 : 0, WinAIdx, WinBIdx);
+	}
+#endif
+
+	return bVisible;
+}
+
+EFiringStance UTacticsCombatStatics::GetFiringStance(const AActor* Shooter, const AActor* Target,
+	FVector& OutFiringEyeLocation)
+{
+	OutFiringEyeLocation = Shooter ? Shooter->GetActorLocation() : FVector::ZeroVector;
+	const UWorld* World = Shooter ? Shooter->GetWorld() : nullptr;
+	if (!Shooter || !Target || !World)
+	{
+		return EFiringStance::Open;
+	}
+
+	const UCoverTuningDataAsset* Tuning = GetCoverTuning(World);
+	const FVector EyeLocation = Shooter->GetActorLocation() + FVector(0.f, 0.f, Tuning->EyeHeightOffset);
+	OutFiringEyeLocation = EyeLocation; // фолбэк — центр глаз, если LOS нет вообще
+
+	const FVector TargetLocation = Target->GetActorLocation();
+	const FVector TargetPoints[2] = {
+		TargetLocation + FVector(0.f, 0.f, Tuning->EyeHeightOffset),
+		TargetLocation - FVector(0.f, 0.f, 20.f)
+	};
+
+	FCollisionObjectQueryParams ObjectParams;
+	ObjectParams.AddObjectTypesToQuery(ECC_WorldStatic);
+	ObjectParams.AddObjectTypesToQuery(ECC_WorldDynamic);
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(FiringStance), /*bTraceComplex=*/false);
+	const FCollisionShape Sphere = FCollisionShape::MakeSphere(Tuning->LosSphereRadius);
+	auto SphereClear = [&](const FVector& From, const FVector& To)
+	{
+		FHitResult Hit;
+		return !World->SweepSingleByObjectType(Hit, From, To, FQuat::Identity, ObjectParams, Sphere, Params);
+	};
+
+	TArray<FVector, TInlineAllocator<4>> Positions;
+	GetFiringPositions(World, Shooter, EyeLocation, TargetLocation, Positions);
+
+	// Порядок в Positions: центр → быстрый step-out → края. Первая позиция с
+	// линией огня и определяет стойку (§III.3): центр → OverCover/Open, иначе StepOut.
+	EFiringStance Stance = EFiringStance::Open;
+	for (int32 i = 0; i < Positions.Num(); ++i)
+	{
+		bool bClear = false;
+		for (const FVector& Point : TargetPoints)
+		{
+			if (SphereClear(Positions[i], Point))
+			{
+				bClear = true;
+				break;
+			}
+		}
+		if (!bClear)
+		{
+			continue;
+		}
+
+		OutFiringEyeLocation = Positions[i];
+		if (i == 0)
+		{
+			ECoverType Cover = ECoverType::None;
+			if (const UCoverDetectionComponent* CoverComp = Shooter->FindComponentByClass<UCoverDetectionComponent>())
+			{
+				Cover = CoverComp->GetCoverAgainst(Target);
+			}
+			Stance = (Cover == ECoverType::None) ? EFiringStance::Open : EFiringStance::OverCover;
+		}
+		else
+		{
+			Stance = EFiringStance::StepOut;
+		}
+		break;
+	}
+
+#if ENABLE_DRAW_DEBUG
+	if (CVarLOSDebug.GetValueOnAnyThread() > 0)
+	{
+		static const TCHAR* StanceNames[] = { TEXT("Open"), TEXT("OverCover"), TEXT("StepOut") };
+		UE_LOG(LogTemp, Log, TEXT("[LOS] Stance %s -> %s: positions=%d stance=%s"),
+			*GetNameSafe(Shooter), *GetNameSafe(Target), Positions.Num(),
+			StanceNames[static_cast<uint8>(Stance)]);
+	}
+#endif
+	return Stance;
 }
 
 float UTacticsCombatStatics::GetAimDistanceModifier(const AUnitBase* Shooter, float Distance)

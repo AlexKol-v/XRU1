@@ -165,10 +165,44 @@ public:
 
 	/**
 	 * Доворот камеры от оси стрелок→цель (град) — плечевой ракурс. Строго вдоль
-	 * оси цель закрыта спиной стрелка; доворот открывает её «из-за плеча».
+	 * оси цель закрыта спиной стрелка; доворот открывает её «из-за плеча». Это
+	 * МОДУЛЬ доворота: какое плечо (лево/право) выбирается динамически по
+	 * геометрии (PickShoulderOffset), чтобы цель была видна и камера не утыкалась
+	 * в стену — иначе получался «всегда 1 ракурс».
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot")
 	float ShotFrameYawOffset = 28.f;
+
+	/**
+	 * Дальняя дистанция стрелок→цель (см), при которой зум/bias достигают
+	 * «дальних» значений. Между 0 и этой — линейная интерполяция: близкий выстрел
+	 * показывается плечом крупно, дальний — отъездом, чтобы в кадр попали обе
+	 * фигуры (XCOM action-cam адаптирует композицию под дистанцию).
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "1"))
+	float ShotFrameFarDistance = 1400.f;
+
+	/** Длина пружины на дальнем конце дистанции (см) — отъезд для дальних выстрелов. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot")
+	float ShotFrameZoomFar = 1400.f;
+
+	/** Нижняя граница длины пружины в кадре (см) — ближе камера не подъедет. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "100"))
+	float ShotFrameZoomNear = 350.f;
+
+	/**
+	 * Bias точки обзора на дальнем конце (0 — стрелок, 1 — цель). Больше ближней,
+	 * чтобы на дальнем выстреле обзор сместился к середине и цель не ушла из кадра.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "0", ClampMax = "1"))
+	float ShotFrameTargetBiasFar = 0.45f;
+
+	/**
+	 * Подстройка наклона под перепад высот стрелок↔цель (град на см разницы Z):
+	 * цель ниже — камера смотрит круче вниз, выше — площе. Небольшая величина.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "0", ClampMax = "0.2"))
+	float ShotFramePitchPerZ = 0.03f;
 
 	/** Сколько держать кадр самого выстрела по умолчанию (сек). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "0"))
@@ -244,4 +278,14 @@ protected:
 
 	/** Общая часть FrameShot/FrameShotForDuration. */
 	void EnterShotFraming(const AActor* Shooter, const AActor* Target, float Duration);
+
+	/**
+	 * Выбор плеча (лево/право) для кадра «из-за плеча». Пробует оба знака доворота
+	 * ShotFrameYawOffset и возвращает тот, при котором позиция камеры (а) не
+	 * отгорожена стеной от точки обзора и (б) видит цель. Так чинится «всегда 1
+	 * ракурс» и кадр, где вместо боя одна стена. Возвращает знаковый доворот (град).
+	 */
+	float PickShoulderOffset(const AActor* Shooter, const AActor* Target,
+		const FVector& PivotWorld, const FVector& TargetAim,
+		float BaseYaw, float Pitch, float Arm) const;
 };

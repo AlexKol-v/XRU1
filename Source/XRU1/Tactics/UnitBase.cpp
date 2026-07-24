@@ -13,6 +13,7 @@
 #include "Components/CapsuleComponent.h"
 #include "Components/DecalComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "NavigationInvokerComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/Controller.h"
 
@@ -20,6 +21,11 @@ AUnitBase::AUnitBase()
 {
 	ActionPoints = CreateDefaultSubobject<UActionPointsComponent>(TEXT("ActionPoints"));
 	CoverDetection = CreateDefaultSubobject<UCoverDetectionComponent>(TEXT("CoverDetection"));
+
+	// Navigation Invoker: навмеш генерится вокруг юнита (RuntimeGeneration=Dynamic).
+	// Радиусы применяются в BeginPlay (могут быть переопределены в BP до старта).
+	NavInvoker = CreateDefaultSubobject<UNavigationInvokerComponent>(TEXT("NavInvoker"));
+	NavInvoker->SetGenerationRadii(NavInvokerGenerationRadius, NavInvokerRemovalRadius);
 
 	// Общие способности — безопасные нативные дефолты. BP может заменить их
 	// наследниками с монтажами, но новый BP-юнит больше не останется без действий.
@@ -294,6 +300,8 @@ void AUnitBase::SetDowned(bool bNewDowned, float ReviveHealth)
 		{
 			ActionPoints->SpendAllRemaining();
 		}
+		// Лежащий раненый не мешает движению/навмешу (как и труп).
+		ApplyDefeatedCollision(true);
 	}
 	else
 	{
@@ -304,6 +312,7 @@ void AUnitBase::SetDowned(bool bNewDowned, float ReviveHealth)
 			ASC->ApplyModToAttribute(UTDAttributeSet::GetHealthAttribute(),
 				EGameplayModOp::Override, FMath::Max(1.f, ReviveHealth));
 		}
+		ApplyDefeatedCollision(false); // встал — снова блокирует и режет навмеш
 	}
 
 	OnDownedChanged(bIsDowned);
@@ -326,11 +335,9 @@ void AUnitBase::Die()
 	{
 		ASC->CancelAllAbilities();
 	}
-	// Труп не блокирует выстрелы/перемещение; меш остаётся для анимации смерти в BP.
-	if (UCapsuleComponent* Capsule = GetCapsuleComponent())
-	{
-		Capsule->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	}
+	// Труп не блокирует выстрелы/перемещение и не режет навмеш; меш остаётся
+	// для анимации смерти в BP.
+	ApplyDefeatedCollision(true);
 	if (AController* C = GetController())
 	{
 		C->StopMovement();
@@ -338,6 +345,27 @@ void AUnitBase::Die()
 
 	OnDied();
 	NotifyUnitStateChanged();
+}
+
+void AUnitBase::ApplyDefeatedCollision(bool bDefeated)
+{
+	if (UCapsuleComponent* Capsule = GetCapsuleComponent())
+	{
+		Capsule->SetCollisionEnabled(bDefeated ? ECollisionEnabled::NoCollision
+			: ECollisionEnabled::QueryAndPhysics);
+		Capsule->SetCanEverAffectNavigation(!bDefeated);
+	}
+	if (USkeletalMeshComponent* MeshComp = GetMesh())
+	{
+		// НЕ резать навмеш телом (критично при RuntimeGeneration=Dynamic) и
+		// пропускать бегущих сквозь тело. На подъёме навмеш восстанавливаем;
+		// отклик по Pawn на живом мертвецу и так не мешает (капсула снова блокирует).
+		MeshComp->SetCanEverAffectNavigation(!bDefeated);
+		if (bDefeated)
+		{
+			MeshComp->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
+		}
+	}
 }
 
 void AUnitBase::Evacuate()

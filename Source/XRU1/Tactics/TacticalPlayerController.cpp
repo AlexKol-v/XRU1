@@ -23,6 +23,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "EngineUtils.h"
 #include "Engine/World.h"
+#include "CoreGlobals.h" // GFrameCounter — штамп кадра для отложенного автоперехода
 
 ATacticalPlayerController::ATacticalPlayerController()
 {
@@ -173,6 +174,7 @@ void ATacticalPlayerController::PlayerTick(float DeltaTime)
 			if (IsCameraFramingShot())
 			{
 				bPendingAutoAdvance = true;
+				PendingAutoAdvanceFrame = GFrameCounter;
 			}
 			else
 			{
@@ -184,8 +186,12 @@ void ATacticalPlayerController::PlayerTick(float DeltaTime)
 	bSelectedUnitWasMoving = bMovingNow;
 
 	// Отложенный автопереход дозрел: кадр выстрела кончился, никто не бежит.
-	if (bPendingAutoAdvance && IsPlayerPhase() && !bMovingNow && !IsCameraFramingShot())
+	// Штамп кадра (см. PendingAutoAdvanceFrame): не разрешаем в тот же кадр, где
+	// pending взведён — иначе перехватили бы ход до старта кадра выстрела.
+	if (bPendingAutoAdvance && GFrameCounter != PendingAutoAdvanceFrame &&
+		IsPlayerPhase() && !bMovingNow && !IsCameraFramingShot())
 	{
+		UE_LOG(LogTemp, Log, TEXT("[AutoAdv] pending дозрел (кадр выстрела кончился) → переход"));
 		bPendingAutoAdvance = false;
 		if (bAutoSelectUnits && SelectedUnit && SelectedUnit->GetActionPoints() &&
 			!SelectedUnit->GetActionPoints()->HasActionsLeft())
@@ -198,6 +204,33 @@ void ATacticalPlayerController::PlayerTick(float DeltaTime)
 	UpdateEdgeScroll();
 	UpdateHoverHighlight();
 	UpdatePathPreviewUnderCursor();
+
+	// Дебаг LOS (xru1.LOS.Debug 1): без этого DrawDebug* внутри HasLineOfSight
+	// рисуется только в момент РЕАЛЬНОГО запроса (AI-ход, обновление HUD при
+	// смене выбора/наведения) и тут же гаснет — на глаз не разобрать геометрию.
+	// Здесь ПЕРИОДИЧЕСКИ (раз в LOSDebugInterval, не каждый кадр — иначе лог
+	// захлёстывает) гоним LOS выбранного юнита против живых врагов ТОЛЬКО ради
+	// побочного эффекта отрисовки; IsLOSDebugEnabled() — мгновенный ранний выход,
+	// когда CVar выключен (нулевая цена в обычной игре).
+	if (UTacticsCombatStatics::IsLOSDebugEnabled() && SelectedUnit &&
+		UTacticsCombatStatics::IsUnitAlive(SelectedUnit))
+	{
+		const float Now = GetWorld()->GetTimeSeconds();
+		if (Now - LastLOSDebugTime >= LOSDebugInterval)
+		{
+			LastLOSDebugTime = Now;
+			if (const UTurnManagerSubsystem* TurnManager = GetWorld()->GetSubsystem<UTurnManagerSubsystem>())
+			{
+				for (AActor* Enemy : TurnManager->GetOpposingUnits(SelectedUnit))
+				{
+					if (Enemy && UTacticsCombatStatics::IsUnitAlive(Enemy))
+					{
+						UTacticsCombatStatics::HasLineOfSight(SelectedUnit, Enemy);
+					}
+				}
+			}
+		}
+	}
 }
 
 void ATacticalPlayerController::UpdateEdgeScroll()
@@ -681,7 +714,11 @@ bool ATacticalPlayerController::CanIssueCommand(ETacticalPlayerCommand Command) 
 		return CanUseAbility(SelectedUnit->OverwatchAbilityClass);
 
 	case ETacticalPlayerCommand::HunkerDown:
-		return CanUseAbility(SelectedUnit->HunkerAbilityClass);
+		// Ф7: глухая оборона требует укрытия — серим кнопку без укрытия, чтобы
+		// игрок не сжёг AP впустую. То же условие в UGA_HunkerDown::CanActivateAbility.
+		return CanUseAbility(SelectedUnit->HunkerAbilityClass) &&
+			SelectedUnit->GetCoverDetection() &&
+			SelectedUnit->GetCoverDetection()->BestCoverAround != ECoverType::None;
 
 	case ETacticalPlayerCommand::ClassAbility:
 		return CanUseAbility(SelectedUnit->ClassAbilityClass);
@@ -1423,15 +1460,22 @@ void ATacticalPlayerController::HandleSelectedUnitAPChanged(int32 NewCurrent, in
 	// его до финиша; переход сделает PlayerTick по остановке). Пока играет кадр
 	// выстрела — тоже ждём (иначе переход выбора сорвал бы кадр в тот же тик):
 	// доделает PlayerTick по окончании кадра.
+	UE_LOG(LogTemp, Log, TEXT("[AutoAdv] AP=%d autoSel=%d playerPhase=%d moving=%d framingShot=%d"),
+		NewCurrent, bAutoSelectUnits, IsPlayerPhase(), IsSelectedUnitMoving(), IsCameraFramingShot());
 	if (NewCurrent == 0 && bAutoSelectUnits && IsPlayerPhase() && !IsSelectedUnitMoving())
 	{
-		if (IsCameraFramingShot())
-		{
-			bPendingAutoAdvance = true;
-			return;
-		}
-		SelectNextUnit();
-		TryAutoEndTurn(); // если следующего с AP не нашлось — авто-конец хода
+		// ВСЕГДА откладываем на PlayerTick (со штампом кадра), а не переходим тут
+		// же. Причина — ГОНКА с кадром выстрела: AP списываются в CommitAbility
+		// (ApplyCost), а камера начинает кадр «из-за плеча» позже в том же вызове
+		// (ResolveShot → NotifyShotFired). В момент этого делегата кадр ещё НЕ
+		// начался, поэтому немедленный SelectNextUnit оборвал бы кинематограф и
+		// перескочил на след. юнита прямо посреди выстрела. Штамп кадра не даёт
+		// отложенному переходу сработать в тот же кадр — он дождётся, пока кадр
+		// выстрела начнётся и доиграет (или, если выстрела нет — дозреет на след.
+		// кадре). Ходьба на 2 AP идёт другим путём (по остановке в PlayerTick).
+		UE_LOG(LogTemp, Log, TEXT("[AutoAdv] AP=0 → откладываем переход (ждём возможный кадр выстрела)"));
+		bPendingAutoAdvance = true;
+		PendingAutoAdvanceFrame = GFrameCounter;
 	}
 }
 
