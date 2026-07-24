@@ -263,14 +263,28 @@ void UTacticsCombatStatics::GetFiringPositions(const UWorld* World, const AActor
 
 	// ⚠️ ГЛАВНОЕ ПРАВИЛО (по замечанию игрока, XCOM): выглядывать можно только
 	// из УКРЫТИЯ. Юнит в открытом поле видит/виден ТОЛЬКО по прямой (центр).
-	// Поэтому и step-out, и края укрытия добавляются лишь если юнит реально в
-	// укрытии в сторону «другого». Раньше step-out ±LosPeekOffset добавлялся
-	// всегда — отсюда «стреляет со стороны, стоя без укрытия».
-	if (UCoverDetectionComponent::TraceCoverAtLocation(World, FootBase, DirToOther,
-		Tuning->CoverTraceDistance, Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
-		Tuning->CoverTraceChannel, Unit) == ECoverType::None)
+	//
+	// ⚠️ НО укрытие НЕ обязано стоять строго в сторону цели. Первая редакция
+	// проверяла только направление на цель — и юнит, прижавшийся к пиллару
+	// БОКОМ (цель за углом), не получал ни одной огневой позиции кроме центра.
+	// В логе это видно прямо: `shooterPos=1` в 76% запросов, и все они
+	// `visible=0`. Именно из-за этого «стоит за препятствием, а пика нет».
+	//
+	// Поэтому проверяем укрытие в НЕСКОЛЬКИХ направлениях: на цель, вбок (обе
+	// стороны) и назад. Это ровно тот набор, из-за которого выглядывание имеет
+	// смысл; чистое поле по-прежнему не даёт ни одной боковой позиции, потому
+	// что там укрытия нет ни в одном из них.
+	auto HasCoverToward = [&](const FVector& Direction)
 	{
-		return; // не в укрытии — только прямая видимость из центра
+		return UCoverDetectionComponent::TraceCoverAtLocation(World, FootBase, Direction,
+			Tuning->CoverTraceDistance, Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
+			Tuning->CoverTraceChannel, Unit) != ECoverType::None;
+	};
+
+	if (!HasCoverToward(DirToOther) && !HasCoverToward(Side) &&
+		!HasCoverToward(-Side) && !HasCoverToward(-DirToOther))
+	{
+		return; // укрытия нет ни с одной стороны — только прямая видимость из центра
 	}
 
 	// Свип мира: юниты выстрел не блокируют — фильтр по типам объектов, как в LOS.
@@ -591,6 +605,94 @@ float UTacticsCombatStatics::GetAimDistanceModifier(const AUnitBase* Shooter, fl
 		return FMath::GetMappedRangeValueClamped(FVector2D(300., 1200.), FVector2D(10., 0.), Distance);
 	}
 	return FMath::GetMappedRangeValueClamped(FVector2D(1200., 2500.), FVector2D(0., -15.), Distance);
+}
+
+bool UTacticsCombatStatics::IsTargetFlankedBy(const AActor* Target, const AActor* Shooter)
+{
+	if (!Target || !Shooter)
+	{
+		return false;
+	}
+	const UCoverDetectionComponent* Cover = Target->FindComponentByClass<UCoverDetectionComponent>();
+	if (!Cover || Cover->BestCoverAround == ECoverType::None)
+	{
+		return false; // нечем прикрыться — «открыт», а не «фланкирован»
+	}
+	// ТОЧНЫЙ путь: GetCoverAgainst считает укрытие против ФАКТИЧЕСКОЙ огневой
+	// позиции стрелка (выглядывание). Это то, что видит игрок, поэтому щит и
+	// шанс попадания обязаны идти именно отсюда.
+	return Cover->GetCoverAgainst(Shooter) == ECoverType::None;
+}
+
+bool UTacticsCombatStatics::IsTargetFlankedByLocation(const AActor* Target, const FVector& ShooterLocation)
+{
+	if (!Target)
+	{
+		return false;
+	}
+
+	const UCoverDetectionComponent* Cover = Target->FindComponentByClass<UCoverDetectionComponent>();
+	if (!Cover)
+	{
+		return false; // нечем прикрыться — «открыт», а не «фланкирован»
+	}
+
+	// BestCoverAround — кэш ЛОКАЛЬНОГО укрытия цели (перестраивается после
+	// каждого её перемещения): «стоит ли она вообще за чем-то».
+	if (Cover->BestCoverAround == ECoverType::None)
+	{
+		return false;
+	}
+
+	// Против стрелка считаем ЗАНОВО (стороны + дуга): зависит от того, откуда
+	// стреляют, и кэшировать это нельзя — сломает разрушаемость (§V.2 п.4).
+	float TargetHalfHeight = 88.f;
+	if (const ACharacter* TargetCharacter = Cast<ACharacter>(Target))
+	{
+		if (const UCapsuleComponent* Capsule = TargetCharacter->GetCapsuleComponent())
+		{
+			TargetHalfHeight = Capsule->GetScaledCapsuleHalfHeight();
+		}
+	}
+	const FVector TargetFloor = Target->GetActorLocation() - FVector(0.f, 0.f, TargetHalfHeight);
+
+	return Cover->EvaluateCoverAtLocation(TargetFloor, ShooterLocation) == ECoverType::None;
+}
+
+ECoverShield UTacticsCombatStatics::GetCoverShieldAgainst(const AActor* Target, const AActor* Shooter,
+	ECoverType& OutShieldCover)
+{
+	OutShieldCover = ECoverType::None;
+	if (!Target || !Shooter)
+	{
+		return ECoverShield::None;
+	}
+
+	const UCoverDetectionComponent* Cover = Target->FindComponentByClass<UCoverDetectionComponent>();
+	if (!Cover)
+	{
+		return ECoverShield::None;
+	}
+
+	// 1) Укрытие работает против этого стрелка — синий щит.
+	const ECoverType Against = Cover->GetCoverAgainst(Shooter);
+	if (Against != ECoverType::None)
+	{
+		OutShieldCover = Against;
+		return ECoverShield::Covered;
+	}
+
+	// 2) Укрытие есть «вообще», но не против нас — стрелок во фланге, жёлтый щит.
+	// Щит рисуем по локальному укрытию цели: игрок должен видеть, ЧТО именно он
+	// обошёл (низкое или высокое).
+	if (Cover->BestCoverAround != ECoverType::None)
+	{
+		OutShieldCover = Cover->BestCoverAround;
+		return ECoverShield::Flanked;
+	}
+
+	// 3) Чистое поле — щита нет вовсе.
+	return ECoverShield::None;
 }
 
 bool UTacticsCombatStatics::SquadHasLineOfSight(const AActor* Unit, const AActor* Target)

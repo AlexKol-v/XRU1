@@ -6,7 +6,10 @@
 
 #include "CoverDetectionComponent.h"
 #include "TacticalHUDStyleData.h"
+#include "TacticalPlayerController.h"
+#include "TacticsCombatStatics.h"
 #include "TacticsGameInstance.h"
+#include "UnitBase.h" // полный тип: GetSelectedUnit() отдаёт AUnitBase*, приводим к AActor*
 
 void UCoverIconWidget::NativeOnInitialized()
 {
@@ -62,6 +65,45 @@ void UCoverIconWidget::RefreshFromASC() { Redraw(); }
 
 void UCoverIconWidget::OnCoverStateChanged(ECoverType /*NewBestCover*/) { Redraw(); }
 
+void UCoverIconWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
+{
+    Super::NativeTick(MyGeometry, InDeltaTime);
+
+    if (!bShowFlankedWhileTargeting)
+    {
+        return;
+    }
+
+    // Перерисовываем ТОЛЬКО при смене стрелка. Пока игрок целится, ни он, ни
+    // цель не двигаются, поэтому пересчитывать щит каждый кадр незачем — а он
+    // делает трейс укрытия. Перемещения ловит OnCoverStateChanged.
+    AActor* const Shooter = ResolveActiveShooter();
+    if (LastShooter.Get() != Shooter)
+    {
+        LastShooter = Shooter;
+        Redraw();
+    }
+}
+
+AActor* UCoverIconWidget::ResolveActiveShooter() const
+{
+    if (!bShowFlankedWhileTargeting)
+    {
+        return nullptr;
+    }
+
+    const ATacticalPlayerController* Controller =
+        Cast<ATacticalPlayerController>(GetOwningPlayer());
+    if (!Controller || !Controller->IsTargetingAttack())
+    {
+        return nullptr; // вне прицеливания щит «против стрелка» смысла не имеет
+    }
+
+    AActor* const Shooter = Controller->GetSelectedUnit();
+    // Свой же боец не «фланкирует» сам себя — щит над союзником остаётся локальным.
+    return UTacticsCombatStatics::AreHostile(Shooter, ResolveAvatarActor()) ? Shooter : nullptr;
+}
+
 void UCoverIconWidget::Redraw()
 {
     const UCoverDetectionComponent* Cover = CoverDetection.Get();
@@ -70,21 +112,38 @@ void UCoverIconWidget::Redraw()
         return;
     }
 
-    const ECoverType CoverType = Cover->BestCoverAround;
-    if (CoverType == ECoverType::None)
+    const UTacticalHUDStyleData* Theme = GetUITheme();
+
+    // Есть активный стрелок — считаем щит ПРОТИВ НЕГО (три состояния, Ф8);
+    // иначе показываем локальное укрытие юнита, как и раньше.
+    ECoverType IconCover = Cover->BestCoverAround;
+    FLinearColor Tint = BaseColor;
+    bool bVisible = IconCover != ECoverType::None;
+
+    if (AActor* const Shooter = ResolveActiveShooter())
+    {
+        ECoverType ShieldCover = ECoverType::None;
+        const ECoverShield Shield = UTacticsCombatStatics::GetCoverShieldAgainst(
+            ResolveAvatarActor(), Shooter, ShieldCover);
+
+        IconCover = ShieldCover;
+        bVisible = Shield != ECoverShield::None;
+        if (Theme)
+        {
+            Tint = Theme->GetCoverShieldTint(Shield);
+        }
+    }
+
+    if (!bVisible)
     {
         SetVisibility(ESlateVisibility::Hidden);
         return;
     }
 
-    UTexture2D* Texture = nullptr;
-    if (const UTacticalHUDStyleData* Theme = GetUITheme())
-    {
-        Texture = Theme->GetCoverIcon(CoverType);
-    }
+    UTexture2D* Texture = Theme ? Theme->GetCoverIcon(IconCover) : nullptr;
     if (!Texture)
     {
-        Texture = (CoverType == ECoverType::Full)
+        Texture = (IconCover == ECoverType::Full)
             ? FullCoverTexture.Get()
             : HalfCoverTexture.Get();
     }
@@ -92,6 +151,7 @@ void UCoverIconWidget::Redraw()
     // Ставим кисть безусловно: незаданная текстура даёт квадрат BaseColor,
     // но не залипшую иконку ПРЕДЫДУЩЕГО типа укрытия.
     IconImage->SetBrushFromTexture(Texture);
+    IconImage->SetColorAndOpacity(Tint);
     SetVisibility(ESlateVisibility::HitTestInvisible);
 }
 

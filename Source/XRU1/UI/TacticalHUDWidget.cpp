@@ -6,6 +6,7 @@
 #include "UnitBase.h"
 #include "ActionPointsComponent.h"
 #include "CoverDetectionComponent.h"
+#include "TacticsCombatStatics.h"
 #include "GA_Attack.h"
 #include "Engine/World.h"
 #include "Blueprint/UserWidget.h"
@@ -458,20 +459,29 @@ void UTacticalHUDWidget::UpdateTargetPanel(AUnitBase* Hovered)
 	}
 	if (TargetCoverIcon)
 	{
-		// Щит виден, только когда укрытие цели реально работает против стрелка
-		// (фланкирована/открыта — иконки нет), как в XCOM 2.
-		const ECoverType Cover = GetTargetCoverAgainstSelected(Hovered);
+		// Три состояния XCOM (Ф8): синий щит — укрытие работает против нашего
+		// стрелка; жёлтый — цель В укрытии, но мы зашли во фланг (шанс НЕ
+		// снижен); нет щита — цель в чистом поле. Раньше жёлтое и «нет щита»
+		// схлопывались в отсутствие иконки, и заработанный манёвром фланг ничем
+		// не отличался от открытой цели.
+		ECoverType ShieldCover = ECoverType::None;
+		const ECoverShield Shield = UTacticsCombatStatics::GetCoverShieldAgainst(
+			Hovered, Shooter, ShieldCover);
+
 		UTexture2D* CoverTexture = nullptr;
+		FLinearColor ShieldTint = FLinearColor::White;
 		if (const UTacticalHUDStyleData* Theme = GetUITheme())
 		{
-			CoverTexture = Theme->GetCoverIcon(Cover);
+			CoverTexture = Theme->GetCoverShieldIcon(Shield, ShieldCover);
+			ShieldTint = Theme->GetCoverShieldTint(Shield);
 		}
-		if (Cover != ECoverType::None)
+		if (Shield != ECoverShield::None)
 		{
 			if (CoverTexture)
 			{
 				TargetCoverIcon->SetBrushFromTexture(CoverTexture);
 			}
+			TargetCoverIcon->SetColorAndOpacity(ShieldTint);
 			TargetCoverIcon->SetVisibility(ESlateVisibility::HitTestInvisible);
 		}
 		else

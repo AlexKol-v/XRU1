@@ -11,6 +11,7 @@ AUnit_Assault::AUnit_Assault()
 	BaseMaxHealth = 100.f;
 	BaseAim = 75.f;
 	ShotDamage = 25.f;
+	IdealCombatRange = 450.f;  // натиск: хочет быть вплотную
 	ClassAbilityClass = UGA_RunAndGun::StaticClass();
 	// AttackRange — дефолт из AUnitBase (3000, см. комментарий там): не переопределяем.
 	bCanBeDowned = true;
@@ -23,6 +24,7 @@ AUnit_Sniper::AUnit_Sniper()
 	BaseMaxHealth = 80.f;
 	BaseAim = 85.f;
 	ShotDamage = 40.f;
+	IdealCombatRange = 2200.f; // держит дистанцию, стреляет издалека
 	AttackRange = 5000.f; // снайпер — дальше всех (GDD §7), но и это лишь технический cap
 	bHasSquadsight = true; // «Прицел отряда» — пассивка класса
 	ClassAbilityClass = nullptr;
@@ -36,6 +38,7 @@ AUnit_Healer::AUnit_Healer()
 	BaseMaxHealth = 90.f;
 	BaseAim = 70.f;
 	ShotDamage = 25.f;
+	IdealCombatRange = 1100.f; // позади линии, но в радиусе лечения
 	ClassAbilityClass = UGA_Heal::StaticClass();
 	// AttackRange — дефолт из AUnitBase (3000): не переопределяем.
 	bCanBeDowned = true;
@@ -48,6 +51,7 @@ AUnit_Tank::AUnit_Tank()
 	BaseMaxHealth = 150.f;
 	BaseAim = 70.f;
 	ShotDamage = 25.f;
+	IdealCombatRange = 600.f;  // танк лезет вперёд — он для этого и есть
 	ClassAbilityClass = UGA_Taunt::StaticClass();
 	// AttackRange — дефолт из AUnitBase (3000): не переопределяем (раньше был
 	// короче остальных — 900, без всякой причины короче даже AI SightRadius).

@@ -3,11 +3,13 @@
 #include "CoreMinimal.h"
 #include "AIController.h"
 #include "Engine/TimerHandle.h"
+#include "AIDecisionTypes.h"
 #include "UnitAIController.generated.h"
 
 class UAIPerceptionComponent;
 class UAISenseConfig_Sight;
 class UGameplayEffect;
+class UAIActionEvaluator;
 class AUnitBase;
 
 /** Уровень тревоги AI-юнита (упрощённая модель XCOM: green/yellow/red alert). */
@@ -107,9 +109,24 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Perception")
 	float LoseSightRadius = 1600.f;
 
-	/** Половина угла конуса зрения (град). */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Perception")
-	float PeripheralVisionHalfAngle = 60.f;
+	/**
+	 * Половина угла конуса зрения (град). **180 = круговой обзор**, и это
+	 * дефолт по двум причинам.
+	 *
+	 * 1) В XCOM юниты видят на 360° в пределах радиуса зрения — «подкрасться со
+	 *    спины» там нет как механики.
+	 * 2) У нас предикат выстрела (`HasLineOfSight`) поворот юнита не учитывает
+	 *    вообще. При конусе 120° перцепция была СТРОЖЕ предиката: враг физически
+	 *    мог выстрелить в бойца за спиной, но не видел его и потому не выбирал
+	 *    целью. Отсюда наблюдаемое «стрелял по укрытому, игнорируя открытого» —
+	 *    открытый просто не попадал в список видимых.
+	 *
+	 * Уменьшать имеет смысл, только если специально вводится механика захода со
+	 * спины — тогда её придётся ввести и в LOS, иначе правила снова разъедутся.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Perception",
+		meta = (ClampMin = "1", ClampMax = "180"))
+	float PeripheralVisionHalfAngle = 180.f;
 
 	// --- Параметры хода -------------------------------------------------------
 
@@ -159,9 +176,62 @@ public:
 	// источником правды «что юнит знает», а ВНУТРИ Combat позиция выбирается
 	// взвешенной оценкой. Новое поведение = новый вес/слагаемое, не новый флаг.
 
-	/** Множитель ценности укрытия в точке (защита 20/40 × вес). */
+	/**
+	 * Множитель НОРМИРОВАННОЙ ценности укрытия точки (A5).
+	 *
+	 * Ценность считается по XCOM: усреднение по ВСЕМ видимым угрозам, где
+	 * открытость даёт резко отрицательный вклад. При дефолтах ниже полностью
+	 * укрытая точка даёт ≈ +22, полностью открытая ≈ −80. Разрыв в 100 очков
+	 * заведомо больше `LineOfFireBonus` — именно это заставляет бота искать
+	 * укрытие, а не бежать в атаку напролом.
+	 *
+	 * ⚠️ Смысл поля изменился в A5. Раньше сюда умножались очки защиты (20/40),
+	 * и вес 1.0 означал «укрытие ценно на 20–40». Теперь диапазон входа
+	 * −4…+1.1, поэтому дефолт другого порядка.
+	 */
 	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights", meta = (ClampMin = "0"))
-	float CoverDefenseWeight = 1.f;
+	float CoverDefenseWeight = 20.f;
+
+	/**
+	 * Вклад ОТКРЫТОЙ позиции против одной угрозы (XCOM `CALC_NO_COVER_FACTOR`).
+	 * Резко отрицательный намеренно: «AI боится флангов» в XCOM получается не
+	 * спецправилом, а этим коэффициентом. Открытость против ОДНОГО врага
+	 * перевешивает укрытие против двух других.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights")
+	float OpenCoverFactor = -4.f;
+
+	/** Вклад половинчатого укрытия против одной угрозы (XCOM: 1.0). */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights")
+	float HalfCoverFactor = 1.f;
+
+	/**
+	 * Вклад полного укрытия (XCOM: 1.1). ⚠️ Всего на 10% выше половинчатого —
+	 * это не опечатка: из полного укрытия труднее стрелять, поэтому XCOM ценит
+	 * его лишь чуть выше. Не подгонять под соотношение защиты 40/20.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights")
+	float FullCoverFactor = 1.1f;
+
+	/** Бонус точке, из которой юнит ФЛАНКИРУЕТ хотя бы одну угрозу (A5). */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights")
+	float FlankPositionBonus = 25.f;
+
+	/** Бонус за превышение над целью (порог берётся из DA_CoverTuning.HeightAdvantageZ). */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights")
+	float HeightPositionBonus = 15.f;
+
+	/** Ближе этого расстояния к союзнику точка считается «в куче» (см). 0 — выключить. */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights", meta = (ClampMin = "0"))
+	float MinSpreadDistance = 250.f;
+
+	/**
+	 * Множитель ПОЛОЖИТЕЛЬНОГО скора для точки в куче (XCOM
+	 * `DEFAULT_AI_SPREAD_WEIGHT_MULTIPLIER`). Только положительного: иначе
+	 * штраф превратился бы в поощрение для отрицательных скоров.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights", meta = (ClampMin = "0", ClampMax = "1"))
+	float SpreadPenaltyMultiplier = 0.4f;
 
 	/** Бонус точке, из которой цель ПРОСТРЕЛИВАЕТСЯ (манёвр не теряет выстрел). */
 	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights")
@@ -175,9 +245,25 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights", meta = (ClampMin = "0"))
 	float TravelCostPerCm = 0.015f;
 
-	/** Штраф за отход дальше комфортной дистанции боя (за см сверх 0.75×AttackRange). */
+	/**
+	 * Вес близости к ИДЕАЛЬНОЙ дистанции боя (`AUnitBase::IdealCombatRange`).
+	 * В XCOM это один из самых больших весов (`fDistanceWeight` 4–5 против
+	 * `fCoverWeight` 1.7–2.0) — именно он не даёт ботам сбегаться вплотную.
+	 *
+	 * Пришёл на смену `OverextendPenaltyPerCm`, который считался от
+	 * `0.75×AttackRange`. Поскольку `AttackRange` — щедрый технический cap
+	 * (3000), порог был ~2250 см, и на нашей карте штраф не срабатывал НИ РАЗУ:
+	 * дистанция фактически не влияла на выбор позиции вообще.
+	 */
 	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights", meta = (ClampMin = "0"))
-	float OverextendPenaltyPerCm = 0.02f;
+	float IdealRangeWeight = 30.f;
+
+	/**
+	 * На сколько см отклонения от идеала оценка дистанции падает с 1 до 0
+	 * (аналог `CALC_RANGE_LINEAR_DENOM` в XCOM). Дальше уходит в минус.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights", meta = (ClampMin = "100"))
+	float IdealRangeFalloff = 1500.f;
 
 	/** Порог значимости: манёвр только если он лучше текущей позиции на столько. */
 	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights", meta = (ClampMin = "0"))
@@ -191,20 +277,118 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights", meta = (ClampMin = "0"))
 	float RetreatRewardPerCm = 0.01f;
 
-protected:
-	virtual void BeginPlay() override;
-	virtual void OnPossess(APawn* InPawn) override;
-	virtual void OnMoveCompleted(FAIRequestID RequestID, const FPathFollowingResult& Result) override;
+	// --- Веса выбора ЦЕЛИ (A3) ------------------------------------------------
+	//
+	// Аддитивный скоринг вместо прежнего «ближайший видимый». Числа
+	// пропорциональны XCOM 2 (docs/12_AI_REFERENCE.md §III): там шанс попадания
+	// доминирует над всем остальным — AI в первую очередь НЕ МАЖЕТ, и уже потом
+	// умничает. Дистанция отдельным слагаемым НЕ входит: она уже учтена в шансе
+	// попадания через AimByDistanceCurve, второй раз считать нельзя.
 
-	/** Колбэк перцепции: увидел/потерял враждебного актора → смена тревоги. */
-	UFUNCTION()
-	void HandlePerceptionUpdated(AActor* Actor, struct FAIStimulus Stimulus);
+	/** Порог «уверенного» выстрела, % (XCOM: TargetHitChanceHigh). */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|TargetWeights", meta = (ClampMin = "0", ClampMax = "100"))
+	float TargetHitChanceHighThreshold = 65.f;
 
-	/** Один шаг хода: атака / движение по состоянию / завершение — пока есть AP. */
-	void AdvanceTurnStep();
+	/** Порог «сомнительного» выстрела, % (ниже него — минимальный бонус). */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|TargetWeights", meta = (ClampMin = "0", ClampMax = "100"))
+	float TargetHitChanceLowThreshold = 35.f;
 
-	/** Действия шага в состоянии Combat. true — шаг обработан (ждём таймер/движение). */
-	bool StepCombat(AUnitBase* Unit);
+	/** Бонус за высокий шанс попадания (XCOM: +70). */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|TargetWeights")
+	float TargetScoreHitChanceHigh = 70.f;
+
+	/** Бонус за средний шанс (XCOM: +40). */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|TargetWeights")
+	float TargetScoreHitChanceMedium = 40.f;
+
+	/** Бонус за низкий шанс (XCOM: +10) — стрелять всё ещё можно. */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|TargetWeights")
+	float TargetScoreHitChanceLow = 10.f;
+
+	/**
+	 * Провоцирующая цель (танк с State.Taunting в TauntPriorityRadius).
+	 *
+	 * ⚠️ Здесь мы СОЗНАТЕЛЬНО расходимся с XCOM. Там priority target даёт всего
+	 * +60 — сопоставимо с бонусом за высокий шанс попадания, то есть это
+	 * «сильное предпочтение», а не приказ. Наш GDD §7 формулирует жёстче: враг в
+	 * радиусе провокации **обязан** бить именно провоцирующего. Поэтому вес
+	 * заведомо перебивает любую комбинацию остальных слагаемых.
+	 *
+	 * Хотите XCOM-модель («танк оттягивает, но не гарантированно») — поставьте
+	 * ~60 и синхронизируйте GDD §7.
+	 *
+	 * Бонус даётся ТОЛЬКО когда по провоцирующему реально можно выстрелить:
+	 * «обязан бить» не означает «обязан бежать через полкарты к недостижимой
+	 * цели, игнорируя тех, по кому есть линия огня».
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|TargetWeights")
+	float TargetScoreTaunting = 1000.f;
+
+	/** Цель флангирована мной — укрытие не спасает (XCOM: +50). */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|TargetWeights")
+	float TargetScoreFlanked = 50.f;
+
+	/** Выстрел добивает цель (XCOM: +15 — заметно МЕНЬШЕ, чем за шанс попасть). */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|TargetWeights")
+	float TargetScoreKillShot = 15.f;
+
+	/** Цель уже ранена (XCOM: +5). */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|TargetWeights")
+	float TargetScoreWounded = 5.f;
+
+	/**
+	 * Тяжелораненая цель: приём XCOM «−1000 вместо ветки-исключения» — не
+	 * добивай лежачего, пока есть живые. Если живых целей нет, цель всё равно
+	 * выберется (скор просто окажется наименее плохим).
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|TargetWeights")
+	float TargetScoreDowned = -1000.f;
+
+	/**
+	 * Цель, по которой ВЫСТРЕЛ НЕВОЗМОЖЕН (нет линии огня / вне дальности).
+	 * `ComputeAttackHitChance` отдаёт для таких −1, и первая редакция скоринга
+	 * честно считала это «низким шансом» и добавляла бонус +10 — в логе это
+	 * видно как `цель ...: скор 65 (шанс -1%)`. В итоге недостижимая цель могла
+	 * перебить достижимую.
+	 *
+	 * Штраф подобран так, чтобы ЛЮБАЯ достижимая цель (минимум +10) била любую
+	 * недостижимую (максимум 10+60+50+15+5−200 < 0), но порядок между самими
+	 * недостижимыми сохранялся — к кому сближаться, AI решает по ним же.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|TargetWeights")
+	float TargetScoreNoLineOfFire = -200.f;
+
+	// --- Поиск позиции (A5) ---------------------------------------------------
+
+	/**
+	 * «Прилипание к укрытию»: если точка-кандидат сама по себе открыта, ищем
+	 * стену между ней и угрозой на этой дистанции (см) и переносим кандидата
+	 * ВПЛОТНУЮ к стене с НАШЕЙ стороны.
+	 *
+	 * Зачем: кольцевой сэмплинг даёт 48 точек на всю зону хода, а «в укрытии»
+	 * считается только полоса шириной CoverTraceDistance (120 см) вдоль стены —
+	 * попасть в неё случайной точкой почти нельзя. Отсюда жалоба «бегут к
+	 * укрытию, но встают не с той стороны и остаются под прямой линией огня».
+	 * Прилипание превращает «рядом со стеной» в «за стеной» и само выбирает
+	 * правильную сторону: точка всегда ставится со стороны юнита.
+	 *
+	 * 0 — выключить прилипание (прежнее поведение).
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Positioning", meta = (ClampMin = "0"))
+	float CoverSnapDistance = 600.f;
+
+	// --- Утилити-выбор действия (ADR-1) ---------------------------------------
+
+	/**
+	 * НАБОР ВАРИАНТОВ ДЕЙСТВИЯ. Каждый оценивает себя сам; побеждает лучший скор.
+	 * Новое поведение (овервотч, глухая оборона, граната, перезарядка) = новый
+	 * наследник UAIActionEvaluator в этом списке, БЕЗ правок остальных.
+	 *
+	 * Дефолтный набор собирается в конструкторе. В BP-наследнике контроллера его
+	 * можно дополнить или перевесить (Weight = 0 выключает вариант, не удаляя).
+	 */
+	UPROPERTY(EditDefaultsOnly, Instanced, BlueprintReadOnly, Category = "Tactics|AI|Actions")
+	TArray<TObjectPtr<UAIActionEvaluator>> ActionEvaluators;
 
 	/**
 	 * Поиск лучшей боевой позиции против угрозы в бюджете пути PathBudget (см).
@@ -222,9 +406,68 @@ protected:
 	 * укрытии (XCOM), а не открытой пробежкой.
 	 * false — ничего значимо лучше текущей позиции (порог RelocateBias):
 	 * стоим где стоим, а не мечемся ради +0 к укрытию.
+	 *
+	 * PUBLIC, потому что его зовут оценщики действий (AIActionEvaluators.cpp).
+	 * ⚠️ Метод ДОРОГОЙ (48 точек × трейсы LOS) — вызывать только из ScoreAction,
+	 * после того как IsApplicable отсеял заведомо неподходящие варианты.
 	 */
 	bool FindCoverPoint(AUnitBase* Unit, const AActor* Threat, float PathBudget, bool bRetreat,
-		FVector& OutPoint, bool bAdvance = false);
+		FVector& OutPoint, bool bAdvance = false, FAICoverPointResult* OutDetails = nullptr);
+
+	/**
+	 * Сколько угроз максимум учитывать при оценке точки (аналог
+	 * `MAX_EXPECTED_ENEMY_COUNT` в XCOM, там 4). Берутся ближайшие: проверка
+	 * линии огня из каждой точки-кандидата по каждой угрозе — самая дорогая
+	 * часть перебора, и её надо ограничивать сверху.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Positioning", meta = (ClampMin = "1", ClampMax = "8"))
+	int32 MaxScoredThreats = 4;
+
+	/**
+	 * Вес «сколько врагов видно из точки» (XCOM `fEnemyVisibility`). Точка, из
+	 * которой не видно НИКОГО, получает −1 × вес: укрытие, из которого нельзя
+	 * ответить, — это не позиция, а угол.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights")
+	float EnemyVisibilityWeight = 20.f;
+
+protected:
+	virtual void BeginPlay() override;
+	virtual void OnPossess(APawn* InPawn) override;
+	virtual void OnMoveCompleted(FAIRequestID RequestID, const FPathFollowingResult& Result) override;
+
+	/** Колбэк перцепции: увидел/потерял враждебного актора → смена тревоги. */
+	UFUNCTION()
+	void HandlePerceptionUpdated(AActor* Actor, struct FAIStimulus Stimulus);
+
+	/** Один шаг хода: атака / движение по состоянию / завершение — пока есть AP. */
+	void AdvanceTurnStep();
+
+	/** Действия шага в состоянии Combat. true — шаг обработан (ждём таймер/движение). */
+	bool StepCombat(AUnitBase* Unit);
+
+	/**
+	 * Собирает СНИМОК МИРА на одну активацию: видимые угрозы, AP, укрытие,
+	 * можно ли стрелять. Считается один раз и раздаётся всем оценщикам —
+	 * иначе каждый пересобирал бы списки (инвариант 1b).
+	 */
+	FAIDecisionContext BuildDecisionContext(AUnitBase* Unit, AActor* PrimaryThreat) const;
+
+	/**
+	 * Выбор лучшего действия перебором оценщиков. Перебор идёт по УБЫВАНИЮ
+	 * верхней границы скора и обрывается, как только текущий лучший результат
+	 * её достиг: дорогие поиски позиции не выполняются впустую.
+	 * При включённом `xru1.AI.LogCombat` печатает ВСЕ рассмотренные варианты со
+	 * скорами — без этого утилити-решение необъяснимо (ADR-1.6).
+	 */
+	FAIDecision DecideAction(const FAIDecisionContext& Context);
+
+	/**
+	 * Исполняет готовое решение. Разделение «решил / сделал» намеренное: решение
+	 * можно залогировать и показать ДО того, как оно изменит мир.
+	 * true — шаг обработан (ждём таймер/движение), false — активация окончена.
+	 */
+	bool ExecuteDecision(AUnitBase* Unit, const FAIDecision& Decision);
 
 	/** Старт манёвра к точке: помечает ход и запоминает точку для продолжения. */
 	bool StartManeuverTo(AUnitBase* Unit, const FVector& Point, const TCHAR* Reason);
@@ -254,8 +497,22 @@ protected:
 	/** Планирует следующий шаг хода через ActionInterval. */
 	void ScheduleNextStep();
 
-	/** Ближайший живой враждебный актор, видимый перцепцией; провоцирующий (Taunt) — приоритетнее. */
+	/**
+	 * Лучшая цель по АДДИТИВНОМУ СКОРИНГУ (A3, правила XCOM — см.
+	 * docs/12_AI_REFERENCE.md §III): шанс попадания + провокация + фланг +
+	 * добивание + ранение, минус штраф за тяжелораненого.
+	 *
+	 * Раньше здесь было «ближайший видимый, провоцирующий вне очереди» — самое
+	 * слабое место всего AI: расстояние не коррелирует ни с шансом попасть
+	 * (у нас есть и профиль оружия, и укрытие), ни с реальной угрозой.
+	 */
 	AActor* FindVisibleTarget() const;
+
+	/** Скор одной цели для FindVisibleTarget. Чистая функция, мир не меняет. */
+	float ScoreTarget(const AUnitBase* Unit, const AActor* Candidate) const;
+
+	/** Все живые враждебные акторы, видимые перцепцией (для скоринга против ВСЕХ угроз, фаза A5). */
+	void GatherVisibleThreats(TArray<TObjectPtr<AActor>>& OutThreats) const;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tactics|Perception")
 	TObjectPtr<UAIPerceptionComponent> Perception;
@@ -295,6 +552,22 @@ protected:
 	 */
 	bool bManeuverInProgress = false;
 	FVector PendingManeuverPoint = FVector::ZeroVector;
+
+	/**
+	 * Точка, которую AI ВЫБРАЛ (до всех обрезок бюджетом и выталкиваний из
+	 * занятых клеток). Нужна ровно для одного: проверить по прибытии, что боец
+	 * встал ТУДА, КУДА РЕШИЛ, а не «где получилось».
+	 *
+	 * Расхождение здесь — это расхождение плана и факта: укрытие оценивалось в
+	 * одной точке, а юнит стоит в другой, где оно может не работать. Молча
+	 * такое пропускать нельзя, поэтому при отклонении пишем в лог.
+	 */
+	FVector ChosenManeuverPoint = FVector::ZeroVector;
+	bool bHasChosenManeuverPoint = false;
+
+	/** Порог расхождения «решил / встал» (см), выше которого пишем в лог. */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Positioning", meta = (ClampMin = "10"))
+	float ManeuverArrivalTolerance = 120.f;
 
 	FTimerHandle TurnStepTimerHandle;
 

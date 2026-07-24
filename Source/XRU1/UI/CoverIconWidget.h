@@ -40,6 +40,25 @@ protected:
     UPROPERTY(EditDefaultsOnly, Category = "Cover Icon")
     TObjectPtr<UTexture2D> FullCoverTexture;
 
+    /**
+     * Пока игрок целится, показывать укрытие ПРОТИВ ВЫБРАННОГО СТРЕЛКА, а не
+     * «по кругу»: синий щит — укрытие работает против него, жёлтый — цель
+     * флангирована (Ф8). Вне прицеливания иконка возвращается к локальному
+     * BestCoverAround — это статус самого юнита, он не зависит ни от кого.
+     *
+     * Выключить = вернуть прежнее поведение (всегда локальное укрытие).
+     */
+    UPROPERTY(EditDefaultsOnly, Category = "Cover Icon")
+    bool bShowFlankedWhileTargeting = true;
+
+    /**
+     * Стрелок меняется редко (выбор юнита, вход/выход из прицеливания), но
+     * узнать об этом можно только опросом — делегата «сменился режим наведения»
+     * у контроллера нет. Поэтому тик, но с проверкой изменения: пересчёт (а он
+     * делает трейс укрытия) идёт ТОЛЬКО когда стрелок реально сменился.
+     */
+    virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
+
 private:
     UFUNCTION()
     void OnCoverStateChanged(ECoverType NewBestCover);
@@ -47,9 +66,15 @@ private:
 	void Redraw();
 	const UTacticalHUDStyleData* GetUITheme() const;
 
+	/** Стрелок, против которого считать щит; nullptr — показывать локальное укрытие. */
+	AActor* ResolveActiveShooter() const;
+
     UPROPERTY(Transient)
     TObjectPtr<UImage> IconImage;
 
     /** Детектор укрытий юнита-владельца (weak: юнит может умереть раньше виджета). */
     TWeakObjectPtr<UCoverDetectionComponent> CoverDetection;
+
+    /** Стрелок на момент последней перерисовки — чтобы не считать трейс каждый кадр. */
+    TWeakObjectPtr<AActor> LastShooter;
 };

@@ -207,6 +207,22 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "02. Статусы|Укрытия")
 	TObjectPtr<UTexture2D> FullCoverIcon;
 
+	/**
+	 * Щит «флангирован» (Ф8). Можно НЕ ЗАПОЛНЯТЬ: без своей текстуры берётся
+	 * обычный щит укрытия, покрашенный в FlankedCoverTint — этого достаточно,
+	 * чтобы состояние читалось на экране, пока нет отдельного арта.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "02. Статусы|Укрытия")
+	TObjectPtr<UTexture2D> FlankedCoverIcon;
+
+	/** Цвет щита «флангирован» (XCOM: жёлтый). Применяется и к своей текстуре, и к фолбэку. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "02. Статусы|Укрытия")
+	FLinearColor FlankedCoverTint = FLinearColor(1.f, 0.78f, 0.06f, 1.f);
+
+	/** Цвет обычного (работающего) щита укрытия. Белый = текстура как есть. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "02. Статусы|Укрытия")
+	FLinearColor CoveredCoverTint = FLinearColor::White;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "05. Разметка|Панель цели", meta = (ClampMin = "1"))
 	FVector2D TargetCoverIconSize = FVector2D(32.f, 32.f);
 
@@ -524,6 +540,19 @@ public:
 	/** Half/Full cover → текстура щита; None → nullptr. */
 	UFUNCTION(BlueprintPure, Category = "UI|Theme")
 	UTexture2D* GetCoverIcon(ECoverType Cover) const;
+
+	/**
+	 * Текстура щита по состоянию против стрелка (Ф8). ShieldCover — форма щита
+	 * (половинчатый/полный), её отдаёт UTacticsCombatStatics::GetCoverShieldAgainst.
+	 * Для Flanked без своей текстуры возвращается обычный щит — цвет разводит
+	 * состояния (см. GetCoverShieldTint).
+	 */
+	UFUNCTION(BlueprintPure, Category = "UI|Theme")
+	UTexture2D* GetCoverShieldIcon(ECoverShield Shield, ECoverType ShieldCover) const;
+
+	/** Цвет щита по состоянию: обычный / жёлтый «флангирован». */
+	UFUNCTION(BlueprintPure, Category = "UI|Theme")
+	FLinearColor GetCoverShieldTint(ECoverShield Shield) const;
 
 	/**
 	 * Текущее локальное укрытие юнита (BestCoverAround), одинаковое для

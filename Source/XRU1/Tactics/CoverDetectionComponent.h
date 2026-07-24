@@ -53,6 +53,25 @@ public:
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Tactics|Cover")
 	ECoverType BestCoverAround = ECoverType::None;
 
+	/**
+	 * СТОРОНЫ укрытия юнита на его текущей позиции (кэш последнего
+	 * EvaluateSurroundings). Обычно 1–2: лучи склеиваются по нормали стены,
+	 * поэтому «угол ящика» даёт две стороны, а плоская стена — одну.
+	 *
+	 * ⚠️ Это кэш ЛОКАЛЬНОГО состояния (где я стою), а не «укрытие против врага».
+	 * Инвариант «укрытие против конкретного стрелка не кэшировать» не нарушен:
+	 * GetCoverAgainst пересобирает стороны трейсами на каждый вызов.
+	 */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Tactics|Cover")
+	TArray<FCoverSide> CoverSides;
+
+	/**
+	 * Направление на ЛУЧШУЮ стену (от юнита к стене, XY). Zero — укрытия нет.
+	 * Нужно анимации (прижаться к стене нужной стороной, Ф10) и превью peek.
+	 */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Tactics|Cover")
+	FVector BestCoverDirection = FVector::ZeroVector;
+
 	UPROPERTY(BlueprintAssignable, Category = "Tactics|Cover")
 	FOnCoverStateChanged OnCoverStateChanged;
 
@@ -80,9 +99,33 @@ public:
 	 */
 	ECoverType EvaluateCoverAtLocation(const FVector& Base, const FVector& ThreatLocation) const;
 
-	/** Общее ядро трейса укрытия (см. EvaluateCoverAtLocation). */
+	/**
+	 * Общее ядро трейса укрытия (см. EvaluateCoverAtLocation).
+	 * SphereRadius > 0 — толстый свип вместо волосяного луча: на скользящих
+	 * углах тонкий луч проскакивал мимо стены, и укрытие «пропадало».
+	 */
 	static ECoverType TraceCoverAtLocation(const UWorld* World, const FVector& Base, const FVector& Direction,
-		float TraceDistance, float HalfHeight, float FullHeight, ECollisionChannel Channel, const AActor* Ignored);
+		float TraceDistance, float HalfHeight, float FullHeight, ECollisionChannel Channel,
+		const AActor* Ignored, float SphereRadius = 0.f);
+
+	/**
+	 * СТОРОНЫ УКРЫТИЯ в точке Base (точка пола): лучи по кругу, стороны
+	 * склеиваются по НОРМАЛИ найденной стены. Плоская стена рядом даёт одну
+	 * сторону, а не три-четыре луча; угол ящика — две.
+	 *
+	 * Отбрасываются стены дальше `CoverSideDistanceSlack` от ближайшей: юнит
+	 * прячется за ближней стеной, а не за всем, что попало в радиус трейса.
+	 */
+	static void GatherCoverSides(const UWorld* World, const FVector& Base,
+		const UCoverTuningDataAsset* Tuning, const AActor* Ignored, TArray<FCoverSide>& OutSides);
+
+	/**
+	 * Лучшее укрытие против направления НА УГРОЗУ по защитным дугам сторон.
+	 * Сторона защищает, если угол между ToThreat и её направлением не больше
+	 * `CoverArcHalfAngle` (90° = полуплоскость, модель XCOM).
+	 */
+	static ECoverType BestCoverAgainstDirection(const TArray<FCoverSide>& Sides,
+		const FVector& ToThreat, float ArcHalfAngleDegrees);
 
 	/** Численный бонус защиты против конкретного стрелка (0 / Half / Full). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Cover")

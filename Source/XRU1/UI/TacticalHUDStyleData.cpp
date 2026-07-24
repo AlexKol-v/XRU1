@@ -111,6 +111,27 @@ UTexture2D* UTacticalHUDStyleData::GetCoverIcon(ECoverType Cover) const
 	}
 }
 
+UTexture2D* UTacticalHUDStyleData::GetCoverShieldIcon(ECoverShield Shield, ECoverType ShieldCover) const
+{
+	switch (Shield)
+	{
+	case ECoverShield::Covered:
+		return GetCoverIcon(ShieldCover);
+	case ECoverShield::Flanked:
+		// Своя текстура необязательна: без неё берём обычный щит, а состояние
+		// разводит цвет (GetCoverShieldTint). Так жёлтый щит виден в игре сразу,
+		// не дожидаясь отдельного арта.
+		return FlankedCoverIcon ? FlankedCoverIcon.Get() : GetCoverIcon(ShieldCover);
+	default:
+		return nullptr;
+	}
+}
+
+FLinearColor UTacticalHUDStyleData::GetCoverShieldTint(ECoverShield Shield) const
+{
+	return Shield == ECoverShield::Flanked ? FlankedCoverTint : CoveredCoverTint;
+}
+
 UTexture2D* UTacticalHUDStyleData::GetCoverIconForUnit(
 	const AUnitBase* Unit) const
 {

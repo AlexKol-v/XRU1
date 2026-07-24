@@ -3,6 +3,7 @@
 #include "UnitAIController.h"
 #include "ActionPointsComponent.h"
 #include "CoverDetectionComponent.h"
+#include "CoverTuningDataAsset.h"
 #include "TacticalAbility.h"
 #include "TacticalCameraPawn.h"
 #include "GA_Attack.h"
@@ -221,14 +222,49 @@ void ATacticalPlayerController::PlayerTick(float DeltaTime)
 			LastLOSDebugTime = Now;
 			if (const UTurnManagerSubsystem* TurnManager = GetWorld()->GetSubsystem<UTurnManagerSubsystem>())
 			{
+				DrawCoverSidesDebug(SelectedUnit);
 				for (AActor* Enemy : TurnManager->GetOpposingUnits(SelectedUnit))
 				{
 					if (Enemy && UTacticsCombatStatics::IsUnitAlive(Enemy))
 					{
 						UTacticsCombatStatics::HasLineOfSight(SelectedUnit, Enemy);
+						DrawCoverSidesDebug(Enemy); // по врагам видно, откуда их прикрывает
 					}
 				}
 			}
+		}
+	}
+}
+
+void ATacticalPlayerController::DrawCoverSidesDebug(const AActor* Unit) const
+{
+	const UCoverDetectionComponent* Cover =
+		Unit ? Unit->FindComponentByClass<UCoverDetectionComponent>() : nullptr;
+	if (!Cover || Cover->CoverSides.Num() == 0)
+	{
+		return;
+	}
+
+	const UCoverTuningDataAsset* Tuning = Cover->GetTuning();
+	const FVector Origin = Unit->GetActorLocation();
+	const float ArcHalfDegrees = Tuning->CoverArcHalfAngle;
+
+	for (const FCoverSide& Side : Cover->CoverSides)
+	{
+		// Half — голубым, Full — синим; та же семантика, что у щита в HUD.
+		const FColor Color = (Side.Type == ECoverType::Full) ? FColor::Blue : FColor::Cyan;
+
+		// Стрелка НА СТЕНУ: видно, какой стороной боец прикрыт.
+		DrawDebugDirectionalArrow(GetWorld(), Origin, Origin + Side.Direction * Side.Distance,
+			40.f, Color, false, LOSDebugInterval * 1.1f, 0, 4.f);
+
+		// Границы защитной дуги: всё, что ВНЕ этого сектора, — фланг.
+		// Рисуем две крайние линии — по ним на глаз читается, откуда можно зайти.
+		for (const float Sign : {1.f, -1.f})
+		{
+			const FVector Edge = Side.Direction.RotateAngleAxis(Sign * ArcHalfDegrees, FVector::UpVector);
+			DrawDebugLine(GetWorld(), Origin, Origin + Edge * 250.f,
+				Color, false, LOSDebugInterval * 1.1f, 0, 1.5f);
 		}
 	}
 }

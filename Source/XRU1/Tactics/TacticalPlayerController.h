@@ -310,6 +310,13 @@ protected:
 	/** Обводка юнита под курсором (Custom Depth; трейс по Pawn-каналу каждый тик). */
 	void UpdateHoverHighlight();
 
+	/**
+	 * Отладка укрытия (`xru1.LOS.Debug 1`): стрелка на стену + границы защитной
+	 * дуги. Всё, что вне сектора, — фланг. Без этого «как идёт укрытие» на глаз
+	 * не понять, а именно от ориентации стены зависит жёлтый щит.
+	 */
+	void DrawCoverSidesDebug(const AActor* Unit) const;
+
 	/** Панорама камеры мышью у края экрана (XCOM edge scrolling). */
 	void UpdateEdgeScroll();
 

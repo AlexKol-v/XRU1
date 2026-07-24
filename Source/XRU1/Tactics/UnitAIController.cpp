@@ -1,4 +1,5 @@
 #include "UnitAIController.h"
+#include "AIActionEvaluators.h"
 #include "UnitBase.h"
 #include "TacticalPlayerController.h"
 #include "ActionPointsComponent.h"
@@ -57,6 +58,16 @@ AUnitAIController::AUnitAIController(const FObjectInitializer& ObjectInitializer
 	SetPerceptionComponent(*Perception);
 
 	DamageEffect = UGE_ShotDamage::StaticClass();
+
+	// Дефолтный набор вариантов действия (ADR-1). Порядок в массиве роли не
+	// играет — перебор сортируется по потолку скора; здесь он лишь читаемый.
+	// Новое поведение добавляется НАСЛЕДНИКОМ UAIActionEvaluator и строкой сюда
+	// (или в BP-наследнике контроллера), существующие оценщики не правятся.
+	ActionEvaluators.Add(CreateDefaultSubobject<UAIEval_Retreat>(TEXT("Eval_Retreat")));
+	ActionEvaluators.Add(CreateDefaultSubobject<UAIEval_MoveToCover>(TEXT("Eval_MoveToCover")));
+	ActionEvaluators.Add(CreateDefaultSubobject<UAIEval_Shoot>(TEXT("Eval_Shoot")));
+	ActionEvaluators.Add(CreateDefaultSubobject<UAIEval_AdvanceToCover>(TEXT("Eval_AdvanceToCover")));
+	ActionEvaluators.Add(CreateDefaultSubobject<UAIEval_CloseDistance>(TEXT("Eval_CloseDistance")));
 }
 
 void AUnitAIController::BeginPlay()
@@ -69,6 +80,20 @@ void AUnitAIController::BeginPlay()
 	{
 		Crowd->SetCrowdAvoidanceQuality(ECrowdAvoidanceQuality::High);
 		Crowd->SetCrowdCollisionQueryRange(600.f);
+	}
+
+	// Конфиг зрения применяем ЗДЕСЬ, а не только в конструкторе. Значения
+	// SightConfig сериализуются в CDO, поэтому BP-наследник контроллера,
+	// созданный до правки, унёс бы с собой старый конус 120° — и враг
+	// по-прежнему «терял» бойца, зашедшего за спину. Здесь же гарантируем, что
+	// в игре стоит ровно то, что написано в свойствах.
+	if (SightConfig && Perception)
+	{
+		SightConfig->SightRadius = SightRadius;
+		SightConfig->LoseSightRadius = LoseSightRadius;
+		SightConfig->PeripheralVisionAngleDegrees = PeripheralVisionHalfAngle;
+		Perception->ConfigureSense(*SightConfig);
+		Perception->RequestStimuliListenerUpdate();
 	}
 
 	if (Perception)
@@ -203,8 +228,6 @@ bool AUnitAIController::StepCombat(AUnitBase* Unit)
 
 	const UActionPointsComponent* ActionPoints = Unit->GetActionPoints();
 	const int32 PointsLeft = ActionPoints ? ActionPoints->CurrentActionPoints : 0;
-	const bool bCanShootNow = UGA_Attack::CanTargetActor(Unit, Target);
-	const bool bLogAI = CVarLogAICombat.GetValueOnGameThread() != 0;
 
 	// 0) Продолжение НАЧАТОГО манёвра (отступление/рывок длиннее 1 AP): вторая
 	// нога к той же точке. Это не новый выбор — bCoverMoveDoneThisTurn уже стоит.
@@ -221,82 +244,143 @@ bool AUnitAIController::StepCombat(AUnitBase* Unit)
 		}
 	}
 
-	const UCoverDetectionComponent* Cover = Unit->GetCoverDetection();
-	const bool bExposed = !Cover || Cover->GetCoverAgainst(Target) == ECoverType::None;
+	// Снимок мира → выбор действия → исполнение (ADR-1). Три шага раздельны,
+	// чтобы решение можно было напечатать ДО того, как оно изменит мир, — без
+	// этого утилити-выбор неотлаживаем.
+	const FAIDecisionContext Context = BuildDecisionContext(Unit, Target);
+	const FAIDecision Decision = DecideAction(Context);
+	return ExecuteDecision(Unit, Decision);
+}
 
-	// Решения ниже — приоритетный список с утилити-оценкой точек внутри
-	// (веса Tactics|AI|Weights). Порядок — XCOM-логика хода.
+FAIDecisionContext AUnitAIController::BuildDecisionContext(AUnitBase* Unit, AActor* PrimaryThreat) const
+{
+	FAIDecisionContext Context;
+	Context.Unit = Unit;
+	Context.Controller = const_cast<AUnitAIController*>(this);
+	Context.PrimaryThreat = PrimaryThreat;
+	GatherVisibleThreats(Context.VisibleThreats);
 
-	// 1) ОТСТУПЛЕНИЕ: мало HP и стоим открытыми — уходим в укрытие ПОДАЛЬШЕ от
-	// угрозы, на это можно потратить весь ход (бюджет = все AP).
-	const bool bLowHealth = Unit->GetHealth() <= Unit->GetMaxHealth() * RetreatHealthFraction;
-	if (!bCoverMoveDoneThisTurn && bLowHealth && bExposed && PointsLeft >= 1)
+	const UActionPointsComponent* ActionPoints = Unit ? Unit->GetActionPoints() : nullptr;
+	Context.ActionPointsLeft = ActionPoints ? ActionPoints->CurrentActionPoints : 0;
+
+	const UCoverDetectionComponent* Cover = Unit ? Unit->GetCoverDetection() : nullptr;
+	Context.bExposed = !Cover || !PrimaryThreat ||
+		Cover->GetCoverAgainst(PrimaryThreat) == ECoverType::None;
+
+	Context.bCanShootNow = UGA_Attack::CanTargetActor(Unit, PrimaryThreat);
+	Context.bLowHealth = Unit && Unit->GetHealth() <= Unit->GetMaxHealth() * RetreatHealthFraction;
+	Context.bCoverMoveDoneThisTurn = bCoverMoveDoneThisTurn;
+	return Context;
+}
+
+FAIDecision AUnitAIController::DecideAction(const FAIDecisionContext& Context)
+{
+	const bool bLogAI = CVarLogAICombat.GetValueOnGameThread() != 0;
+
+	// Перебираем по УБЫВАНИЮ верхней границы скора. Это не косметика: как только
+	// текущий лучший результат достиг потолка следующего кандидата, остальные
+	// заведомо не выиграют — и дорогой FindCoverPoint (48 точек × трейсы LOS)
+	// для них не выполняется. Именно это отсечение сохраняет время хода врага
+	// таким же, каким оно было у прежнего приоритетного списка.
+	TArray<UAIActionEvaluator*> Ordered;
+	Ordered.Reserve(ActionEvaluators.Num());
+	for (const TObjectPtr<UAIActionEvaluator>& Evaluator : ActionEvaluators)
 	{
-		FVector RetreatPoint;
-		if (FindCoverPoint(Unit, Target, Unit->MoveRange * PointsLeft, /*bRetreat=*/true, RetreatPoint) &&
-			StartManeuverTo(Unit, RetreatPoint, TEXT("отступление (мало HP)")))
+		if (Evaluator)
 		{
-			return true; // не удалось стартовать — ниже обычная логика (выстрел/сближение)
+			Ordered.Add(Evaluator);
 		}
 	}
-
-	// 2) МАНЁВР «в укрытие с линией огня» на 1 AP — выстрел вторым AP (XCOM).
-	// Нужно 2 AP (манёвр + выстрел) и смысл лишь если открыт или отсюда не стрелять.
-	if (!bCoverMoveDoneThisTurn && PointsLeft >= 2 && (bExposed || !bCanShootNow))
+	Ordered.Sort([](const UAIActionEvaluator& A, const UAIActionEvaluator& B)
 	{
-		FVector CoverPoint;
-		if (FindCoverPoint(Unit, Target, Unit->MoveRange, /*bRetreat=*/false, CoverPoint) &&
-			StartManeuverTo(Unit, CoverPoint, TEXT("укрытие с линией огня (1 AP)")))
+		return A.GetMaxPossibleScore() > B.GetMaxPossibleScore();
+	});
+
+	FAIDecision Best;      // Kind == Skip — терминальный фолбэк, активация не зависнет
+	float BestScore = 0.f; // ноль и ниже = «вариант не предлагается»
+
+	for (UAIActionEvaluator* Evaluator : Ordered)
+	{
+		if (BestScore >= Evaluator->GetMaxPossibleScore())
 		{
-			return true;
+			break; // список отсортирован — дальше потолки только ниже
 		}
-	}
 
-	// 3) ВЫСТРЕЛ с текущей позиции. Предикат ОБЩИЙ с игроком (дальность +
-	// LOS/Squadsight): AI не стреляет там, где HUD игрока показал бы «нет линии».
-	if (bCanShootNow)
-	{
+		if (!Evaluator->IsApplicable(Context))
+		{
+			if (bLogAI)
+			{
+				UE_LOG(LogTemp, Log, TEXT("[AI]   %s: неприменим"),
+					*Evaluator->GetDebugName().ToString());
+			}
+			continue;
+		}
+
+		FAIDecision Candidate;
+		const float RawScore = Evaluator->ScoreAction(Context, Candidate);
+		const float Score = RawScore * Evaluator->Weight;
+
 		if (bLogAI)
 		{
-			UE_LOG(LogTemp, Log, TEXT("[AI] %s: решение — ВЫСТРЕЛ (шанс %.0f%%)"),
-				*GetNameSafe(Unit), UGA_Attack::ComputeAttackHitChance(Unit, Target));
+			UE_LOG(LogTemp, Log, TEXT("[AI]   %s: скор %.1f%s — %s"),
+				*Evaluator->GetDebugName().ToString(), Score,
+				RawScore <= 0.f ? TEXT(" (отказ)") : TEXT(""),
+				Candidate.Reason.IsEmpty() ? TEXT("—") : *Candidate.Reason);
 		}
-		if (!TryFireAtTarget(Unit, Target))
+
+		if (RawScore > 0.f && Score > BestScore)
 		{
-			return false; // способность отказала — ход завершаем, без зацикливания
+			BestScore = Score;
+			Candidate.Score = Score;
+			Best = Candidate;
+		}
+	}
+
+	if (bLogAI)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[AI] %s: РЕШЕНИЕ — %s (скор %.1f)"),
+			*GetNameSafe(Context.Unit),
+			Best.Reason.IsEmpty() ? TEXT("пропуск активации") : *Best.Reason, Best.Score);
+	}
+	return Best;
+}
+
+bool AUnitAIController::ExecuteDecision(AUnitBase* Unit, const FAIDecision& Decision)
+{
+	switch (Decision.Kind)
+	{
+	case EAIActionKind::Shoot:
+		if (!TryFireAtTarget(Unit, Decision.Target))
+		{
+			return false; // способность отказала — активацию завершаем, без зацикливания
 		}
 		ScheduleNextStep();
 		return true;
-	}
 
-	// 4) НАСТУПЛЕНИЕ К УКРЫТИЮ (в т.ч. на 1 AP): стрелять нельзя — сближаемся, но
-	// ЗАКАНЧИВАЕМ ход в укрытии, а не открытой пробежкой (XCOM: наступать от
-	// укрытия к укрытию). bAdvance: промежуточное укрытие без линии огня не
-	// штрафуется, дистанция тянет ближе к цели. Заменяет прежний открытый «рывок».
-	if (!bCoverMoveDoneThisTurn && PointsLeft >= 1)
-	{
-		FVector AdvancePoint;
-		if (FindCoverPoint(Unit, Target, Unit->MoveRange * PointsLeft, /*bRetreat=*/false,
-				AdvancePoint, /*bAdvance=*/true) &&
-			StartManeuverTo(Unit, AdvancePoint, TEXT("наступление к укрытию")))
+	case EAIActionKind::Move:
+		// Манёвр в укрытие взводит «один выбор на ход» и запоминает точку для
+		// продолжения; простое сближение — нет (иначе бот, не дошедший до цели,
+		// потерял бы право на манёвр в следующем шаге).
+		if (Decision.bIsCoverManeuver)
 		{
-			return true;
+			// Приказ идёт РОВНО в выбранную точку: она уже проверена на
+			// достижимость и занятость внутри FindCoverPoint, поэтому подменять
+			// её здесь нечем и не нужно.
+			ChosenManeuverPoint = Decision.Destination;
+			bHasChosenManeuverPoint = true;
+			return StartManeuverTo(Unit, Decision.Destination, *Decision.Reason);
 		}
-		if (bLogAI)
-		{
-			UE_LOG(LogTemp, Log, TEXT("[AI] %s: открыт=%d, можно_стрелять=%d — укрытие по пути не найдено ")
-				TEXT("(нужны WorldStatic-стены высотой Half/Full в радиусе хода)"),
-				*GetNameSafe(Unit), bExposed, bCanShootNow);
-		}
-	}
+		return MoveWithBudget(Unit, Decision.Destination, Decision.AcceptanceRadius);
 
-	// 5) СБЛИЖЕНИЕ (последний резерв): укрытий по пути нет — прямо к цели.
-	if (bLogAI)
-	{
-		UE_LOG(LogTemp, Log, TEXT("[AI] %s: решение — сближение с целью (нет укрытий по пути)"),
-			*GetNameSafe(Unit));
+	case EAIActionKind::Overwatch:
+	case EAIActionKind::Hunker:
+		// Появятся в фазе W2 вместе со своими оценщиками. До тех пор ни один
+		// оценщик такого решения не возвращает, и сюда мы не попадаем.
+		return false;
+
+	default:
+		return false; // Skip: делать нечего — активация окончена
 	}
-	return MoveWithBudget(Unit, Target->GetActorLocation(), Unit->AttackRange * 0.8f);
 }
 
 bool AUnitAIController::StartManeuverTo(AUnitBase* Unit, const FVector& Point, const TCHAR* Reason)
@@ -319,7 +403,7 @@ bool AUnitAIController::StartManeuverTo(AUnitBase* Unit, const FVector& Point, c
 }
 
 bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, float PathBudget,
-	bool bRetreat, FVector& OutPoint, bool bAdvance)
+	bool bRetreat, FVector& OutPoint, bool bAdvance, FAICoverPointResult* OutDetails)
 {
 	UWorld* World = GetWorld();
 	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
@@ -354,26 +438,134 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 	UTacticsCombatStatics::GetUnitObstacles(World, Unit, Obstacles);
 	const double ClearanceSq = FMath::Square(static_cast<double>(UTacticsCombatStatics::GetUnitClearance(Unit)));
 
-	// Ценность укрытия — числами защиты самого компонента (Full=40, Half=20):
-	// оценка манёвра в тех же единицах, что и модификатор шанса попадания.
-	auto CoverValue = [Tuning](ECoverType Type)
+	// A5: все видимые угрозы, а не одна. Укрытие оценивается ПРОТИВ ВСЕХ —
+	// иначе бот прячется от одного врага, подставляясь остальным.
+	TArray<TObjectPtr<AActor>> Threats;
+	GatherVisibleThreats(Threats);
+	if (Threats.Num() == 0 && Threat)
 	{
-		switch (Type)
+		Threats.Add(const_cast<AActor*>(Threat)); // перцепция могла отстать на кадр
+	}
+
+	// Союзники — для штрафа за кучность (не лезть в одно укрытие втроём).
+	TArray<FVector> AllyLocations;
+	if (const UTurnManagerSubsystem* TurnManager = World->GetSubsystem<UTurnManagerSubsystem>())
+	{
+		for (AActor* Ally : TurnManager->GetSideUnits(Unit))
 		{
-		case ECoverType::Full: return Tuning->FullCoverDefenseBonus;
-		case ECoverType::Half: return Tuning->HalfCoverDefenseBonus;
-		default:               return 0.f;
+			if (Ally && Ally != Unit && UTacticsCombatStatics::IsUnitAlive(Ally))
+			{
+				AllyLocations.Add(Ally->GetActorLocation());
+			}
 		}
+	}
+
+	// Ограничиваем число оцениваемых угроз ближайшими (аналог
+	// MAX_EXPECTED_ENEMY_COUNT в XCOM): проверка линии огня из каждой точки по
+	// каждой угрозе — самая дорогая часть перебора.
+	if (Threats.Num() > MaxScoredThreats)
+	{
+		Threats.Sort([&UnitLocation](const TObjectPtr<AActor>& A, const TObjectPtr<AActor>& B)
+		{
+			return FVector::DistSquared(A->GetActorLocation(), UnitLocation) <
+				FVector::DistSquared(B->GetActorLocation(), UnitLocation);
+		});
+		Threats.SetNum(MaxScoredThreats);
+	}
+
+	/**
+	 * ОСОЗНАННАЯ ОЦЕНКА ТОЧКИ: по КАЖДОЙ угрозе отдельно — закрыт ли я от неё и
+	 * вижу ли я её оттуда. Никакого «среднего балла вслепую»: в момент выбора
+	 * юнит обязан знать, от кого прячется и кого сможет обстрелять.
+	 *
+	 * Ценность укрытия — формула XCOM:
+	 *   (N_откр*OpenCoverFactor + N_half*HalfCoverFactor + N_full*FullCoverFactor) / N
+	 * Резко отрицательный OpenCoverFactor и даёт «AI боится флангов»: открытость
+	 * против одного врага перевешивает укрытие против двух других.
+	 *
+	 * Стороны укрытия собираются ОДИН раз на точку (дорого — трейсы), а против
+	 * каждой угрозы проверяется только дуга (бесплатно).
+	 */
+	auto EvaluatePoint = [&](const FVector& FloorPoint, FAICoverPointResult& Out)
+	{
+		Out = FAICoverPointResult();
+		Out.Point = FloorPoint;
+		if (Threats.Num() == 0)
+		{
+			return 0.f;
+		}
+
+		const FVector EyeAtPoint = FloorPoint + FVector(0.f, 0.f, EyeHeight);
+
+		float CoverSum = 0.f;
+		for (const TObjectPtr<AActor>& ThreatActor : Threats)
+		{
+			if (!ThreatActor)
+			{
+				continue;
+			}
+			const FVector ThreatPos = ThreatActor->GetActorLocation();
+
+			// 1) ОТ КОГО ЗАКРЫТ — той же физикой, что решает реальный выстрел
+			// (толстый луч на высотах half/full), а не углом к стене.
+			switch (Cover->EvaluateCoverAtLocation(FloorPoint, ThreatPos))
+			{
+			case ECoverType::Full: CoverSum += FullCoverFactor; ++Out.ThreatsCovered; break;
+			case ECoverType::Half: CoverSum += HalfCoverFactor; ++Out.ThreatsCovered; break;
+			default:               CoverSum += OpenCoverFactor; ++Out.ThreatsExposed;  break;
+			}
+
+			// 2) КОГО ОТТУДА ВИДНО. Тем же предикатом, что решает выстрел, —
+			// иначе бот планирует по одним правилам, а стреляет по другим.
+			if (FVector::Dist(FloorPoint, ThreatPos) <= Unit->AttackRange &&
+				UTacticsCombatStatics::HasLineOfSightFromLocation(World, EyeAtPoint, ThreatActor, Unit))
+			{
+				++Out.ThreatsVisible;
+			}
+
+			// 3) КОГО ФЛАНКИРУЕМ — считается В ОБРАТНУЮ сторону: не «прикрыт ли
+			// я», а «работает ли укрытие врага против выстрела ИЗ ЭТОЙ ТОЧКИ».
+			if (UTacticsCombatStatics::IsTargetFlankedByLocation(ThreatActor, FloorPoint))
+			{
+				++Out.ThreatsFlanked;
+			}
+		}
+		return CoverSum / Threats.Num();
 	};
 
 	// Взвешенная оценка позиции (веса — Tactics|AI|Weights):
-	//   укрытие × вес + линия огня ± дистанция до цели − цена пути.
+	//   укрытие против ВСЕХ × вес + фланг + высота + линия огня
+	//   ± дистанция до цели − цена пути, затем штраф за кучность.
 	// В режиме ОТСТУПЛЕНИЯ дистанция инвертируется (награда за удаление) и
 	// потеря линии огня не штрафуется — выживание важнее выстрела.
-	auto ScorePosition = [&](const FVector& FloorPoint, ECoverType CoverType, bool bCanShoot)
+	auto ScorePosition = [&](const FVector& FloorPoint, FAICoverPointResult& Out)
 	{
 		const float ThreatDistance = FVector::Dist(FloorPoint, ThreatLocation);
-		float Score = CoverValue(CoverType) * CoverDefenseWeight;
+
+		float Score = EvaluatePoint(FloorPoint, Out) * CoverDefenseWeight;
+		if (Out.ThreatsFlanked > 0)
+		{
+			Score += FlankPositionBonus;
+		}
+
+		// «Сколько врагов видно» (XCOM fEnemyVisibility): не видно никого → −1.
+		// Укрытие, из которого нельзя ответить, — это не позиция, а угол.
+		const float VisibilityScore = Out.ThreatsVisible > 0
+			? static_cast<float>(Out.ThreatsVisible) / FMath::Max(1, MaxScoredThreats)
+			: -1.f;
+		Score += VisibilityScore * EnemyVisibilityWeight;
+
+		// Линию огня считаем по ЛЮБОЙ угрозе, а не только по основной цели:
+		// иначе точка, откуда простреливается сосед, но не «главный», честно
+		// считалась бы бесполезной.
+		const bool bCanShoot = Out.ThreatsVisible > 0;
+
+		// Превышение над целью: тот же порог, что даёт бонус к точности.
+		if (FloorPoint.Z - ThreatLocation.Z >= Tuning->HeightAdvantageZ)
+		{
+			Score += HeightPositionBonus;
+		}
+
 		// При отступлении И при наступлении отсутствие линии огня НЕ штрафуется:
 		// иначе бот отвергает промежуточное укрытие без выстрела и бежит напролом.
 		Score += bCanShoot ? LineOfFireBonus : ((bRetreat || bAdvance) ? 0.f : -LoseLineOfFirePenalty);
@@ -384,16 +576,43 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 		}
 		else
 		{
-			Score -= OverextendPenaltyPerCm * FMath::Max(0.f, ThreatDistance - Unit->AttackRange * 0.75f);
+			// Близость к ИДЕАЛЬНОЙ дистанции боя (A4), формула XCOM:
+			//   1 − |dist − ideal| / falloff, зажато [−1..1].
+			// Это единственное, что удерживает бота от «добежать вплотную»:
+			// укрытие тянет прятаться, линия огня — видеть цель, а дистанцию до
+			// A4 не оценивал никто.
+			const float Deviation = FMath::Abs(ThreatDistance - Unit->IdealCombatRange);
+			const float RangeScore = FMath::Clamp(1.f - Deviation / FMath::Max(1.f, IdealRangeFalloff), -1.f, 1.f);
+			Score += RangeScore * IdealRangeWeight;
+		}
+
+		// Кучность: множитель только к ПОЛОЖИТЕЛЬНОМУ скору (XCOM). К
+		// отрицательному он бы работал наоборот — делал плохую точку лучше.
+		if (Score > 0.f && MinSpreadDistance > 0.f)
+		{
+			for (const FVector& AllyLocation : AllyLocations)
+			{
+				if (FVector::Dist2D(AllyLocation, FloorPoint) < MinSpreadDistance)
+				{
+					Score *= SpreadPenaltyMultiplier;
+					break;
+				}
+			}
 		}
 		return Score;
 	};
 
 	// Базовая линия — ТЕКУЩАЯ позиция теми же правилами + порог значимости:
 	// не дёргаемся ради косметики.
-	const float BaselineScore = ScorePosition(UnitLocation,
-		Cover->GetCoverAgainst(Threat), UGA_Attack::CanTargetActor(Unit, Threat));
+	// ⚠️ Базовую линию считаем от ТОЧКИ ПОЛА юнита, как и всех кандидатов
+	// (у них это спроецированная на навмеш точка). Подставить сюда ActorLocation
+	// (центр капсулы) значило бы трассировать укрытие на 88 см выше — базовая
+	// линия и кандидаты считались бы разными правилами.
+	const FVector UnitFloor = UnitLocation - FVector(0.f, 0.f, CapsuleHalfHeight);
+	FAICoverPointResult BaselineDetails;
+	const float BaselineScore = ScorePosition(UnitFloor, BaselineDetails);
 	float BestScore = BaselineScore + RelocateBias;
+	FAICoverPointResult BestDetails;
 	bool bFound = false;
 
 	// Кольцевой сэмплинг вокруг юнита в пределах бюджета пути (1 AP — манёвр
@@ -430,16 +649,67 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 			}
 
 			// Base укрытия — точка пола навмеша напрямую (§II.3, Ф2).
-			const ECoverType CoverType = Cover->EvaluateCoverAtLocation(Projected.Location, ThreatLocation);
-			// План == факт (Ф9): передаём Unit как Shooter, чтобы AI оценивал точку
-			// по ТЕМ ЖЕ огневым позициям (peek/края укрытия), из которых потом
-			// стреляет. Иначе план по центру, а выстрел из-за края — расхождение.
-			const bool bCanShoot =
-				FVector::Dist(Projected.Location, ThreatLocation) <= Unit->AttackRange &&
-				UTacticsCombatStatics::HasLineOfSightFromLocation(World,
-					Projected.Location + FVector(0.f, 0.f, EyeHeight), Threat, Unit);
+			FVector CandidatePoint = Projected.Location;
+			ECoverType CoverType = Cover->EvaluateCoverAtLocation(CandidatePoint, ThreatLocation);
 
-			const float Score = ScorePosition(Projected.Location, CoverType, bCanShoot);
+			// ПРИЛИПАНИЕ К УКРЫТИЮ. Точка открыта — ищем стену между ней и
+			// угрозой и переносим кандидата вплотную к стене С НАШЕЙ СТОРОНЫ.
+			// Сторона получается правильной по построению: мы отступаем от точки
+			// попадания НАЗАД по лучу к цели, то есть всегда на свою половину.
+			// Без этого 48 точек кольца почти никогда не попадали в узкую
+			// (CoverTraceDistance) полосу «в укрытии», и бот вставал рядом со
+			// стеной, оставаясь под прямой линией огня.
+			if (CoverType == ECoverType::None && CoverSnapDistance > 0.f)
+			{
+				const FVector ToThreat = (ThreatLocation - CandidatePoint).GetSafeNormal2D();
+				if (!ToThreat.IsNearlyZero())
+				{
+					// Трейс на высоте низкого укрытия: ищем ЛЮБУЮ стену, годную
+					// хотя бы под half. Высокая стена этим же лучом тоже ловится.
+					const FVector TraceStart = CandidatePoint + FVector(0.f, 0.f, Tuning->HalfCoverHeight);
+					FHitResult WallHit;
+					FCollisionQueryParams SnapParams(SCENE_QUERY_STAT(CoverSnap), false, Unit);
+					if (World->LineTraceSingleByChannel(WallHit, TraceStart,
+						TraceStart + ToThreat * CoverSnapDistance, Tuning->CoverTraceChannel, SnapParams))
+					{
+						// Отступаем от стены на клиренс: встать В стену нельзя,
+						// а трейс укрытия должен доставать до неё (< CoverTraceDistance).
+						const float StandOff = FMath::Min(UTacticsCombatStatics::GetUnitClearance(Unit),
+							Tuning->CoverTraceDistance * 0.75f);
+						const FVector SnapGoal = FVector(WallHit.ImpactPoint.X, WallHit.ImpactPoint.Y,
+							CandidatePoint.Z) - ToThreat * StandOff;
+
+						FNavLocation SnapProjected;
+						if (NavSys->ProjectPointToNavigation(SnapGoal, SnapProjected, FVector(80.f, 80.f, 300.f)))
+						{
+							const ECoverType SnapCover =
+								Cover->EvaluateCoverAtLocation(SnapProjected.Location, ThreatLocation);
+							if (SnapCover != ECoverType::None)
+							{
+								bool bSnapBlocked = false;
+								for (const FVector& Obstacle : Obstacles)
+								{
+									if (FVector::DistSquared2D(Obstacle, SnapProjected.Location) < ClearanceSq)
+									{
+										bSnapBlocked = true;
+										break;
+									}
+								}
+								if (!bSnapBlocked)
+								{
+									CandidatePoint = SnapProjected.Location;
+									CoverType = SnapCover;
+								}
+							}
+						}
+					}
+				}
+			}
+			// Полная оценка точки: по каждой угрозе — закрыт ли, вижу ли, фланкую
+			// ли (план == факт: линия огня считается тем же предикатом, что решает
+			// выстрел, и из тех же огневых позиций peek).
+			FAICoverPointResult Details;
+			const float Score = ScorePosition(CandidatePoint, Details);
 			if (Score <= BestScore)
 			{
 				continue;
@@ -449,15 +719,41 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 			// бюджет пути (с занятостью), иначе манёвр оборвётся на полпути.
 			FVector Reachable;
 			if (!UTacticsCombatStatics::GetPointAlongPathBudget(this, Unit, UnitLocation,
-					Projected.Location, PathBudget, Reachable) ||
-				FVector::Dist2D(Reachable, Projected.Location) > 75.f)
+					CandidatePoint, PathBudget, Reachable) ||
+				FVector::Dist2D(Reachable, CandidatePoint) > 75.f)
 			{
 				continue;
 			}
 
 			BestScore = Score;
-			OutPoint = Projected.Location;
+			OutPoint = CandidatePoint;
+			Details.Score = Score;
+			BestDetails = Details;
 			bFound = true;
+		}
+	}
+
+	if (OutDetails)
+	{
+		*OutDetails = BestDetails;
+	}
+
+	// Почему манёвр выбран (или не выбран) — и ЧТО именно даёт выбранная точка.
+	// Без этого «осознанность» укрытия проверить нечем.
+	if (CVarLogAICombat.GetValueOnGameThread() != 0)
+	{
+		if (bFound)
+		{
+			UE_LOG(LogTemp, Log, TEXT("[AI]     позиция найдена (%.1f, %.1f): %s | было: %s | ")
+				TEXT("скор %.1f против базы %.1f (порог %.1f)"),
+				BestDetails.Point.X, BestDetails.Point.Y, *BestDetails.Describe(),
+				*BaselineDetails.Describe(), BestScore, BaselineScore, BaselineScore + RelocateBias);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Log, TEXT("[AI]     позиция НЕ найдена: сейчас %s, скор %.1f, ")
+				TEXT("порог %.1f (ничего лучше в бюджете)"),
+				*BaselineDetails.Describe(), BaselineScore, BaselineScore + RelocateBias);
 		}
 	}
 	return bFound;
@@ -711,9 +1007,29 @@ void AUnitAIController::OnMoveCompleted(FAIRequestID RequestID, const FPathFollo
 	// Юнит встал на новую позицию — пересчитать укрытие (и для приказов игрока тоже).
 	if (AUnitBase* Unit = Cast<AUnitBase>(GetPawn()))
 	{
-		if (UCoverDetectionComponent* Cover = Unit->GetCoverDetection())
+		UCoverDetectionComponent* Cover = Unit->GetCoverDetection();
+		if (Cover)
 		{
 			Cover->EvaluateSurroundings();
+		}
+
+		// КОНТРОЛЬ «ВСТАЛ ТУДА, КУДА РЕШИЛ». Укрытие оценивалось в конкретной
+		// точке; если боец оказался в другой, оценка к его позиции больше не
+		// относится. Молчать об этом нельзя — иначе «бот выбрал укрытие» и «бот
+		// в укрытии» расходятся, а по логу этого не видно.
+		if (bHasChosenManeuverPoint && !bManeuverInProgress &&
+			CVarLogAICombat.GetValueOnGameThread() != 0)
+		{
+			const float Drift = FVector::Dist2D(Unit->GetActorLocation(), ChosenManeuverPoint);
+			if (Drift > ManeuverArrivalTolerance)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[AI] %s: встал НЕ в выбранную точку — расхождение %.0f см ")
+					TEXT("(решил (%.0f, %.0f), стоит (%.0f, %.0f)). Укрытие на месте: %d"),
+					*GetNameSafe(Unit), Drift, ChosenManeuverPoint.X, ChosenManeuverPoint.Y,
+					Unit->GetActorLocation().X, Unit->GetActorLocation().Y,
+					Cover ? static_cast<int32>(Cover->BestCoverAround) : -1);
+			}
+			bHasChosenManeuverPoint = false;
 		}
 		// Один атомарный refresh: HUD видит уже и остановку, и итоговое укрытие.
 		Unit->NotifyUnitStateChanged();
@@ -761,10 +1077,98 @@ void AUnitAIController::FinishUnitTurn()
 	Finished.ExecuteIfBound();
 }
 
+float AUnitAIController::ScoreTarget(const AUnitBase* Unit, const AActor* Candidate) const
+{
+	if (!Unit || !Candidate)
+	{
+		return -FLT_MAX;
+	}
+
+	float Score = 0.f;
+
+	// 1) ШАНС ПОПАДАНИЯ — доминирующее слагаемое (XCOM: 70 против 50 за фланг и
+	// 15 за добивание). Именно поэтому AI XCOM «всегда бьёт самого открытого»:
+	// это не баг, а следствие весов. Считаем ТЕМ ЖЕ методом, что показывает HUD
+	// игроку, — иначе AI жил бы по своей арифметике.
+	// ⚠️ Отрицательный шанс = «выстрел невозможен» (нет линии огня / вне
+	// дальности), а НЕ «маленький шанс». Без этой ветки недостижимая цель
+	// получала бонус за «низкий шанс» и могла перебить достижимую.
+	const float HitChance = UGA_Attack::ComputeAttackHitChance(Unit, Candidate);
+	if (HitChance < 0.f)
+	{
+		Score += TargetScoreNoLineOfFire;
+	}
+	else if (HitChance >= TargetHitChanceHighThreshold)
+	{
+		Score += TargetScoreHitChanceHigh;
+	}
+	else if (HitChance >= TargetHitChanceLowThreshold)
+	{
+		Score += TargetScoreHitChanceMedium;
+	}
+	else
+	{
+		Score += TargetScoreHitChanceLow;
+	}
+
+	// 2) ПРОВОКАЦИЯ танка (GDD §7): в радиусе провокации враг ОБЯЗАН бить
+	// провоцирующего — вес подобран так, чтобы перебить любую комбинацию
+	// остальных слагаемых. Радиус нужен, иначе «крик» перетягивал бы врагов
+	// через всю карту.
+	//
+	// ⚠️ Только если по нему реально можно выстрелить (HitChance >= 0): иначе
+	// провокация заставляла бы врага игнорировать достижимые цели ради
+	// недостижимой, а «обязан бить» этого не означает.
+	if (HitChance >= 0.f)
+	{
+		if (const UAbilitySystemComponent* ASC =
+			UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(Candidate))
+		{
+			if (ASC->HasMatchingGameplayTag(TacticsGameplayTags::State_Taunting) &&
+				FVector::Dist(Unit->GetActorLocation(), Candidate->GetActorLocation()) <= TauntPriorityRadius)
+			{
+				Score += TargetScoreTaunting;
+			}
+		}
+	}
+
+	// 3) ФЛАНГ: цель в укрытии, но против нас оно не работает (Ф8).
+	if (UTacticsCombatStatics::IsTargetFlankedBy(Candidate, Unit))
+	{
+		Score += TargetScoreFlanked;
+	}
+
+	// 4) СОСТОЯНИЕ ЦЕЛИ. Добивание ценится заметно ниже шанса попасть —
+	// иначе AI фокусит одного бойца до смерти и игра ломается.
+	if (const AUnitBase* CandidateUnit = Cast<AUnitBase>(Candidate))
+	{
+		const float Health = CandidateUnit->GetHealth();
+		const float MaxHealth = CandidateUnit->GetMaxHealth();
+		if (Health <= Unit->ShotDamage)
+		{
+			Score += TargetScoreKillShot;
+		}
+		if (MaxHealth > 0.f && Health < MaxHealth)
+		{
+			Score += TargetScoreWounded;
+		}
+	}
+
+	// 5) Тяжелораненый — «никогда, если есть выбор» через большой штраф, а не
+	// через ветку-исключение (приём XCOM). Если других целей нет, он всё равно
+	// выберется: скор окажется наименее плохим.
+	if (UTacticsCombatStatics::IsUnitDowned(Candidate))
+	{
+		Score += TargetScoreDowned;
+	}
+
+	return Score;
+}
+
 AActor* AUnitAIController::FindVisibleTarget() const
 {
-	const APawn* MyPawn = GetPawn();
-	if (!MyPawn || !Perception)
+	const AUnitBase* MyUnit = Cast<AUnitBase>(GetPawn());
+	if (!MyUnit || !Perception)
 	{
 		return nullptr;
 	}
@@ -772,38 +1176,53 @@ AActor* AUnitAIController::FindVisibleTarget() const
 	TArray<AActor*> Perceived;
 	Perception->GetCurrentlyPerceivedActors(UAISense_Sight::StaticClass(), Perceived);
 
+	const bool bLogAI = CVarLogAICombat.GetValueOnGameThread() != 0;
+
 	AActor* Best = nullptr;
-	float BestDistSq = TNumericLimits<float>::Max();
-	bool bBestIsTaunting = false;
+	float BestScore = -FLT_MAX;
 
 	for (AActor* Actor : Perceived)
 	{
-		if (!UTacticsCombatStatics::AreHostile(MyPawn, Actor) ||
+		if (!UTacticsCombatStatics::AreHostile(MyUnit, Actor) ||
 			!UTacticsCombatStatics::IsUnitAlive(Actor))
 		{
 			continue;
 		}
 
-		// Провокация танка (GDD §7): провоцирующая цель приоритетнее обычных,
-		// но только пока враг в радиусе её действия.
-		bool bTaunting = false;
-		if (const UAbilitySystemComponent* ASC = UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(Actor))
+		const float Score = ScoreTarget(MyUnit, Actor);
+		if (bLogAI)
 		{
-			bTaunting = ASC->HasMatchingGameplayTag(TacticsGameplayTags::State_Taunting) &&
-				FVector::Dist(MyPawn->GetActorLocation(), Actor->GetActorLocation()) <= TauntPriorityRadius;
-		}
-		if (bBestIsTaunting && !bTaunting)
-		{
-			continue;
+			UE_LOG(LogTemp, Log, TEXT("[AI]   цель %s: скор %.0f (шанс %.0f%%)"),
+				*GetNameSafe(Actor), Score, UGA_Attack::ComputeAttackHitChance(MyUnit, Actor));
 		}
 
-		const float DistSq = FVector::DistSquared(MyPawn->GetActorLocation(), Actor->GetActorLocation());
-		if ((bTaunting && !bBestIsTaunting) || DistSq < BestDistSq)
+		if (Score > BestScore)
 		{
-			BestDistSq = DistSq;
+			BestScore = Score;
 			Best = Actor;
-			bBestIsTaunting = bTaunting;
 		}
 	}
 	return Best;
+}
+
+void AUnitAIController::GatherVisibleThreats(TArray<TObjectPtr<AActor>>& OutThreats) const
+{
+	OutThreats.Reset();
+
+	const APawn* MyPawn = GetPawn();
+	if (!MyPawn || !Perception)
+	{
+		return;
+	}
+
+	TArray<AActor*> Perceived;
+	Perception->GetCurrentlyPerceivedActors(UAISense_Sight::StaticClass(), Perceived);
+	for (AActor* Actor : Perceived)
+	{
+		if (UTacticsCombatStatics::AreHostile(MyPawn, Actor) &&
+			UTacticsCombatStatics::IsUnitAlive(Actor))
+		{
+			OutThreats.Add(Actor);
+		}
+	}
 }

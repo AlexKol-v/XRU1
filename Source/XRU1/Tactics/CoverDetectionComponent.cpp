@@ -50,24 +50,152 @@ void UCoverDetectionComponent::BeginPlay()
 	EvaluateSurroundings();
 }
 
-ECoverType UCoverDetectionComponent::EvaluateSurroundings()
+void UCoverDetectionComponent::GatherCoverSides(const UWorld* World, const FVector& Base,
+	const UCoverTuningDataAsset* Tuning, const AActor* Ignored, TArray<FCoverSide>& OutSides)
 {
-	static const FVector Dirs[] = {
-		FVector::ForwardVector, FVector::BackwardVector,
-		FVector::RightVector,   FVector::LeftVector
+	OutSides.Reset();
+	if (!World || !Tuning)
+	{
+		return;
+	}
+
+	const int32 NumDirections = FMath::Max(4, Tuning->SurroundingDirections);
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(CoverSides), false, Ignored);
+
+	// Один луч на направление, на высоте Half и на высоте Full. Нас интересует
+	// НОРМАЛЬ стены: по ней стороны склеиваются, поэтому плоская стена рядом
+	// даёт одну сторону, а не три пересекающихся луча.
+	auto TraceAt = [&](const FVector& Dir, float Height, FHitResult& OutHit)
+	{
+		const FVector Start = Base + FVector(0.f, 0.f, Height);
+		return World->LineTraceSingleByChannel(OutHit, Start, Start + Dir * Tuning->CoverTraceDistance,
+			Tuning->CoverTraceChannel, Params);
 	};
 
-	ECoverType Best = ECoverType::None;
-	for (const FVector& Dir : Dirs)
+	for (int32 Index = 0; Index < NumDirections; ++Index)
 	{
-		const ECoverType Found = TraceCoverInDirection(Dir);
-		// Full > Half > None
-		if (Found > Best)
+		const float Angle = 2.f * PI * Index / NumDirections;
+		const FVector Dir(FMath::Cos(Angle), FMath::Sin(Angle), 0.f);
+
+		FHitResult Hit;
+		ECoverType Type = ECoverType::None;
+		if (TraceAt(Dir, Tuning->FullCoverHeight, Hit))
 		{
-			Best = Found;
+			Type = ECoverType::Full;
+		}
+		else if (TraceAt(Dir, Tuning->HalfCoverHeight, Hit))
+		{
+			Type = ECoverType::Half;
+		}
+		if (Type == ECoverType::None)
+		{
+			continue;
+		}
+
+		// Направление стороны — ПРОТИВОПОЛОЖНО нормали стены (нормаль смотрит на
+		// нас, сторона — от нас к стене). Если нормаль вырождена (угол/ребро),
+		// падаем на само направление луча.
+		FVector SideDir = -Hit.ImpactNormal;
+		SideDir.Z = 0.f;
+		if (!SideDir.Normalize())
+		{
+			SideDir = Dir;
+		}
+
+		// Склейка: та же стена, пойманная соседним лучом, — не новая сторона.
+		bool bMerged = false;
+		for (FCoverSide& Existing : OutSides)
+		{
+			if (FVector::DotProduct(Existing.Direction, SideDir) > 0.94f) // ~20°
+			{
+				if (Type > Existing.Type)
+				{
+					Existing.Type = Type;
+				}
+				Existing.Distance = FMath::Min(Existing.Distance, Hit.Distance);
+				bMerged = true;
+				break;
+			}
+		}
+		if (!bMerged)
+		{
+			FCoverSide Side;
+			Side.Direction = SideDir;
+			Side.Type = Type;
+			Side.Distance = Hit.Distance;
+			OutSides.Add(Side);
 		}
 	}
 
+	// Юнит прячется за БЛИЖНЕЙ стеной, а не за всем в радиусе трейса. Без этого
+	// отсева на плотной застройке набиралось 3–4 стороны из разных ящиков, их
+	// дуги перекрывали весь круг, и фланг становился невозможен в принципе.
+	if (OutSides.Num() > 1 && Tuning->CoverSideDistanceSlack >= 0.f)
+	{
+		float MinDistance = TNumericLimits<float>::Max();
+		for (const FCoverSide& Side : OutSides)
+		{
+			MinDistance = FMath::Min(MinDistance, Side.Distance);
+		}
+		const float Limit = MinDistance + Tuning->CoverSideDistanceSlack;
+		OutSides.RemoveAll([Limit](const FCoverSide& Side) { return Side.Distance > Limit; });
+	}
+}
+
+ECoverType UCoverDetectionComponent::BestCoverAgainstDirection(const TArray<FCoverSide>& Sides,
+	const FVector& ToThreat, float ArcHalfAngleDegrees)
+{
+	FVector Dir = ToThreat;
+	Dir.Z = 0.f;
+	if (!Dir.Normalize())
+	{
+		return ECoverType::None;
+	}
+
+	const float ArcCos = FMath::Cos(FMath::DegreesToRadians(FMath::Clamp(ArcHalfAngleDegrees, 1.f, 90.f)));
+
+	ECoverType Best = ECoverType::None;
+	for (const FCoverSide& Side : Sides)
+	{
+		// Стена прикрывает, если угроза приходит с ЕЁ стороны: угол между
+		// направлением на угрозу и направлением на стену в пределах дуги.
+		if (FVector::DotProduct(Dir, Side.Direction) >= ArcCos && Side.Type > Best)
+		{
+			Best = Side.Type;
+		}
+	}
+	return Best;
+}
+
+ECoverType UCoverDetectionComponent::EvaluateSurroundings()
+{
+	const AActor* Owner = GetOwner();
+	if (!Owner)
+	{
+		return BestCoverAround;
+	}
+
+	// Собираем СТОРОНЫ (стены с нормалями), а не просто «лучший тип»: без
+	// направления невозможно ни отличить фланг от укрытия, ни прижать бойца к
+	// стене в анимации (дыра D2, фаза S1).
+	const FVector FloorBase = Owner->GetActorLocation() - FVector(0.f, 0.f, OwnerCapsuleHalfHeight(Owner));
+	GatherCoverSides(Owner->GetWorld(), FloorBase, GetTuning(), Owner, CoverSides);
+
+	ECoverType Best = ECoverType::None;
+	FVector BestDirection = FVector::ZeroVector;
+	float BestDistance = TNumericLimits<float>::Max();
+	for (const FCoverSide& Side : CoverSides)
+	{
+		// Лучшая сторона: сначала по типу (Full > Half), при равенстве — ближняя.
+		if (Side.Type > Best || (Side.Type == Best && Side.Distance < BestDistance))
+		{
+			Best = Side.Type;
+			BestDirection = Side.Direction;
+			BestDistance = Side.Distance;
+		}
+	}
+
+	BestCoverDirection = BestDirection;
 	if (Best != BestCoverAround)
 	{
 		BestCoverAround = Best;
@@ -85,13 +213,42 @@ ECoverType UCoverDetectionComponent::GetCoverAgainst(const AActor* Threat) const
 		return ECoverType::None;
 	}
 
-	// Укрытие эффективно, если стена находится СО СТОРОНЫ врага.
-	const FVector ToThreat = (Threat->GetActorLocation() - Owner->GetActorLocation()).GetSafeNormal2D();
-	if (ToThreat.IsNearlyZero())
+	// ЛОГИКА УКРЫТИЯ = ФИЗИКА ВЫСТРЕЛА, а не геометрия поз.
+	//
+	// Единственный честный вопрос: «останавливает ли стена ЭТОТ выстрел». Значит
+	// луч надо пускать от цели в сторону ТОЙ ТОЧКИ, откуда пуля реально прилетит,
+	// на высоте, которую укрытие обязано прикрывать.
+	//
+	// Почему не угол/дуга (предыдущая редакция). Дуга — это аппроксимация «с
+	// какой стороны меня прикрывает стена», и у неё нет верного значения: 90°
+	// засчитывает перпендикулярную стену (боец стоит СБОКУ от ящика, а игра
+	// говорит «прикрыт»), 70° ломается на другом угле. В XCOM это работает
+	// только потому, что юнит там ПРИТЯНУТ к тайлу укрытия и вжат в конкретную
+	// стену. Мы юнитов не притягиваем и не собираемся — значит и опираться на
+	// позу нельзя.
+	//
+	// ⚠️ Стрелок стреляет ИЗ ВЫГЛЯДЫВАНИЯ (Ф4/Ф5), а не из своего центра. Именно
+	// поэтому берём его огневую позицию: боец, выглянувший из-за угла, обходит
+	// укрытие цели — в XCOM это ровно «peek flanking», и цель обязана стать
+	// флангированной. Считать от центра стрелка значило бы врать игроку: он
+	// видит выстрел из-за угла, а щит остаётся синим.
+	const UCoverTuningDataAsset* Tuning = GetTuning();
+	const FVector FloorBase = Owner->GetActorLocation() - FVector(0.f, 0.f, OwnerCapsuleHalfHeight(Owner));
+
+	FVector FiringEye = Threat->GetActorLocation();
+	UTacticsCombatStatics::GetFiringStance(Threat, Owner, FiringEye);
+
+	const FVector ToShooter = (FiringEye - FloorBase).GetSafeNormal2D();
+	if (ToShooter.IsNearlyZero())
 	{
 		return ECoverType::None;
 	}
-	return TraceCoverInDirection(ToThreat);
+
+	// Толстый свип: волосяной луч на скользящем угле проскакивал вдоль грани и
+	// терял укрытие. Толщина — та же, что у луча линии огня.
+	return TraceCoverAtLocation(Owner->GetWorld(), FloorBase, ToShooter,
+		Tuning->CoverTraceDistance, Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
+		Tuning->CoverTraceChannel, Owner, Tuning->LosSphereRadius);
 }
 
 float UCoverDetectionComponent::GetDefenseBonusAgainst(const AActor* Threat) const
@@ -140,15 +297,23 @@ ECoverType UCoverDetectionComponent::EvaluateCoverAtLocation(const FVector& Base
 	{
 		return ECoverType::None;
 	}
+	// ТА ЖЕ физика, что у стоящего юнита (GetCoverAgainst): толстый луч на
+	// высотах half/full. План и факт обязаны считаться одинаково, иначе AI
+	// бежит в «укрытие», которого по прибытии не окажется.
+	//
+	// ⚠️ Осознанное упрощение: здесь луч идёт к ЦЕНТРУ угрозы, а не к её
+	// огневой позиции. Планирование перебирает десятки точек × несколько угроз,
+	// и гонять полный расчёт выглядывания на каждую пару слишком дорого.
+	// Погрешность ограничена выносом peek (≈1 м) и заметна только вплотную.
 	const UCoverTuningDataAsset* Tuning = GetTuning();
 	return TraceCoverAtLocation(Owner->GetWorld(), Base, ToThreat,
 		Tuning->CoverTraceDistance, Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
-		Tuning->CoverTraceChannel, Owner);
+		Tuning->CoverTraceChannel, Owner, Tuning->LosSphereRadius);
 }
 
 ECoverType UCoverDetectionComponent::TraceCoverAtLocation(const UWorld* World, const FVector& Base,
 	const FVector& Direction, float TraceDistance, float HalfHeight, float FullHeight,
-	ECollisionChannel Channel, const AActor* Ignored)
+	ECollisionChannel Channel, const AActor* Ignored, float SphereRadius)
 {
 	if (!World)
 	{
@@ -163,6 +328,13 @@ ECoverType UCoverDetectionComponent::TraceCoverAtLocation(const UWorld* World, c
 		const FVector Start = Base + FVector(0.f, 0.f, HeightOffset);
 		const FVector End = Start + Dir * TraceDistance;
 		FHitResult Hit;
+		if (SphereRadius > 0.f)
+		{
+			// Толстый свип: волосяной луч на скользящем угле проскакивал вдоль
+			// грани стены и «терял» укрытие. Толщина — та же, что у луча LOS.
+			return World->SweepSingleByChannel(Hit, Start, End, FQuat::Identity, Channel,
+				FCollisionShape::MakeSphere(SphereRadius), Params);
+		}
 		return World->LineTraceSingleByChannel(Hit, Start, End, Channel, Params);
 	};
 

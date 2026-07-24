@@ -152,6 +152,44 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Tactics|Combat")
 	static EFiringStance GetFiringStance(const AActor* Shooter, const AActor* Target, FVector& OutFiringEyeLocation);
 
+	/**
+	 * ФЛАНГ (§III.4, Ф8): цель СТОИТ в укрытии «вообще» (BestCoverAround != None),
+	 * но против ЭТОГО стрелка укрытие не работает (GetCoverAgainst == None).
+	 *
+	 * Ровно XCOM-семантика жёлтого щита: синий — укрытие работает против меня,
+	 * жёлтый — цель за укрытием, но я зашёл сбоку, пусто — цель в чистом поле.
+	 * Ничего не кэшируем (инвариант §V.2 п.4): трейсы считаются на месте, иначе
+	 * сломается разрушаемость.
+	 *
+	 * ⚠️ Отсутствие фланга НЕ означает наличие укрытия — три состояния
+	 * различаются парой (IsTargetFlankedBy, GetCoverAgainst), а не одним bool.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Combat")
+	static bool IsTargetFlankedBy(const AActor* Target, const AActor* Shooter);
+
+	/**
+	 * То же, но выстрел идёт ИЗ ПРОИЗВОЛЬНОЙ ТОЧКИ — для планирования AI
+	 * («буду ли я фланкировать его, если встану сюда»). План и факт считаются
+	 * одной математикой: `IsTargetFlankedBy` — тонкая обёртка над этой функцией.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Combat")
+	static bool IsTargetFlankedByLocation(const AActor* Target, const FVector& ShooterLocation);
+
+	/**
+	 * ЕДИНЫЙ источник состояния щита цели против стрелка (Ф8). Все UI-поверхности
+	 * — панель цели, иконка над головой, будущее превью — обязаны звать ЭТО, а не
+	 * собирать три состояния из пары bool'ов каждая по-своему.
+	 *
+	 * OutShieldCover — какой ФОРМЫ рисовать щит (половинчатый/полный):
+	 *  - Covered → укрытие против стрелка (оно же даёт бонус к защите);
+	 *  - Flanked → локальное укрытие цели (BestCoverAround) — против стрелка его
+	 *    нет, но щит рисуем по тому укрытию, за которым цель физически стоит;
+	 *  - None    → ECoverType::None.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Combat")
+	static ECoverShield GetCoverShieldAgainst(const AActor* Target, const AActor* Shooter,
+		ECoverType& OutShieldCover);
+
 	/** Видит ли цель ХОТЬ ОДИН живой союзник юнита (для Squadsight снайпера). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Combat")
 	static bool SquadHasLineOfSight(const AActor* Unit, const AActor* Target);
