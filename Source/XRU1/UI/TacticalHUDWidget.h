@@ -57,8 +57,13 @@ public:
 	float GetHitChanceOnTarget(AActor* Target) const;
 
 	/**
-	 * Укрытие цели ПРОТИВ выбранного стрелка (None — открыт или фланкирован).
-	 * Для иконки щита в панели цели, как в XCOM 2. None и при пустом выборе.
+	 * Укрытие цели ПРОТИВ выбранного стрелка (None — открыт ИЛИ фланкирован).
+	 *
+	 * ⚠️ LEGACY, двухсостоянийный. C++ панель цели его больше не использует:
+	 * после Ф8 щит имеет ТРИ состояния, и `None` здесь не различает «в чистом
+	 * поле» и «я его обошёл». Оставлен, потому что это `BlueprintPure` и его
+	 * может звать WBP. Для новых мест —
+	 * `UTacticsCombatStatics::GetCoverShieldAgainst` (ECoverShield).
 	 */
 	UFUNCTION(BlueprintPure, Category = "HUD")
 	ECoverType GetTargetCoverAgainstSelected(AActor* Target) const;

@@ -167,10 +167,22 @@ bool UAIEval_CloseDistance::IsApplicable(const FAIDecisionContext& Context) cons
 
 float UAIEval_CloseDistance::ScoreAction(const FAIDecisionContext& Context, FAIDecision& OutDecision) const
 {
+	// ⚠️ Цель — НЕ позиция врага, а точка на идеальной дистанции боя от него по
+	// линии «враг → я». Раньше сюда шла позиция врага с радиусом приёмки
+	// `AttackRange * 0.8` (≈2400 см): `MoveToLocation` с таким радиусом всегда
+	// отвечал `AlreadyAtGoal`, и юнит СЖИГАЛ очко действия, не сделав ни шага.
+	// Радиус приёмки теперь обычный, а «не подходить вплотную» выражено целью.
+	const FVector ThreatPos = Context.PrimaryThreat->GetActorLocation();
+	FVector Away = (Context.Unit->GetActorLocation() - ThreatPos).GetSafeNormal2D();
+	if (Away.IsNearlyZero())
+	{
+		Away = Context.Unit->GetActorForwardVector().GetSafeNormal2D();
+	}
+
 	OutDecision.Kind = EAIActionKind::Move;
-	OutDecision.Destination = Context.PrimaryThreat->GetActorLocation();
+	OutDecision.Destination = ThreatPos + Away * FMath::Max(50.f, Context.Unit->IdealCombatRange);
 	OutDecision.bIsCoverManeuver = false; // не манёвр: bCoverMoveDoneThisTurn не взводится
-	OutDecision.AcceptanceRadius = Context.Unit->AttackRange * 0.8f;
-	OutDecision.Reason = TEXT("сближение (укрытий по пути нет)");
+	OutDecision.AcceptanceRadius = 40.f;
+	OutDecision.Reason = TEXT("сближение до боевой дистанции (укрытий по пути нет)");
 	return BasePriority;
 }

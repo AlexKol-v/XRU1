@@ -245,26 +245,36 @@ void ATacticalPlayerController::DrawCoverSidesDebug(const AActor* Unit) const
 		return;
 	}
 
-	const UCoverTuningDataAsset* Tuning = Cover->GetTuning();
 	const FVector Origin = Unit->GetActorLocation();
-	const float ArcHalfDegrees = Tuning->CoverArcHalfAngle;
 
+	// ⚠️ Дугу защиты здесь рисовать НЕЛЬЗЯ, хотя раньше рисовали: правило больше
+	// не угловое. Укрытие решается физикой выстрела (луч от цели к огневой
+	// позиции стрелка), и нарисованный сектор врал бы игроку.
+	//
+	// Стрелки — это ВИЗУАЛЬНЫЙ слой: «к каким стенам боец прижат». Полезно для
+	// анимации и для понимания расстановки, но не для «фланг или нет».
 	for (const FCoverSide& Side : Cover->CoverSides)
 	{
 		// Half — голубым, Full — синим; та же семантика, что у щита в HUD.
 		const FColor Color = (Side.Type == ECoverType::Full) ? FColor::Blue : FColor::Cyan;
-
-		// Стрелка НА СТЕНУ: видно, какой стороной боец прикрыт.
 		DrawDebugDirectionalArrow(GetWorld(), Origin, Origin + Side.Direction * Side.Distance,
 			40.f, Color, false, LOSDebugInterval * 1.1f, 0, 4.f);
+	}
 
-		// Границы защитной дуги: всё, что ВНЕ этого сектора, — фланг.
-		// Рисуем две крайние линии — по ним на глаз читается, откуда можно зайти.
-		for (const float Sign : {1.f, -1.f})
+	// А вот что РЕАЛЬНО решает фланг: работает ли укрытие против каждого врага.
+	// Зелёная линия к врагу — он нас не пробивает (укрытие держит), красная —
+	// держит фланг и стреляет без штрафа.
+	if (const UTurnManagerSubsystem* TurnManager = GetWorld()->GetSubsystem<UTurnManagerSubsystem>())
+	{
+		for (AActor* Enemy : TurnManager->GetOpposingUnits(Unit))
 		{
-			const FVector Edge = Side.Direction.RotateAngleAxis(Sign * ArcHalfDegrees, FVector::UpVector);
-			DrawDebugLine(GetWorld(), Origin, Origin + Edge * 250.f,
-				Color, false, LOSDebugInterval * 1.1f, 0, 1.5f);
+			if (!Enemy || !UTacticsCombatStatics::IsUnitAlive(Enemy))
+			{
+				continue;
+			}
+			const bool bCovered = Cover->GetCoverAgainst(Enemy) != ECoverType::None;
+			DrawDebugLine(GetWorld(), Origin, Enemy->GetActorLocation(),
+				bCovered ? FColor::Green : FColor::Red, false, LOSDebugInterval * 1.1f, 0, 2.f);
 		}
 	}
 }

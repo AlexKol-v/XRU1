@@ -128,7 +128,10 @@ void UCoverIconWidget::Redraw()
 
         IconCover = ShieldCover;
         bVisible = Shield != ECoverShield::None;
-        if (Theme)
+        // Цвет подменяем ТОЛЬКО для фланга. Иначе обычный щит во время
+        // прицеливания менял бы дизайнерский BaseColor на белый из темы — то
+        // есть иконка мигала бы цветом просто от входа в режим наведения.
+        if (Theme && Shield == ECoverShield::Flanked)
         {
             Tint = Theme->GetCoverShieldTint(Shield);
         }

@@ -119,14 +119,6 @@ public:
 	static void GatherCoverSides(const UWorld* World, const FVector& Base,
 		const UCoverTuningDataAsset* Tuning, const AActor* Ignored, TArray<FCoverSide>& OutSides);
 
-	/**
-	 * Лучшее укрытие против направления НА УГРОЗУ по защитным дугам сторон.
-	 * Сторона защищает, если угол между ToThreat и её направлением не больше
-	 * `CoverArcHalfAngle` (90° = полуплоскость, модель XCOM).
-	 */
-	static ECoverType BestCoverAgainstDirection(const TArray<FCoverSide>& Sides,
-		const FVector& ToThreat, float ArcHalfAngleDegrees);
-
 	/** Численный бонус защиты против конкретного стрелка (0 / Half / Full). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Cover")
 	float GetDefenseBonusAgainst(const AActor* Threat) const;

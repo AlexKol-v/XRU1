@@ -555,11 +555,26 @@ EFiringStance UTacticsCombatStatics::GetFiringStance(const AActor* Shooter, cons
 		OutFiringEyeLocation = Positions[i];
 		if (i == 0)
 		{
-			ECoverType Cover = ECoverType::None;
-			if (const UCoverDetectionComponent* CoverComp = Shooter->FindComponentByClass<UCoverDetectionComponent>())
+			// ⚠️ ЗДЕСЬ НЕЛЬЗЯ звать GetCoverAgainst — это бесконечная рекурсия:
+			// GetCoverAgainst сам спрашивает GetFiringStance, чтобы узнать,
+			// ОТКУДА реально прилетит выстрел. Разрыв цикла осмысленный, а не
+			// технический: стойка — вопрос о СОБСТВЕННОЙ позе стрелка («стою ли я
+			// за своей стеной в сторону цели»), а GetCoverAgainst отвечает на
+			// другой вопрос — про фланг, то есть дойдёт ли конкретный выстрел.
+			float ShooterHalfHeight = 88.f;
+			if (const ACharacter* ShooterCharacter = Cast<ACharacter>(Shooter))
 			{
-				Cover = CoverComp->GetCoverAgainst(Target);
+				if (const UCapsuleComponent* Capsule = ShooterCharacter->GetCapsuleComponent())
+				{
+					ShooterHalfHeight = Capsule->GetScaledCapsuleHalfHeight();
+				}
 			}
+			const FVector ShooterFloor =
+				Shooter->GetActorLocation() - FVector(0.f, 0.f, ShooterHalfHeight);
+			const ECoverType Cover = UCoverDetectionComponent::TraceCoverAtLocation(World,
+				ShooterFloor, (TargetLocation - Shooter->GetActorLocation()).GetSafeNormal2D(),
+				Tuning->CoverTraceDistance, Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
+				Tuning->CoverTraceChannel, Shooter, Tuning->LosSphereRadius);
 			Stance = (Cover == ECoverType::None) ? EFiringStance::Open : EFiringStance::OverCover;
 		}
 		else

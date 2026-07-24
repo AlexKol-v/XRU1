@@ -451,7 +451,7 @@ protected:
 	 * можно ли стрелять. Считается один раз и раздаётся всем оценщикам —
 	 * иначе каждый пересобирал бы списки (инвариант 1b).
 	 */
-	FAIDecisionContext BuildDecisionContext(AUnitBase* Unit, AActor* PrimaryThreat) const;
+	FAIDecisionContext BuildDecisionContext(AUnitBase* Unit, AActor* PrimaryThreat);
 
 	/**
 	 * Выбор лучшего действия перебором оценщиков. Перебор идёт по УБЫВАНИЮ

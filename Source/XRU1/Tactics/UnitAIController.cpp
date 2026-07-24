@@ -252,11 +252,11 @@ bool AUnitAIController::StepCombat(AUnitBase* Unit)
 	return ExecuteDecision(Unit, Decision);
 }
 
-FAIDecisionContext AUnitAIController::BuildDecisionContext(AUnitBase* Unit, AActor* PrimaryThreat) const
+FAIDecisionContext AUnitAIController::BuildDecisionContext(AUnitBase* Unit, AActor* PrimaryThreat)
 {
 	FAIDecisionContext Context;
 	Context.Unit = Unit;
-	Context.Controller = const_cast<AUnitAIController*>(this);
+	Context.Controller = this;
 	Context.PrimaryThreat = PrimaryThreat;
 	GatherVisibleThreats(Context.VisibleThreats);
 
@@ -366,9 +366,16 @@ bool AUnitAIController::ExecuteDecision(AUnitBase* Unit, const FAIDecision& Deci
 			// Приказ идёт РОВНО в выбранную точку: она уже проверена на
 			// достижимость и занятость внутри FindCoverPoint, поэтому подменять
 			// её здесь нечем и не нужно.
-			ChosenManeuverPoint = Decision.Destination;
-			bHasChosenManeuverPoint = true;
-			return StartManeuverTo(Unit, Decision.Destination, *Decision.Reason);
+			// ⚠️ Точку для сверки прибытия запоминаем ТОЛЬКО если приказ принят:
+			// иначе повисший флаг сравнил бы позицию с точкой несостоявшегося
+			// манёвра и дал ложное «встал не туда».
+			if (StartManeuverTo(Unit, Decision.Destination, *Decision.Reason))
+			{
+				ChosenManeuverPoint = Decision.Destination;
+				bHasChosenManeuverPoint = true;
+				return true;
+			}
+			return false;
 		}
 		return MoveWithBudget(Unit, Decision.Destination, Decision.AcceptanceRadius);
 
@@ -465,10 +472,14 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 	// каждой угрозе — самая дорогая часть перебора.
 	if (Threats.Num() > MaxScoredThreats)
 	{
-		Threats.Sort([&UnitLocation](const TObjectPtr<AActor>& A, const TObjectPtr<AActor>& B)
+		// Предикат берёт РАЗЫМЕНОВАННЫЕ элементы: TArray::Sort для массива
+		// указателей сам их разыменовывает, а версия с TObjectPtr& заставляла
+		// движок конструировать TObjectPtr из ссылки — это deprecated и сломает
+		// сборку на следующей версии UE.
+		Threats.Sort([&UnitLocation](const AActor& A, const AActor& B)
 		{
-			return FVector::DistSquared(A->GetActorLocation(), UnitLocation) <
-				FVector::DistSquared(B->GetActorLocation(), UnitLocation);
+			return FVector::DistSquared(A.GetActorLocation(), UnitLocation) <
+				FVector::DistSquared(B.GetActorLocation(), UnitLocation);
 		});
 		Threats.SetNum(MaxScoredThreats);
 	}
@@ -483,8 +494,12 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 	 * Резко отрицательный OpenCoverFactor и даёт «AI боится флангов»: открытость
 	 * против одного врага перевешивает укрытие против двух других.
 	 *
-	 * Стороны укрытия собираются ОДИН раз на точку (дорого — трейсы), а против
-	 * каждой угрозы проверяется только дуга (бесплатно).
+	 * ⚠️ ЦЕНА. На каждую угрозу здесь идёт трейс укрытия ПЛЮС проверка линии
+	 * огня с перебором позиций выглядывания. Это самая дорогая часть всего
+	 * перебора, поэтому: число угроз ограничено `MaxScoredThreats`, вызов идёт
+	 * ПОСЛЕ проверки достижимости, а сам `FindCoverPoint` не запускается вовсе,
+	 * когда у бота есть уверенный выстрел (отсечение по потолку скора в
+	 * DecideAction).
 	 */
 	auto EvaluatePoint = [&](const FVector& FloorPoint, FAICoverPointResult& Out)
 	{
@@ -705,22 +720,26 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 					}
 				}
 			}
+			// ДОСТИЖИМОСТЬ — ДО оценки. Раньше было наоборот («дорогая проверка
+			// последней»), и это было верно, пока оценка стоила один трейс. После
+			// A5 оценка — это по каждой угрозе трейс укрытия ПЛЮС линия огня с
+			// перебором позиций выглядывания, то есть на порядок дороже одного
+			// запроса пути. Порядок инвертирован осознанно: сначала отсеиваем
+			// точки, куда всё равно не дойти.
+			FVector Reachable;
+			if (!UTacticsCombatStatics::GetPointAlongPathBudget(this, Unit, UnitLocation,
+					CandidatePoint, PathBudget, Reachable) ||
+				FVector::Dist2D(Reachable, CandidatePoint) > 75.f)
+			{
+				continue;
+			}
+
 			// Полная оценка точки: по каждой угрозе — закрыт ли, вижу ли, фланкую
 			// ли (план == факт: линия огня считается тем же предикатом, что решает
 			// выстрел, и из тех же огневых позиций peek).
 			FAICoverPointResult Details;
 			const float Score = ScorePosition(CandidatePoint, Details);
 			if (Score <= BestScore)
-			{
-				continue;
-			}
-
-			// Дорогая проверка — последней: точка должна быть ДОСТИЖИМА в переданный
-			// бюджет пути (с занятостью), иначе манёвр оборвётся на полпути.
-			FVector Reachable;
-			if (!UTacticsCombatStatics::GetPointAlongPathBudget(this, Unit, UnitLocation,
-					CandidatePoint, PathBudget, Reachable) ||
-				FVector::Dist2D(Reachable, CandidatePoint) > 75.f)
 			{
 				continue;
 			}
@@ -1017,11 +1036,14 @@ void AUnitAIController::OnMoveCompleted(FAIRequestID RequestID, const FPathFollo
 		// точке; если боец оказался в другой, оценка к его позиции больше не
 		// относится. Молчать об этом нельзя — иначе «бот выбрал укрытие» и «бот
 		// в укрытии» расходятся, а по логу этого не видно.
-		if (bHasChosenManeuverPoint && !bManeuverInProgress &&
-			CVarLogAICombat.GetValueOnGameThread() != 0)
+		// ⚠️ Флаг сбрасывается ВСЕГДА, а не только при включённом логе: иначе он
+		// повисал бы до конца боя и следующая проверка сравнивала бы позицию со
+		// старой точкой. Под CVar — только сам вывод.
+		if (bHasChosenManeuverPoint && !bManeuverInProgress)
 		{
 			const float Drift = FVector::Dist2D(Unit->GetActorLocation(), ChosenManeuverPoint);
-			if (Drift > ManeuverArrivalTolerance)
+			bHasChosenManeuverPoint = false;
+			if (Drift > ManeuverArrivalTolerance && CVarLogAICombat.GetValueOnGameThread() != 0)
 			{
 				UE_LOG(LogTemp, Warning, TEXT("[AI] %s: встал НЕ в выбранную точку — расхождение %.0f см ")
 					TEXT("(решил (%.0f, %.0f), стоит (%.0f, %.0f)). Укрытие на месте: %d"),
@@ -1029,7 +1051,6 @@ void AUnitAIController::OnMoveCompleted(FAIRequestID RequestID, const FPathFollo
 					Unit->GetActorLocation().X, Unit->GetActorLocation().Y,
 					Cover ? static_cast<int32>(Cover->BestCoverAround) : -1);
 			}
-			bHasChosenManeuverPoint = false;
 		}
 		// Один атомарный refresh: HUD видит уже и остановку, и итоговое укрытие.
 		Unit->NotifyUnitStateChanged();

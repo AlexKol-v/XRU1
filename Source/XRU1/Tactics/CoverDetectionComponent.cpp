@@ -142,31 +142,6 @@ void UCoverDetectionComponent::GatherCoverSides(const UWorld* World, const FVect
 	}
 }
 
-ECoverType UCoverDetectionComponent::BestCoverAgainstDirection(const TArray<FCoverSide>& Sides,
-	const FVector& ToThreat, float ArcHalfAngleDegrees)
-{
-	FVector Dir = ToThreat;
-	Dir.Z = 0.f;
-	if (!Dir.Normalize())
-	{
-		return ECoverType::None;
-	}
-
-	const float ArcCos = FMath::Cos(FMath::DegreesToRadians(FMath::Clamp(ArcHalfAngleDegrees, 1.f, 90.f)));
-
-	ECoverType Best = ECoverType::None;
-	for (const FCoverSide& Side : Sides)
-	{
-		// Стена прикрывает, если угроза приходит с ЕЁ стороны: угол между
-		// направлением на угрозу и направлением на стену в пределах дуги.
-		if (FVector::DotProduct(Dir, Side.Direction) >= ArcCos && Side.Type > Best)
-		{
-			Best = Side.Type;
-		}
-	}
-	return Best;
-}
-
 ECoverType UCoverDetectionComponent::EvaluateSurroundings()
 {
 	const AActor* Owner = GetOwner();
