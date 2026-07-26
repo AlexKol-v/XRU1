@@ -151,9 +151,40 @@ void UTurnManagerSubsystem::ResetActionPointsForSide(const TArray<TObjectPtr<AAc
 	}
 }
 
+void UTurnManagerSubsystem::NotifyUnitAttacked(const AActor* Unit)
+{
+	if (Unit)
+	{
+		AttackedThisTurn.Add(TObjectKey<AActor>(Unit));
+	}
+}
+
+bool UTurnManagerSubsystem::IsAttackThrottled(const AActor* Unit) const
+{
+	if (MaxAttackersPerTurn < 0 || !Unit)
+	{
+		return false; // лимит выключен (Legend в терминах XCOM)
+	}
+	// Правило регулирует только вражеский AI: у игрока «сколько бойцов стреляет
+	// за ход» — его собственное тактическое решение.
+	if (!EnemySide.Contains(Unit))
+	{
+		return false;
+	}
+	// Уже стрелявшему добавка не запрещена: лимит считает ЮНИТОВ, вступивших в
+	// бой, а не выстрелы. Иначе боец с 2 AP не смог бы отработать вторым очком.
+	if (AttackedThisTurn.Contains(TObjectKey<AActor>(Unit)))
+	{
+		return false;
+	}
+	return AttackedThisTurn.Num() >= MaxAttackersPerTurn;
+}
+
 void UTurnManagerSubsystem::StartEnemyTurnProcessing()
 {
 	EnemyTurnIndex = 0;
+	// Лимит атакующих считается ЗА ХОД: новый ход — чистый счётчик.
+	AttackedThisTurn.Reset();
 	// Небольшая пауза перед первым действием: даём HUD показать смену фазы.
 	GetWorld()->GetTimerManager().SetTimer(EnemyStepTimerHandle, this,
 		&UTurnManagerSubsystem::ProcessNextEnemyUnit, EnemyStepInterval, false);

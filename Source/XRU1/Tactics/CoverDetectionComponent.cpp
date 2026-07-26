@@ -10,6 +10,21 @@
 #include "Components/CapsuleComponent.h"
 #include "Engine/World.h"
 #include "CollisionQueryParams.h"
+#include "DrawDebugHelpers.h"
+#include "HAL/IConsoleManager.h"
+
+/**
+ * Диагностика укрытия против стрелка: при `xru1.Cover.Debug 1` каждый запрос
+ * `GetCoverAgainst` пишет в лог, ЧТО именно засчиталось стеной (актор, дистанция,
+ * длина луча) и рисует сам луч. Без этого класс багов «щит не тот» проверялся
+ * только глазами по скриншоту: видно РЕЗУЛЬТАТ (синий щит), но не ПРИЧИНУ.
+ * Ровно так же, как `xru1.AI.LogCombat` сделал наблюдаемым утилити-слой.
+ */
+static TAutoConsoleVariable<int32> CVarCoverDebug(
+	TEXT("xru1.Cover.Debug"),
+	0,
+	TEXT("1 — логировать и рисовать луч укрытия цель→стрелок и найденную стену."),
+	ECVF_Default);
 
 namespace
 {
@@ -65,11 +80,16 @@ void UCoverDetectionComponent::GatherCoverSides(const UWorld* World, const FVect
 	// Один луч на направление, на высоте Half и на высоте Full. Нас интересует
 	// НОРМАЛЬ стены: по ней стороны склеиваются, поэтому плоская стена рядом
 	// даёт одну сторону, а не три пересекающихся луча.
+	//
+	// Геометрия — общая с LOS (object-query без юнитов). До этого трейс шёл по
+	// каналу и ловил капсулы: союзник в 120 см становился «стеной», от него
+	// брался BestCoverAround=Full, и юнит в чистом поле считался укрытым —
+	// с жёлтым щитом вместо «нет щита» и с доступной глухой обороной.
 	auto TraceAt = [&](const FVector& Dir, float Height, FHitResult& OutHit)
 	{
 		const FVector Start = Base + FVector(0.f, 0.f, Height);
-		return World->LineTraceSingleByChannel(OutHit, Start, Start + Dir * Tuning->CoverTraceDistance,
-			Tuning->CoverTraceChannel, Params);
+		return World->LineTraceSingleByObjectType(OutHit, Start, Start + Dir * Tuning->CoverTraceDistance,
+			UTacticsCombatStatics::GetShotGeometryObjects(), Params);
 	};
 
 	for (int32 Index = 0; Index < NumDirections; ++Index)
@@ -210,20 +230,107 @@ ECoverType UCoverDetectionComponent::GetCoverAgainst(const AActor* Threat) const
 	const UCoverTuningDataAsset* Tuning = GetTuning();
 	const FVector FloorBase = Owner->GetActorLocation() - FVector(0.f, 0.f, OwnerCapsuleHalfHeight(Owner));
 
-	FVector FiringEye = Threat->GetActorLocation();
-	UTacticsCombatStatics::GetFiringStance(Threat, Owner, FiringEye);
-
-	const FVector ToShooter = (FiringEye - FloorBase).GetSafeNormal2D();
-	if (ToShooter.IsNearlyZero())
+	// ⚠️ УКРЫТИЕ = МИНИМУМ ПО ВСЕМ ОГНЕВЫМ ПОЗИЦИЯМ СТРЕЛКА (правка 2026-07-25).
+	//
+	// Стрелок сам выбирает, откуда стрелять, и выберет позицию, которая обходит
+	// укрытие цели. Раньше здесь бралась ПЕРВАЯ позиция с линией огня
+	// (`GetFiringStance`, порядок центр → step-out → края) — и получалась
+	// неизбежная жалоба «стою у угла, точка выглядывания заведомо во фланге, а
+	// щит синий»: центр давал линию огня поверх низкой стены, перебор на нём
+	// останавливался, и фланг считался от центра.
+	//
+	// Теперь перебираются ВСЕ позиции, откуда есть линия огня, и берётся
+	// НАИМЕНЬШЕЕ укрытие. Правило читается одной фразой и совпадает с тем, что
+	// видит игрок: «если из какой-то своей огневой точки я обхожу твою стену —
+	// ты флангирован». Оно же совпадает с новой механикой выстрела: юнит
+	// физически выбегает в точку пика и стреляет ИМЕННО ОТТУДА.
+	TArray<FVector, TInlineAllocator<4>> FiringPositions;
+	UTacticsCombatStatics::GetViableFiringPositions(Threat, Owner, FiringPositions);
+	if (FiringPositions.Num() == 0)
 	{
-		return ECoverType::None;
+		// Стрелять неоткуда — вопрос об укрытии не имеет смысла; берём центр,
+		// чтобы HUD не мигал «нет укрытия» при временной потере линии.
+		FVector Fallback = Threat->GetActorLocation();
+		Fallback.Z += Tuning->EyeHeightOffset;
+		FiringPositions.Add(Fallback);
 	}
 
-	// Толстый свип: волосяной луч на скользящем угле проскакивал вдоль грани и
-	// терял укрытие. Толщина — та же, что у луча линии огня.
-	return TraceCoverAtLocation(Owner->GetWorld(), FloorBase, ToShooter,
-		Tuning->CoverTraceDistance, Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
-		Tuning->CoverTraceChannel, Owner, Tuning->LosSphereRadius);
+	ECoverType Result = ECoverType::Full; // худшее для стрелка; ищем минимум
+	FHitResult CoverHit;
+	FVector BestEye = FiringPositions[0];
+	for (const FVector& FiringEye : FiringPositions)
+	{
+		const FVector ToShooter = (FiringEye - FloorBase).GetSafeNormal2D();
+		if (ToShooter.IsNearlyZero())
+		{
+			continue;
+		}
+
+		// Стена засчитывается, только если она МЕЖДУ целью и стрелком: длина
+		// луча обрезается дистанцией до огневой позиции.
+		const float TraceLength = GetCoverTraceLength(Tuning, FloorBase, FiringEye);
+		FHitResult Hit;
+		// Толстый свип: волосяной луч на скользящем угле проскакивал вдоль грани
+		// и терял укрытие. Толщина — та же, что у луча линии огня.
+		const ECoverType FromHere = TraceLength > 0.f
+			? TraceCoverAtLocation(Owner->GetWorld(), FloorBase, ToShooter,
+				TraceLength, Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
+				Owner, Tuning->LosSphereRadius, &Hit)
+			: ECoverType::None;
+
+		if (FromHere < Result)
+		{
+			Result = FromHere;
+			CoverHit = Hit;
+			BestEye = FiringEye;
+		}
+		if (Result == ECoverType::None)
+		{
+			break; // лучше уже не будет — стрелок нашёл, откуда обойти
+		}
+	}
+#if ENABLE_DRAW_DEBUG
+	if (CVarCoverDebug.GetValueOnAnyThread() > 0)
+	{
+		// Рисуем и логируем ПОБЕДИВШУЮ огневую позицию — ту, по которой принято
+		// решение. Число позиций тоже важно: `pos=1` означает, что стрелять
+		// можно только из центра, и никакого пика на самом деле нет.
+		static const TCHAR* CoverNames[] = { TEXT("None"), TEXT("Half"), TEXT("Full") };
+		const float BestTraceLength = GetCoverTraceLength(Tuning, FloorBase, BestEye);
+		UE_LOG(LogTemp, Log,
+			TEXT("[Cover] %s vs %s: pos=%d distToShot=%.0f traceLen=%.0f cover=%s blocker=%s"),
+			*GetNameSafe(Owner), *GetNameSafe(Threat), FiringPositions.Num(),
+			FVector::Dist2D(FloorBase, BestEye), BestTraceLength,
+			CoverNames[static_cast<uint8>(Result)],
+			Result != ECoverType::None ? *GetNameSafe(CoverHit.GetActor()) : TEXT("-"));
+
+		UWorld* DbgWorld = Owner->GetWorld();
+		const float DbgHeight = (Result == ECoverType::Full) ? Tuning->FullCoverHeight : Tuning->HalfCoverHeight;
+		const FVector RayStart = FloorBase + FVector(0.f, 0.f, DbgHeight);
+		const FVector BestDir = (BestEye - FloorBase).GetSafeNormal2D();
+		DrawDebugLine(DbgWorld, RayStart, RayStart + BestDir * FMath::Max(BestTraceLength, 0.f),
+			Result != ECoverType::None ? FColor::Green : FColor::Red, false, 0.35f, 0, 3.f);
+		if (Result != ECoverType::None && CoverHit.GetActor())
+		{
+			DrawDebugSphere(DbgWorld, CoverHit.ImpactPoint, 16.f, 8, FColor::Green, false, 0.35f);
+		}
+	}
+#endif
+
+	return Result;
+}
+
+float UCoverDetectionComponent::GetCoverTraceLength(const UCoverTuningDataAsset* Tuning,
+	const FVector& Base, const FVector& ThreatPoint)
+{
+	if (!Tuning)
+	{
+		return 0.f;
+	}
+	// Толщина луча вычитается, чтобы сфера не «лизнула» стену, у которой стоит
+	// сам стрелок: та стена прикрывает ЕГО, а не цель.
+	const float ToThreat = FVector::Dist2D(Base, ThreatPoint) - Tuning->LosSphereRadius;
+	return FMath::Min(Tuning->CoverTraceDistance, ToThreat);
 }
 
 float UCoverDetectionComponent::GetDefenseBonusAgainst(const AActor* Threat) const
@@ -260,8 +367,7 @@ ECoverType UCoverDetectionComponent::TraceCoverInDirection(const FVector& Direct
 	const UCoverTuningDataAsset* Tuning = GetTuning();
 	const FVector FloorBase = Owner->GetActorLocation() - FVector(0.f, 0.f, OwnerCapsuleHalfHeight(Owner));
 	return TraceCoverAtLocation(Owner->GetWorld(), FloorBase, Direction,
-		Tuning->CoverTraceDistance, Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
-		Tuning->CoverTraceChannel, Owner);
+		Tuning->CoverTraceDistance, Tuning->HalfCoverHeight, Tuning->FullCoverHeight, Owner);
 }
 
 ECoverType UCoverDetectionComponent::EvaluateCoverAtLocation(const FVector& Base, const FVector& ThreatLocation) const
@@ -281,36 +387,46 @@ ECoverType UCoverDetectionComponent::EvaluateCoverAtLocation(const FVector& Base
 	// и гонять полный расчёт выглядывания на каждую пару слишком дорого.
 	// Погрешность ограничена выносом peek (≈1 м) и заметна только вплотную.
 	const UCoverTuningDataAsset* Tuning = GetTuning();
+	// Тот же кламп «стена должна быть МЕЖДУ», что и в GetCoverAgainst: план и
+	// факт обязаны считаться одинаково, иначе AI выберет точку, которая по
+	// прибытии окажется без укрытия (инвариант «план == факт»).
+	const float TraceLength = GetCoverTraceLength(Tuning, Base, ThreatLocation);
+	if (TraceLength <= 0.f)
+	{
+		return ECoverType::None;
+	}
 	return TraceCoverAtLocation(Owner->GetWorld(), Base, ToThreat,
-		Tuning->CoverTraceDistance, Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
-		Tuning->CoverTraceChannel, Owner, Tuning->LosSphereRadius);
+		TraceLength, Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
+		Owner, Tuning->LosSphereRadius);
 }
 
 ECoverType UCoverDetectionComponent::TraceCoverAtLocation(const UWorld* World, const FVector& Base,
 	const FVector& Direction, float TraceDistance, float HalfHeight, float FullHeight,
-	ECollisionChannel Channel, const AActor* Ignored, float SphereRadius)
+	const AActor* Ignored, float SphereRadius, FHitResult* OutHit)
 {
-	if (!World)
+	if (!World || TraceDistance <= 0.f)
 	{
 		return ECoverType::None;
 	}
 
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(CoverTrace), false, Ignored);
+	const FCollisionObjectQueryParams& ObjectParams = UTacticsCombatStatics::GetShotGeometryObjects();
 	const FVector Dir = Direction.GetSafeNormal2D();
 
 	auto WallAt = [&](float HeightOffset) -> bool
 	{
 		const FVector Start = Base + FVector(0.f, 0.f, HeightOffset);
 		const FVector End = Start + Dir * TraceDistance;
-		FHitResult Hit;
+		FHitResult LocalHit;
+		FHitResult& Hit = OutHit ? *OutHit : LocalHit;
 		if (SphereRadius > 0.f)
 		{
 			// Толстый свип: волосяной луч на скользящем угле проскакивал вдоль
 			// грани стены и «терял» укрытие. Толщина — та же, что у луча LOS.
-			return World->SweepSingleByChannel(Hit, Start, End, FQuat::Identity, Channel,
+			return World->SweepSingleByObjectType(Hit, Start, End, FQuat::Identity, ObjectParams,
 				FCollisionShape::MakeSphere(SphereRadius), Params);
 		}
-		return World->LineTraceSingleByChannel(Hit, Start, End, Channel, Params);
+		return World->LineTraceSingleByObjectType(Hit, Start, End, ObjectParams, Params);
 	};
 
 	// Есть стена на высоте полного укрытия -> Full; иначе если есть на высоте half -> Half.

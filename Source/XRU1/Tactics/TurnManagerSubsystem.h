@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "Engine/TimerHandle.h"
+#include "UObject/ObjectKey.h" // ключи «кто атаковал в этом ходу» без удержания ссылок
 #include "TacticsTypes.h"
 #include "TurnManagerSubsystem.generated.h"
 
@@ -81,6 +82,32 @@ public:
 	/** Живые враги на поле (критерий «жив» общий с CheckCombatOutcome). Для HUD/результата. */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Turns")
 	int32 GetAliveEnemyCount() const;
+
+	// --- A8: лимит одновременно атакующих (XCOM `MaxEngagedEnemies`) ----------
+	//
+	// Самый дешёвый и самый честный регулятор сложности: врагу не подкручивают
+	// точность и не отнимают у игрока информацию — просто ограничивают, сколько
+	// стволов смотрит на отряд за один ход. Превысившие лимит уходят в «занятую»
+	// ветку (наблюдение или перемещение), а не стоят столбом.
+	//
+	// Счётчик живёт ЗДЕСЬ, а не в контроллере: он общий на всю сторону, а
+	// контроллер знает только про своего юнита.
+
+	/**
+	 * Лимит атакующих врагов за ход; −1 (по умолчанию) — без лимита. Ставит
+	 * GameMode из пресета сложности, тем же способом, что и `SetTurnLimit`.
+	 */
+	void SetMaxAttackersPerTurn(int32 NewLimit) { MaxAttackersPerTurn = NewLimit; }
+
+	/** Отметить, что юнит АТАКОВАЛ в этом ходу (зовёт AI после оплаченного выстрела). */
+	void NotifyUnitAttacked(const AActor* Unit);
+
+	/**
+	 * Достигнут ли лимит атакующих для этого юнита. false, если лимит выключен
+	 * (−1), если юнит уже стрелял в этом ходу (ему добавка не запрещена) или если
+	 * он не на вражеской стороне (правило регулирует только AI).
+	 */
+	bool IsAttackThrottled(const AActor* Unit) const;
 
 	// --- Таймер ходов (бомба миссии; GDD §5.7) -------------------------------
 
@@ -175,4 +202,15 @@ protected:
 	float EnemyActivationDelay = 0.35f;
 
 	FTimerHandle EnemyStepTimerHandle;
+
+	/**
+	 * Кто из врагов уже атаковал В ЭТОМ ходу (A8). Считаем ЮНИТОВ, а не выстрелы:
+	 * лимит XCOM — «сколько врагов вступило в бой», и второй выстрел того же
+	 * бойца его не расходует. Сбрасывается при старте вражеской фазы.
+	 * `TObjectKey` — ключ без удержания ссылки (юнит может погибнуть в ходу).
+	 */
+	TSet<TObjectKey<AActor>> AttackedThisTurn;
+
+	/** Лимит атакующих за ход (−1 — выключен). Ставится GameMode по сложности. */
+	int32 MaxAttackersPerTurn = -1;
 };

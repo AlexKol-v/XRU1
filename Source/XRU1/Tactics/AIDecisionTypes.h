@@ -104,14 +104,25 @@ struct FAICoverPointResult
 	/** Скольких угроз оттуда фланкируем. */
 	int32 ThreatsFlanked = 0;
 
+	/**
+	 * Сколько угроз В НАБЛЮДЕНИИ простреливают эту точку (A7 `SafeToMove`).
+	 * Позиция может быть отличной по укрытию и всё равно смертельной, если
+	 * добежать до неё можно только под чужой реакционный выстрел.
+	 */
+	int32 ThreatsOverwatching = 0;
+
+	/** Сколько СВОИХ видно из точки (XCOM `fAllyVisWeight`) — взаимная поддержка. */
+	int32 AlliesVisible = 0;
+
 	/** Итоговый скор точки. */
 	float Score = 0.f;
 
 	/** Короткое человекочитаемое пояснение для лога. */
 	FString Describe() const
 	{
-		return FString::Printf(TEXT("закрыт от %d/%d, вижу %d, фланкую %d"),
-			ThreatsCovered, ThreatsCovered + ThreatsExposed, ThreatsVisible, ThreatsFlanked);
+		return FString::Printf(TEXT("закрыт от %d/%d, вижу %d, фланкую %d, своих вижу %d, под овервотчем %d"),
+			ThreatsCovered, ThreatsCovered + ThreatsExposed, ThreatsVisible, ThreatsFlanked,
+			AlliesVisible, ThreatsOverwatching);
 	}
 };
 
@@ -161,4 +172,13 @@ struct FAIDecisionContext
 
 	/** Манёвр в укрытие в этом ходу уже выбран (один выбор на ход, XCOM). */
 	bool bCoverMoveDoneThisTurn = false;
+
+	/**
+	 * ЛИМИТ АТАКУЮЩИХ достигнут (A8, XCOM `MaxEngagedEnemies`): стрелять этому
+	 * юниту в этом ходу нельзя, даже если выстрел есть. Это НЕ «нечем стрелять»
+	 * — `bCanShootNow` при этом остаётся true, и оценщики обязаны различать два
+	 * состояния: «не могу» ведёт к поиску позиции, «не разрешено» — в занятую
+	 * ветку (наблюдение/перемещение).
+	 */
+	bool bAttackThrottled = false;
 };

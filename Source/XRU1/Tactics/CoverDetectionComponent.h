@@ -103,10 +103,29 @@ public:
 	 * Общее ядро трейса укрытия (см. EvaluateCoverAtLocation).
 	 * SphereRadius > 0 — толстый свип вместо волосяного луча: на скользящих
 	 * углах тонкий луч проскакивал мимо стены, и укрытие «пропадало».
+	 *
+	 * Геометрия — `UTacticsCombatStatics::GetShotGeometryObjects()` (WorldStatic
+	 * + WorldDynamic). Параметра «канал» больше НЕТ намеренно: трейс по каналу
+	 * упирался в капсулы юнитов, и укрытием становился сам стрелок в упор.
+	 *
+	 * OutHit — необязательная выдача найденной стены (для `xru1.Cover.Debug`).
 	 */
 	static ECoverType TraceCoverAtLocation(const UWorld* World, const FVector& Base, const FVector& Direction,
-		float TraceDistance, float HalfHeight, float FullHeight, ECollisionChannel Channel,
-		const AActor* Ignored, float SphereRadius = 0.f);
+		float TraceDistance, float HalfHeight, float FullHeight,
+		const AActor* Ignored, float SphereRadius = 0.f, FHitResult* OutHit = nullptr);
+
+	/**
+	 * ДЛИНА луча укрытия против угрозы, стоящей в `ThreatPoint` (см). Стена
+	 * засчитывается, только если она МЕЖДУ: дальше стрелка искать нечего.
+	 *
+	 * Без этого ограничения `CoverTraceDistance` (120 см) трейсился всегда, и в
+	 * упор луч пролетал СКВОЗЬ стрелка в стену у него за спиной — цель получала
+	 * «Full cover» от чужой стены и синий щит там, где XCOM даёт жёлтый.
+	 * ≤ 0 — стрелок ближе толщины луча, укрытия быть не может (ближний бой =
+	 * автоматический фланг, §I.3 п.3).
+	 */
+	static float GetCoverTraceLength(const UCoverTuningDataAsset* Tuning,
+		const FVector& Base, const FVector& ThreatPoint);
 
 	/**
 	 * СТОРОНЫ УКРЫТИЯ в точке Base (точка пола): лучи по кругу, стороны

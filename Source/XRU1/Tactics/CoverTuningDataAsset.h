@@ -38,9 +38,12 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cover|Detect", meta = (ClampMin = "10"))
 	float FullCoverHeight = 150.f;
 
-	/** Канал трейса для поиска стен-укрытий. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cover|Detect")
-	TEnumAsByte<ECollisionChannel> CoverTraceChannel = ECC_WorldStatic;
+	// ⚠️ `CoverTraceChannel` УДАЛЁН (2026-07-25). Он задавал трейс по КАНАЛУ, а
+	// капсула/меш юнита блокируют канал `WorldStatic` — укрытием становились сам
+	// стрелок в упор, союзник рядом и труп. Геометрия укрытия теперь та же, что у
+	// линии огня: `UTacticsCombatStatics::GetShotGeometryObjects()`
+	// (WorldStatic + WorldDynamic, без юнитов). Ручка не возвращается: держать
+	// параметр, которым можно снова развести LOS и укрытие, — хуже, чем не иметь.
 
 	/** 4 оси или 8 (с диагоналями). Сколько лучей пускать вокруг юнита при поиске стен. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cover|Detect", meta = (ClampMin = "4", ClampMax = "16"))
@@ -50,9 +53,11 @@ public:
 	 * Насколько дальше ближайшей стены ещё считается «моё укрытие» (см). Юнит
 	 * прячется за ближней стеной, а не за всем, что попало в радиус трейса.
 	 *
-	 * ⚠️ Влияет ТОЛЬКО на визуальный слой (`CoverSides`, `BestCoverDirection`,
-	 * отладочная отрисовка). Решение «фланг или нет» принимается физикой
-	 * выстрела и об этот параметр не спотыкается.
+	 * ⚠️ Уточнение (2026-07-25): «влияет только на визуальный слой» — неточность.
+	 * Через `CoverSides` он задаёт `BestCoverAround`, а тот РАЗЛИЧАЕТ жёлтый щит
+	 * («в укрытии, но обойдён») и отсутствие щита («в чистом поле»). Направление
+	 * атаки этот параметр по-прежнему не судит — это физика выстрела, — но
+	 * слишком жёсткий отсев может превратить «фланкирован» в «открыт».
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cover|Detect", meta = (ClampMin = "0"))
 	float CoverSideDistanceSlack = 40.f;

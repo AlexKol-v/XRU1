@@ -35,6 +35,20 @@ static TAutoConsoleVariable<int32> CVarLOSDebug(
 	TEXT("1 — логировать/рисовать огневые позиции и стойку при расчёте линии огня."),
 	ECVF_Default);
 
+const FCollisionObjectQueryParams& UTacticsCombatStatics::GetShotGeometryObjects()
+{
+	// Собирается один раз: набор неизменен, а спрашивают его в горячих циклах
+	// (перебор огневых позиций × точек цели, кольцо позиций AI).
+	static const FCollisionObjectQueryParams Params = []
+	{
+		FCollisionObjectQueryParams Result;
+		Result.AddObjectTypesToQuery(ECC_WorldStatic);
+		Result.AddObjectTypesToQuery(ECC_WorldDynamic); // двигаемые пропсы-укрытия
+		return Result;
+	}();
+	return Params;
+}
+
 const UCoverTuningDataAsset* UTacticsCombatStatics::GetCoverTuning(const UWorld* World)
 {
 	// Глобальный тюнинг с GameInstance (обычно BP-наследник), иначе CDO. CDO
@@ -278,7 +292,7 @@ void UTacticsCombatStatics::GetFiringPositions(const UWorld* World, const AActor
 	{
 		return UCoverDetectionComponent::TraceCoverAtLocation(World, FootBase, Direction,
 			Tuning->CoverTraceDistance, Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
-			Tuning->CoverTraceChannel, Unit) != ECoverType::None;
+			Unit) != ECoverType::None;
 	};
 
 	if (!HasCoverToward(DirToOther) && !HasCoverToward(Side) &&
@@ -287,10 +301,8 @@ void UTacticsCombatStatics::GetFiringPositions(const UWorld* World, const AActor
 		return; // укрытия нет ни с одной стороны — только прямая видимость из центра
 	}
 
-	// Свип мира: юниты выстрел не блокируют — фильтр по типам объектов, как в LOS.
-	FCollisionObjectQueryParams ObjectParams;
-	ObjectParams.AddObjectTypesToQuery(ECC_WorldStatic);
-	ObjectParams.AddObjectTypesToQuery(ECC_WorldDynamic);
+	// Свип мира: юниты выстрел не блокируют — единая геометрия выстрела.
+	const FCollisionObjectQueryParams& ObjectParams = GetShotGeometryObjects();
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(FiringPeek), /*bTraceComplex=*/false);
 	const FCollisionShape Sphere = FCollisionShape::MakeSphere(Tuning->LosSphereRadius);
 	auto SweepClear = [&](const FVector& From, const FVector& To)
@@ -324,7 +336,7 @@ void UTacticsCombatStatics::GetFiringPositions(const UWorld* World, const AActor
 			const FVector P = FootBase + Side * (SideSign * Offset);
 			if (UCoverDetectionComponent::TraceCoverAtLocation(World, P, DirToOther,
 				Tuning->CoverTraceDistance, Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
-				Tuning->CoverTraceChannel, Unit) != ECoverType::None)
+				Unit) != ECoverType::None)
 			{
 				continue; // ещё за укрытием — шагаем к краю
 			}
@@ -391,9 +403,7 @@ bool UTacticsCombatStatics::HasLineOfSightFromLocation(const UWorld* World, cons
 
 	// Только геометрия мира: юниты выстрел не блокируют (XCOM — сквозь своих
 	// стрелять можно), поэтому фильтруем по типу объекта, а не по каналу.
-	FCollisionObjectQueryParams ObjectParams;
-	ObjectParams.AddObjectTypesToQuery(ECC_WorldStatic);
-	ObjectParams.AddObjectTypesToQuery(ECC_WorldDynamic); // двигаемые пропсы-укрытия
+	const FCollisionObjectQueryParams& ObjectParams = GetShotGeometryObjects();
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(UnitLOS), /*bTraceComplex=*/false);
 	const FCollisionShape Sphere = FCollisionShape::MakeSphere(Tuning->LosSphereRadius);
 
@@ -499,6 +509,45 @@ bool UTacticsCombatStatics::HasLineOfSightFromLocation(const UWorld* World, cons
 	return bVisible;
 }
 
+void UTacticsCombatStatics::GetViableFiringPositions(const AActor* Shooter, const AActor* Target,
+	TArray<FVector, TInlineAllocator<4>>& OutPositions)
+{
+	OutPositions.Reset();
+	const UWorld* World = Shooter ? Shooter->GetWorld() : nullptr;
+	if (!World || !Target)
+	{
+		return;
+	}
+
+	const UCoverTuningDataAsset* Tuning = GetCoverTuning(World);
+	const FVector EyeLocation = Shooter->GetActorLocation() + FVector(0.f, 0.f, Tuning->EyeHeightOffset);
+	const FVector TargetLocation = Target->GetActorLocation();
+	const FVector TargetPoints[2] = {
+		TargetLocation + FVector(0.f, 0.f, Tuning->EyeHeightOffset),
+		TargetLocation - FVector(0.f, 0.f, 20.f)
+	};
+
+	const FCollisionObjectQueryParams& ObjectParams = GetShotGeometryObjects();
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(ViableFiringPos), /*bTraceComplex=*/false);
+	const FCollisionShape Sphere = FCollisionShape::MakeSphere(Tuning->LosSphereRadius);
+
+	TArray<FVector, TInlineAllocator<4>> Candidates;
+	GetFiringPositions(World, Shooter, EyeLocation, TargetLocation, Candidates);
+	for (const FVector& Candidate : Candidates)
+	{
+		for (const FVector& Point : TargetPoints)
+		{
+			FHitResult Hit;
+			if (!World->SweepSingleByObjectType(Hit, Candidate, Point, FQuat::Identity,
+				ObjectParams, Sphere, Params))
+			{
+				OutPositions.Add(Candidate);
+				break;
+			}
+		}
+	}
+}
+
 EFiringStance UTacticsCombatStatics::GetFiringStance(const AActor* Shooter, const AActor* Target,
 	FVector& OutFiringEyeLocation)
 {
@@ -519,9 +568,7 @@ EFiringStance UTacticsCombatStatics::GetFiringStance(const AActor* Shooter, cons
 		TargetLocation - FVector(0.f, 0.f, 20.f)
 	};
 
-	FCollisionObjectQueryParams ObjectParams;
-	ObjectParams.AddObjectTypesToQuery(ECC_WorldStatic);
-	ObjectParams.AddObjectTypesToQuery(ECC_WorldDynamic);
+	const FCollisionObjectQueryParams& ObjectParams = GetShotGeometryObjects();
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(FiringStance), /*bTraceComplex=*/false);
 	const FCollisionShape Sphere = FCollisionShape::MakeSphere(Tuning->LosSphereRadius);
 	auto SphereClear = [&](const FVector& From, const FVector& To)
@@ -571,10 +618,13 @@ EFiringStance UTacticsCombatStatics::GetFiringStance(const AActor* Shooter, cons
 			}
 			const FVector ShooterFloor =
 				Shooter->GetActorLocation() - FVector(0.f, 0.f, ShooterHalfHeight);
+			// Стена дальше цели — не «моё укрытие в сторону цели» (тот же кламп
+			// «между», что и у GetCoverAgainst).
 			const ECoverType Cover = UCoverDetectionComponent::TraceCoverAtLocation(World,
 				ShooterFloor, (TargetLocation - Shooter->GetActorLocation()).GetSafeNormal2D(),
-				Tuning->CoverTraceDistance, Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
-				Tuning->CoverTraceChannel, Shooter, Tuning->LosSphereRadius);
+				UCoverDetectionComponent::GetCoverTraceLength(Tuning, ShooterFloor, TargetLocation),
+				Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
+				Shooter, Tuning->LosSphereRadius);
 			Stance = (Cover == ECoverType::None) ? EFiringStance::Open : EFiringStance::OverCover;
 		}
 		else
@@ -782,20 +832,30 @@ bool UTacticsCombatStatics::GetPointAlongPathBudget(UObject* WorldContextObject,
 		return false;
 	}
 
-	// Бюджет урезаем ещё и клиренсом: если впереди стоящий юнит, идём до него,
-	// а не сквозь. Именно УСЕЧЕНИЕ, а не отказ — иначе AI, упёршийся в союзника,
-	// впустую пропускал бы ход вместо «подойти насколько можно».
-	TArray<FVector> Obstacles;
-	GetUnitObstacles(World, Mover, Obstacles);
-	const double ClearanceLimit = FindPathClearanceLimit(Path->PathPoints, Obstacles, GetUnitClearance(Mover));
+	// ⚠️ ПУТЬ СКВОЗЬ СОЮЗНИКА — НЕ ПРЕПЯТСТВИЕ (правило XCOM и корень «ботов
+	// гуськом», 2026-07-25).
+	//
+	// Раньше здесь бюджет дополнительно урезался `FindPathClearanceLimit`:
+	// длиной до первого места, где полилиния навмеша подходит к стоящему юниту
+	// ближе `GetUnitClearance` (≈94 см). Последствие проявлялось не в самом
+	// движении, а в `FindCoverPoint`: он считает точку достижимой, только если
+	// урезанный путь пришёл в неё (расхождение ≤ 75 см). То есть ЛЮБАЯ позиция
+	// за спиной союзника отбраковывалась как недостижимая — и бойцы могли
+	// выбирать точки только «до» товарищей, выстраиваясь в колонну.
+	//
+	// Заголовок `FindPathClearanceLimit` прямо предупреждал: «путь задевает
+	// юнита» != «дойти нельзя», навмеш строит прямую и в чистом поле пройдёт
+	// сквозь одиночного бойца, которого Detour Crowd обходит на бегу. Функция
+	// использовалась ровно вопреки собственному контракту, поэтому удалена.
+	//
+	// Занятость по-прежнему соблюдается, но там, где ей место — на КОНЦЕ пути:
+	// кандидаты в `FindCoverPoint` проверяются на диски занятости, а
+	// `MoveWithBudget` дополнительно зовёт `AdjustGoalOutOfUnits`. Встать в
+	// союзника нельзя; пробежать мимо — можно, этим и занят Detour Crowd.
 	double Remaining = PathBudget;
-	if (ClearanceLimit >= 0.)
-	{
-		Remaining = FMath::Min(Remaining, ClearanceLimit);
-	}
 	if (Remaining <= 0.)
 	{
-		return false; // упёрлись сразу на старте — двигаться некуда
+		return false;
 	}
 
 	// Идём по сегментам пути, пока не исчерпаем бюджет длины.
@@ -852,48 +912,13 @@ float UTacticsCombatStatics::GetUnitClearance(const AActor* Mover)
 	return UnitObstacleRadius + MoverRadius;
 }
 
-double UTacticsCombatStatics::FindPathClearanceLimit(const TArray<FVector>& PathPoints,
-	const TArray<FVector>& Obstacles, float Clearance)
-{
-	if (PathPoints.Num() < 2 || Obstacles.Num() == 0)
-	{
-		return -1.;
-	}
-
-	// Идём по сегментам, копим пройденную длину; на каждом ищем первую точку,
-	// где просвет до любого диска меньше Clearance. Шаг сэмплирования — доля
-	// клиренса: диск нельзя «перепрыгнуть» между двумя пробами.
-	const double Step = FMath::Max(10., static_cast<double>(Clearance) * 0.5);
-	double Travelled = 0.;
-	for (int32 i = 0; i + 1 < PathPoints.Num(); ++i)
-	{
-		FVector A = PathPoints[i];
-		FVector B = PathPoints[i + 1];
-		A.Z = 0.;
-		B.Z = 0.;
-		const double SegmentLength = FVector::Dist(A, B);
-		if (SegmentLength <= UE_KINDA_SMALL_NUMBER)
-		{
-			continue;
-		}
-
-		const int32 NumSteps = FMath::Max(1, FMath::CeilToInt(SegmentLength / Step));
-		for (int32 S = 0; S <= NumSteps; ++S)
-		{
-			const double T = static_cast<double>(S) / NumSteps;
-			const FVector Point = FMath::Lerp(A, B, T);
-			for (const FVector& Obstacle : Obstacles)
-			{
-				if (FVector::DistSquared2D(Obstacle, Point) < FMath::Square(static_cast<double>(Clearance)))
-				{
-					return Travelled + SegmentLength * T;
-				}
-			}
-		}
-		Travelled += SegmentLength;
-	}
-	return -1.; // путь чист целиком
-}
+// ⚠️ `FindPathClearanceLimit` УДАЛЕНА (2026-07-25). Она отвечала на вопрос
+// «докуда мы точно дойдём по прямой, не задев стоящего юнита», а вызывалась как
+// ответ на «достижима ли точка» — ровно вопреки предупреждению в собственном
+// заголовке. Из-за этого `FindCoverPoint` отбраковывал любую позицию за спиной
+// союзника, и бойцы строились в колонну. Единственный вызов убран, функция
+// вместе с ним: держать метрику, которую снова захочется применить не по
+// назначению, хуже, чем не иметь её вовсе.
 
 // --- Занятость (диски юнитов вместо мутаций навмеша) ---------------------------
 

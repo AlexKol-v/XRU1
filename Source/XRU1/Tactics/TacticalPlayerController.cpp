@@ -4,6 +4,7 @@
 #include "ActionPointsComponent.h"
 #include "CoverDetectionComponent.h"
 #include "CoverTuningDataAsset.h"
+#include "Components/CapsuleComponent.h" // полувысота капсулы для превью точки
 #include "TacticalAbility.h"
 #include "TacticalCameraPawn.h"
 #include "GA_Attack.h"
@@ -205,6 +206,31 @@ void ATacticalPlayerController::PlayerTick(float DeltaTime)
 	UpdateEdgeScroll();
 	UpdateHoverHighlight();
 	UpdatePathPreviewUnderCursor();
+
+	// Действующий враг вышел из-за угла и стал виден отряду — подхватываем его
+	// камерой прямо на ходу. Троттлинг тот же, что у дебага LOS: сам предикат
+	// делает сферо-свипы по всем бойцам, каждый кадр это лишнее.
+	if (PendingEnemyCameraUnit.IsValid() && IsEnemyPhaseNow())
+	{
+		const float Now = GetWorld()->GetTimeSeconds();
+		if (Now - LastEnemyVisibilityCheckTime >= LOSDebugInterval)
+		{
+			LastEnemyVisibilityCheckTime = Now;
+			AActor* const Enemy = PendingEnemyCameraUnit.Get();
+			if (UTacticsCombatStatics::IsUnitAlive(Enemy) && IsVisibleToSquad(Enemy))
+			{
+				PendingEnemyCameraUnit = nullptr;
+				if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+				{
+					Camera->SetFollowTarget(Enemy);
+				}
+			}
+		}
+	}
+	else if (!IsEnemyPhaseNow())
+	{
+		PendingEnemyCameraUnit = nullptr; // ход вернулся игроку — заявка протухла
+	}
 
 	// Дебаг LOS (xru1.LOS.Debug 1): без этого DrawDebug* внутри HasLineOfSight
 	// рисуется только в момент РЕАЛЬНОГО запроса (AI-ход, обновление HUD при
@@ -1164,6 +1190,74 @@ void ATacticalPlayerController::NotifyShotFired(AActor* Shooter, AActor* Target)
 	}
 }
 
+bool ATacticalPlayerController::TryBeginReactionShot(AActor* Shooter, AActor* Target)
+{
+	if (bReactionPlaying)
+	{
+		return false; // очередь: второй наблюдатель отработает следующим опросом
+	}
+	UWorld* World = GetWorld();
+	if (!World || !Shooter || !Target)
+	{
+		return false;
+	}
+
+	bReactionPlaying = true;
+
+	// (1) ПРЕРЫВАЕМ ДВИЖЕНИЕ ЦЕЛИ. Именно `PauseMove`, а не `StopMovement`:
+	// приказ и маршрут сохраняются, по окончании реакции боец побежит дальше с
+	// того же места. `StopMovement` отменил бы его ход целиком.
+	PausedReactionMover = nullptr;
+	if (const APawn* TargetPawn = Cast<APawn>(Target))
+	{
+		if (AUnitAIController* TargetAI = Cast<AUnitAIController>(TargetPawn->GetController()))
+		{
+			if (TargetAI->SetMovementPaused(true))
+			{
+				PausedReactionMover = Target;
+			}
+		}
+	}
+
+	// (2) Кадр выстрела. Цель уже стоит — камере есть что показывать.
+	NotifyShotFired(Shooter, Target);
+
+	// (3) Замедление мира на время кадра.
+	const ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn());
+	const float Duration = Camera ? Camera->ShotFrameDuration : 1.6f;
+	if (ReactionFireSloMoRate < 1.f)
+	{
+		UGameplayStatics::SetGlobalTimeDilation(World, ReactionFireSloMoRate);
+	}
+
+	World->GetTimerManager().SetTimer(SloMoRestoreTimer,
+		FTimerDelegate::CreateWeakLambda(this, [this]() { EndReactionWindow(); }),
+		FMath::Max(0.1f, Duration), /*bLoop=*/false);
+	return true;
+}
+
+void ATacticalPlayerController::EndReactionWindow()
+{
+	bReactionPlaying = false;
+
+	if (UWorld* World = GetWorld())
+	{
+		UGameplayStatics::SetGlobalTimeDilation(World, 1.f);
+	}
+
+	// Отпускаем бегущего. Если он погиб от реакции — контроллера/пешки уже нет,
+	// и отпускать нечего: слабая ссылка это сама проверит.
+	if (const APawn* MoverPawn = Cast<APawn>(PausedReactionMover.Get()))
+	{
+		if (AUnitAIController* MoverAI = Cast<AUnitAIController>(MoverPawn->GetController()))
+		{
+			MoverAI->SetMovementPaused(false);
+		}
+	}
+	PausedReactionMover = nullptr;
+}
+
+
 void ATacticalPlayerController::RequestOverwatch()
 {
 	if (!CanIssueCommand(ETacticalPlayerCommand::Overwatch))
@@ -1439,6 +1533,81 @@ void ATacticalPlayerController::HandleTurnStarted(ETurnPhase Phase)
 	RefreshSelectionHighlight(); // кольцо: показать в свою фазу, скрыть в ход врага
 }
 
+bool ATacticalPlayerController::IsVisibleToSquad(const AActor* Unit) const
+{
+	if (!Unit)
+	{
+		return false;
+	}
+	// Проверяем КАЖДОГО живого бойца (SquadHasLineOfSight не годится: она
+	// проверяет союзников юнита, исключая его самого).
+	for (const AUnitBase* Member : GetSquad())
+	{
+		if (Member && UTacticsCombatStatics::IsUnitAlive(Member) &&
+			FVector::Dist(Member->GetActorLocation(), Unit->GetActorLocation())
+				<= UTacticsCombatStatics::SquadVisionRange &&
+			UTacticsCombatStatics::HasLineOfSight(Member, Unit))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+FTacticalMovePreview ATacticalPlayerController::GetMovePreviewAt(const FVector& Location) const
+{
+	FTacticalMovePreview Preview;
+	const UWorld* World = GetWorld();
+	UCoverDetectionComponent* Cover = SelectedUnit ? SelectedUnit->GetCoverDetection() : nullptr;
+	const UTurnManagerSubsystem* TurnManager = World ? World->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
+	if (!Cover || !TurnManager)
+	{
+		return Preview;
+	}
+
+	// Точка ПОЛА: высоты укрытия отсчитываются от неё, глаза — пол + капсула.
+	const float HalfHeight = SelectedUnit->GetCapsuleComponent()
+		? SelectedUnit->GetCapsuleComponent()->GetScaledCapsuleHalfHeight() : 88.f;
+	const FVector FloorPoint(Location.X, Location.Y, Location.Z);
+	const FVector EyeAtPoint = FloorPoint +
+		FVector(0.f, 0.f, HalfHeight + UTacticsCombatStatics::GetCoverTuning(World)->EyeHeightOffset);
+
+	for (AActor* Enemy : TurnManager->GetOpposingUnits(SelectedUnit))
+	{
+		if (!Enemy || !UTacticsCombatStatics::IsUnitAlive(Enemy))
+		{
+			continue;
+		}
+
+		// «Простреливает» = есть линия огня в пределах дальности. Тот же
+		// предикат, что решает выстрел, — превью не может разойтись с боем.
+		const bool bInRange = FVector::Dist(FloorPoint, Enemy->GetActorLocation()) <= SelectedUnit->AttackRange;
+		if (!bInRange ||
+			!UTacticsCombatStatics::HasLineOfSightFromLocation(World, EyeAtPoint, Enemy, SelectedUnit))
+		{
+			continue;
+		}
+		++Preview.EnemiesSeeing;
+
+		const ECoverType CoverHere = Cover->EvaluateCoverAtLocation(FloorPoint, Enemy->GetActorLocation());
+		if (CoverHere != ECoverType::None)
+		{
+			++Preview.EnemiesCovered;
+			Preview.BestCover = FMath::Max(Preview.BestCover, CoverHere);
+		}
+		else
+		{
+			++Preview.EnemiesExposed;
+		}
+
+		if (UTacticsCombatStatics::IsTargetFlankedByLocation(Enemy, FloorPoint))
+		{
+			++Preview.EnemiesFlanked;
+		}
+	}
+	return Preview;
+}
+
 void ATacticalPlayerController::HandleEnemyUnitActivated(AActor* Unit)
 {
 	if (!Unit)
@@ -1448,25 +1617,16 @@ void ATacticalPlayerController::HandleEnemyUnitActivated(AActor* Unit)
 
 	// XCOM: камера сопровождает действующего врага, но только если отряд его
 	// ВИДИТ — скрытые враги ходят «за кадром», их позицию камера не выдаёт.
-	// Проверяем КАЖДОГО живого бойца (SquadHasLineOfSight не годится: она
-	// проверяет союзников юнита, исключая его самого).
-	bool bVisibleToSquad = false;
-	for (const AUnitBase* Member : GetSquad())
+	if (!IsVisibleToSquad(Unit))
 	{
-		if (Member && UTacticsCombatStatics::IsUnitAlive(Member) &&
-			FVector::Dist(Member->GetActorLocation(), Unit->GetActorLocation())
-				<= UTacticsCombatStatics::SquadVisionRange &&
-			UTacticsCombatStatics::HasLineOfSight(Member, Unit))
-		{
-			bVisibleToSquad = true;
-			break;
-		}
-	}
-	if (!bVisibleToSquad)
-	{
+		// Пока не видим — берём на заметку. Как только он выйдет из-за угла,
+		// PlayerTick подхватит его камерой прямо на бегу (XCOM показывает
+		// вражеский ход с момента ОБНАРУЖЕНИЯ, а не только с его начала).
+		PendingEnemyCameraUnit = Unit;
 		return;
 	}
 
+	PendingEnemyCameraUnit = nullptr;
 	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
 	{
 		Camera->SetFollowTarget(Unit); // следуем весь его ход (движение + выстрел)

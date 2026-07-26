@@ -24,6 +24,8 @@
 #include "Engine/World.h"
 #include "TimerManager.h"
 #include "HAL/IConsoleManager.h"
+#include "CoreGlobals.h"        // GFrameCounter — зерно детерминированных розыгрышей
+#include "Math/RandomStream.h"
 
 /**
  * Диагностика решений AI в бою: почему враг стреляет/бежит/стоит. Под cvar,
@@ -64,9 +66,11 @@ AUnitAIController::AUnitAIController(const FObjectInitializer& ObjectInitializer
 	// Новое поведение добавляется НАСЛЕДНИКОМ UAIActionEvaluator и строкой сюда
 	// (или в BP-наследнике контроллера), существующие оценщики не правятся.
 	ActionEvaluators.Add(CreateDefaultSubobject<UAIEval_Retreat>(TEXT("Eval_Retreat")));
-	ActionEvaluators.Add(CreateDefaultSubobject<UAIEval_MoveToCover>(TEXT("Eval_MoveToCover")));
 	ActionEvaluators.Add(CreateDefaultSubobject<UAIEval_Shoot>(TEXT("Eval_Shoot")));
+	ActionEvaluators.Add(CreateDefaultSubobject<UAIEval_HunkerDown>(TEXT("Eval_HunkerDown")));
+	ActionEvaluators.Add(CreateDefaultSubobject<UAIEval_MoveToCover>(TEXT("Eval_MoveToCover")));
 	ActionEvaluators.Add(CreateDefaultSubobject<UAIEval_AdvanceToCover>(TEXT("Eval_AdvanceToCover")));
+	ActionEvaluators.Add(CreateDefaultSubobject<UAIEval_Overwatch>(TEXT("Eval_Overwatch")));
 	ActionEvaluators.Add(CreateDefaultSubobject<UAIEval_CloseDistance>(TEXT("Eval_CloseDistance")));
 }
 
@@ -80,6 +84,20 @@ void AUnitAIController::BeginPlay()
 	{
 		Crowd->SetCrowdAvoidanceQuality(ECrowdAvoidanceQuality::High);
 		Crowd->SetCrowdCollisionQueryRange(600.f);
+
+		// ⚠️ РАЗДЕЛЕНИЕ АГЕНТОВ — включается ОТДЕЛЬНО от избегания и по умолчанию
+		// ВЫКЛЮЧЕНО. Avoidance предсказывает столкновения по скоростям и работает
+		// только между ДВИЖУЩИМИСЯ агентами; separation расталкивает и от
+		// стоящих. У нас ходы строго последовательные — движется ровно один
+		// боец, — поэтому без separation Detour Crowd не мешал ему упереться в
+		// строй и застрять. Это и наблюдалось после снятия усечения пути (N1):
+		// маршрут честно идёт сквозь своих, а расталкивать было нечему.
+		Crowd->SetCrowdSeparation(true);
+		Crowd->SetCrowdSeparationWeight(CrowdSeparationWeight);
+
+		// Путь пересчитывается, когда агента сносит с коридора, — иначе он
+		// «прилипает» к обойдённому препятствию вместо возврата на маршрут.
+		Crowd->SetCrowdPathOptimizationRange(600.f);
 	}
 
 	// Конфиг зрения применяем ЗДЕСЬ, а не только в конструкторе. Значения
@@ -270,6 +288,16 @@ FAIDecisionContext AUnitAIController::BuildDecisionContext(AUnitBase* Unit, AAct
 	Context.bCanShootNow = UGA_Attack::CanTargetActor(Unit, PrimaryThreat);
 	Context.bLowHealth = Unit && Unit->GetHealth() <= Unit->GetMaxHealth() * RetreatHealthFraction;
 	Context.bCoverMoveDoneThisTurn = bCoverMoveDoneThisTurn;
+
+	// A8: лимит одновременно атакующих. Счётчик общий на сторону и живёт в
+	// TurnManager — контроллер знает только про своего юнита.
+	if (const UWorld* World = GetWorld())
+	{
+		if (const UTurnManagerSubsystem* TurnManager = World->GetSubsystem<UTurnManagerSubsystem>())
+		{
+			Context.bAttackThrottled = TurnManager->IsAttackThrottled(Unit);
+		}
+	}
 	return Context;
 }
 
@@ -380,10 +408,24 @@ bool AUnitAIController::ExecuteDecision(AUnitBase* Unit, const FAIDecision& Deci
 		return MoveWithBudget(Unit, Decision.Destination, Decision.AcceptanceRadius);
 
 	case EAIActionKind::Overwatch:
+		// Обе способности сжигают остаток AP (bConsumesAllRemainingAP), поэтому
+		// следующий шаг увидит 0 очков, не найдёт применимого оценщика и штатно
+		// завершит активацию. Планировать шаг всё равно НУЖНО: без него ход
+		// повис бы (ни FinishUnitTurn, ни следующего AdvanceTurnStep).
+		if (!TryActivateSelfAbility(Unit, Unit ? Unit->OverwatchAbilityClass : nullptr))
+		{
+			return false;
+		}
+		ScheduleNextStep();
+		return true;
+
 	case EAIActionKind::Hunker:
-		// Появятся в фазе W2 вместе со своими оценщиками. До тех пор ни один
-		// оценщик такого решения не возвращает, и сюда мы не попадаем.
-		return false;
+		if (!TryActivateSelfAbility(Unit, Unit ? Unit->HunkerAbilityClass : nullptr))
+		{
+			return false;
+		}
+		ScheduleNextStep();
+		return true;
 
 	default:
 		return false; // Skip: делать нечего — активация окончена
@@ -454,7 +496,10 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 		Threats.Add(const_cast<AActor*>(Threat)); // перцепция могла отстать на кадр
 	}
 
-	// Союзники — для штрафа за кучность (не лезть в одно укрытие втроём).
+	// Союзники — для штрафа за кучность (не лезть в одно укрытие втроём) И для
+	// члена сплочённости (XCOM `fAllyVisWeight`): это два РАЗНЫХ механизма,
+	// минимальная дистанция разводит, видимость своих не даёт разбрестись.
+	TArray<AActor*> Allies;
 	TArray<FVector> AllyLocations;
 	if (const UTurnManagerSubsystem* TurnManager = World->GetSubsystem<UTurnManagerSubsystem>())
 	{
@@ -462,6 +507,7 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 		{
 			if (Ally && Ally != Unit && UTacticsCombatStatics::IsUnitAlive(Ally))
 			{
+				Allies.Add(Ally);
 				AllyLocations.Add(Ally->GetActorLocation());
 			}
 		}
@@ -536,6 +582,25 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 				UTacticsCombatStatics::HasLineOfSightFromLocation(World, EyeAtPoint, ThreatActor, Unit))
 			{
 				++Out.ThreatsVisible;
+
+				// 2b) A7 `SafeToMove`. Видимость взаимна: раз я вижу оттуда врага,
+				// то и он видит меня — а если он В НАБЛЮДЕНИИ, то встретит меня
+				// реакционным выстрелом. Считается ЗДЕСЬ, потому что стоит ровно
+				// ноль: линия огня для этой пары уже посчитана строкой выше.
+				//
+				// ⚠️ Осознанное упрощение против XCOM: там проверяется весь
+				// МАРШРУТ, у нас — только КОНЕЧНАЯ точка. Полная проверка пути
+				// стоила бы отдельного перебора LOS по каждому отрезку каждого из
+				// 48 кандидатов. Конечная точка — доминирующий член: именно на ней
+				// юнит остаётся стоять до конца хода противника.
+				if (const UAbilitySystemComponent* ThreatASC =
+					UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(ThreatActor))
+				{
+					if (ThreatASC->HasMatchingGameplayTag(TacticsGameplayTags::State_Overwatch))
+					{
+						++Out.ThreatsOverwatching;
+					}
+				}
 			}
 
 			// 3) КОГО ФЛАНКИРУЕМ — считается В ОБРАТНУЮ сторону: не «прикрыт ли
@@ -545,6 +610,18 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 				++Out.ThreatsFlanked;
 			}
 		}
+
+		// 4) СПЛОЧЁННОСТЬ (XCOM `fAllyVisWeight`): видно ли отсюда своих. Быстрый
+		// путь LOS без выглядывания — вопрос «поддержат ли меня», а не «попаду ли
+		// я», поэтому края укрытий перебирать незачем.
+		for (const AActor* Ally : Allies)
+		{
+			if (UTacticsCombatStatics::HasLineOfSightFromLocation(World, EyeAtPoint, Ally))
+			{
+				++Out.AlliesVisible;
+			}
+		}
+
 		return CoverSum / Threats.Num();
 	};
 
@@ -569,6 +646,18 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 			? static_cast<float>(Out.ThreatsVisible) / FMath::Max(1, MaxScoredThreats)
 			: -1.f;
 		Score += VisibilityScore * EnemyVisibilityWeight;
+
+		// Сплочённость: доля видимых своих × вес (XCOM `fAllyVisWeight`). Без
+		// этого члена у AI был только анти-кучный штраф — отряд умел разбегаться,
+		// но не умел держать линию.
+		if (Allies.Num() > 0)
+		{
+			Score += (static_cast<float>(Out.AlliesVisible) / Allies.Num()) * AllyVisibilityWeight;
+		}
+
+		// A7 `SafeToMove`: точка под чужим наблюдением. Штраф за КАЖДОГО
+		// наблюдателя — два овервотча на одном направлении вдвое опаснее одного.
+		Score -= Out.ThreatsOverwatching * OverwatchExposurePenalty;
 
 		// Линию огня считаем по ЛЮБОЙ угрозе, а не только по основной цели:
 		// иначе точка, откуда простреливается сосед, но не «главный», честно
@@ -684,8 +773,11 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 					const FVector TraceStart = CandidatePoint + FVector(0.f, 0.f, Tuning->HalfCoverHeight);
 					FHitResult WallHit;
 					FCollisionQueryParams SnapParams(SCENE_QUERY_STAT(CoverSnap), false, Unit);
-					if (World->LineTraceSingleByChannel(WallHit, TraceStart,
-						TraceStart + ToThreat * CoverSnapDistance, Tuning->CoverTraceChannel, SnapParams))
+					// Та же геометрия, что у LOS и укрытия: иначе «стеной» для
+					// прилипания оказывался стоящий на пути юнит.
+					if (World->LineTraceSingleByObjectType(WallHit, TraceStart,
+						TraceStart + ToThreat * CoverSnapDistance,
+						UTacticsCombatStatics::GetShotGeometryObjects(), SnapParams))
 					{
 						// Отступаем от стены на клиренс: встать В стену нельзя,
 						// а трейс укрытия должен доставать до неё (< CoverTraceDistance).
@@ -778,6 +870,24 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 	return bFound;
 }
 
+bool AUnitAIController::TryActivateSelfAbility(AUnitBase* Unit, TSubclassOf<UTacticalAbility> AbilityClass)
+{
+	UActionPointsComponent* ActionPoints = Unit ? Unit->GetActionPoints() : nullptr;
+	UAbilitySystemComponent* ASC = Unit ? Unit->GetAbilitySystemComponent() : nullptr;
+	if (!ActionPoints || !ASC || !AbilityClass)
+	{
+		return false;
+	}
+
+	// Признак успеха — СПИСАННЫЕ AP, а не возврат TryActivateAbilityByClass: тот
+	// отвечает true и когда способность активировалась, но тут же отказалась по
+	// своим правилам (например, hunker без укрытия). Тот же критерий, что у
+	// TryFireAtTarget, — иначе шаг хода повторялся бы вхолостую.
+	const int32 PointsBefore = ActionPoints->CurrentActionPoints;
+	ASC->TryActivateAbilityByClass(AbilityClass);
+	return ActionPoints->CurrentActionPoints < PointsBefore;
+}
+
 bool AUnitAIController::TryFireAtTarget(AUnitBase* Unit, AActor* Target)
 {
 	UActionPointsComponent* ActionPoints = Unit ? Unit->GetActionPoints() : nullptr;
@@ -804,7 +914,12 @@ bool AUnitAIController::TryFireAtTarget(AUnitBase* Unit, AActor* Target)
 
 		// Способность не заплатила AP (отказала по своим правилам) — считаем,
 		// что выстрела не было: иначе шаг хода повторялся бы бесконечно.
-		return ActionPoints->CurrentActionPoints < PointsBefore;
+		const bool bFired = ActionPoints->CurrentActionPoints < PointsBefore;
+		if (bFired)
+		{
+			NotifyAttackedForThrottle(Unit);
+		}
+		return bFired;
 	}
 
 	// Фолбэк: у юнита не назначен AttackAbilityClass (не настроен BP; о чём
@@ -814,7 +929,52 @@ bool AUnitAIController::TryFireAtTarget(AUnitBase* Unit, AActor* Target)
 	ActionPoints->SpendAllRemaining();
 	UTacticsCombatStatics::ResolveShot(Unit, Target,
 		UGA_Attack::ComputeEffectiveAim(Unit, Target), Unit->ShotDamage, DamageEffect);
+	NotifyAttackedForThrottle(Unit);
 	return true;
+}
+
+bool AUnitAIController::SetMovementPaused(bool bPaused)
+{
+	UPathFollowingComponent* PathComp = GetPathFollowingComponent();
+	if (!PathComp)
+	{
+		return false;
+	}
+	const FAIRequestID RequestID = PathComp->GetCurrentRequestId();
+	if (!RequestID.IsValid())
+	{
+		return false; // не в пути — приостанавливать нечего
+	}
+
+	if (bPaused)
+	{
+		if (PathComp->GetStatus() != EPathFollowingStatus::Moving)
+		{
+			return false;
+		}
+		PathComp->PauseMove(RequestID, EPathFollowingVelocityMode::Reset);
+		return true;
+	}
+
+	if (PathComp->GetStatus() == EPathFollowingStatus::Paused)
+	{
+		PathComp->ResumeMove(RequestID);
+	}
+	return true;
+}
+
+void AUnitAIController::NotifyAttackedForThrottle(const AUnitBase* Unit)
+{
+	// A8: счёт «сколько врагов вступило в бой в этом ходу». Отмечаем ровно в
+	// точке ОПЛАЧЕННОГО выстрела — оба пути (способность и фолбэк) идут сюда,
+	// иначе лимит зависел бы от того, настроен ли у BP AttackAbilityClass.
+	if (const UWorld* World = GetWorld())
+	{
+		if (UTurnManagerSubsystem* TurnManager = World->GetSubsystem<UTurnManagerSubsystem>())
+		{
+			TurnManager->NotifyUnitAttacked(Unit);
+		}
+	}
 }
 
 bool AUnitAIController::StepInvestigate(AUnitBase* Unit)
@@ -825,9 +985,43 @@ bool AUnitAIController::StepInvestigate(AUnitBase* Unit)
 		return StepPatrol(Unit);
 	}
 
-	// Дошли до точки интереса и никого не нашли — успокаиваемся до патруля.
+	// Дошли до точки интереса и никого не нашли.
 	if (FVector::Dist2D(Unit->GetActorLocation(), LastKnownThreatLocation) <= InvestigateAcceptanceRadius * 2.f)
 	{
+		// ⚠️ ЗДЕСЬ МЫ СОЗНАТЕЛЬНО ЛУЧШЕ XCOM 2.
+		//
+		// Самая частая претензия игроков к AI XCOM 2: «враги практически никогда
+		// не встают в овервотч, если СЕЙЧАС не видят отряд» — то есть боец,
+		// который слышал стрельбу и знает, откуда она, всё равно тупо ходит по
+		// маршруту вместо того, чтобы держать направление под прицелом. Именно
+		// это чинят популярные моды вроде «All Pods Active».
+		//
+		// У нас данные для правильного поведения уже есть: `Investigate`
+		// означает «знаю точку, не вижу цель». Разворачиваемся к ней и с
+		// вероятностью `InvestigateOverwatchChance` встаём в наблюдение.
+		// Розыгрыш — детерминированное зерно (как у `UAIEval_Overwatch`): решение
+		// обязано быть воспроизводимым, иначе лог решений врёт.
+		if (Unit->OverwatchAbilityClass && InvestigateOverwatchChance > 0.f)
+		{
+			const uint32 Seed = HashCombine(GetTypeHash(Unit), static_cast<uint32>(GFrameCounter));
+			if (FRandomStream(static_cast<int32>(Seed)).GetFraction() < InvestigateOverwatchChance)
+			{
+				UTacticsCombatStatics::FaceActorTowards(Unit, LastKnownThreatLocation);
+				if (TryActivateSelfAbility(Unit, Unit->OverwatchAbilityClass))
+				{
+					if (CVarLogAICombat.GetValueOnGameThread() != 0)
+					{
+						UE_LOG(LogTemp, Log, TEXT("[AI] %s: разведка — встал в наблюдение ")
+							TEXT("на последнюю известную точку врага"), *GetNameSafe(Unit));
+					}
+					// Наблюдение сжигает остаток AP; шаг планируем, чтобы ход
+					// штатно завершился (как в ExecuteDecision).
+					ScheduleNextStep();
+					return true;
+				}
+			}
+		}
+
 		bHasThreatLocation = false;
 		AlertState = EUnitAlertState::Patrol;
 		return StepPatrol(Unit);
@@ -1030,6 +1224,10 @@ void AUnitAIController::OnMoveCompleted(FAIRequestID RequestID, const FPathFollo
 		if (Cover)
 		{
 			Cover->EvaluateSurroundings();
+			// Встал на позицию — прижаться к стене и развернуться по её нормали.
+			// Делается ПОСЛЕ первой оценки (нужно знать, к чему прижиматься) и
+			// сам пересчитывает укрытие от новой точки.
+			Unit->HugCover();
 		}
 
 		// КОНТРОЛЬ «ВСТАЛ ТУДА, КУДА РЕШИЛ». Укрытие оценивалось в конкретной
@@ -1213,8 +1411,24 @@ AActor* AUnitAIController::FindVisibleTarget() const
 		const float Score = ScoreTarget(MyUnit, Actor);
 		if (bLogAI)
 		{
-			UE_LOG(LogTemp, Log, TEXT("[AI]   цель %s: скор %.0f (шанс %.0f%%)"),
-				*GetNameSafe(Actor), Score, UGA_Attack::ComputeAttackHitChance(MyUnit, Actor));
+			// ⚠️ Отдельно проговариваем ПРОВОКАЦИЮ. Без этого «танк крикнул, а по
+			// нему не стреляют» неотличимо на глаз от трёх разных причин: тега
+			// нет, цель вне радиуса, выстрела по ней нет. В логе была видна
+			// только итоговая цифра, и разобрать было нечем.
+			const TCHAR* TauntNote = TEXT("");
+			if (const UAbilitySystemComponent* CandidateASC =
+				UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(Actor))
+			{
+				if (CandidateASC->HasMatchingGameplayTag(TacticsGameplayTags::State_Taunting))
+				{
+					const float TauntDist = FVector::Dist(MyUnit->GetActorLocation(), Actor->GetActorLocation());
+					TauntNote = TauntDist <= TauntPriorityRadius
+						? TEXT(" [ПРОВОКАЦИЯ активна]")
+						: TEXT(" [провоцирует, но ВНЕ радиуса]");
+				}
+			}
+			UE_LOG(LogTemp, Log, TEXT("[AI]   цель %s: скор %.0f (шанс %.0f%%)%s"),
+				*GetNameSafe(Actor), Score, UGA_Attack::ComputeAttackHitChance(MyUnit, Actor), TauntNote);
 		}
 
 		if (Score > BestScore)

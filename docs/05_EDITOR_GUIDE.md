@@ -31,8 +31,12 @@ Content/
    будет создана.
 2. **Input**: убедиться, что Default Player Input Class = Enhanced Player Input
    (UE5.7 по умолчанию так).
-3. **Collision**: канал укрытий не нужен — используем `ECC_WorldStatic`
-   (уже дефолт `CoverTraceChannel`); стены-укрытия должны блокировать WorldStatic.
+3. **Collision**: отдельный канал укрытий не нужен и его больше нет
+   (`CoverTraceChannel` удалён 2026-07-25). Линия огня И укрытие смотрят на одни
+   и те же ТИПЫ ОБЪЕКТОВ: `WorldStatic` + `WorldDynamic`. Требование к контенту:
+   стены-укрытия должны быть `WorldStatic` (статичные) или `WorldDynamic`
+   (двигаемые пропсы). ⚠️ Юниты (`Pawn`) укрытием не считаются намеренно — трейс
+   по каналу цеплял их капсулы, и стрелок вплотную «укрывал» собственную цель.
 4. **Navigation Mesh**: Runtime Generation = Static (карты статичные).
 5. **Packaging** (этап 9): List of maps to include — все 4 карты.
 

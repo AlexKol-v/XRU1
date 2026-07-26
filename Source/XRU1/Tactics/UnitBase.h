@@ -3,9 +3,12 @@
 #include "CoreMinimal.h"
 #include "TDCombatant.h"
 #include "TacticsTypes.h"
+#include "CoverTypes.h"       // EFiringStance для выбора монтажа выстрела
+#include "UnitVisualState.h"  // единая точка состояния для ABP (S2)
 #include "UnitBase.generated.h"
 
 class UActionPointsComponent;
+class UAnimMontage;
 class UCoverDetectionComponent;
 class UCurveFloat;
 class UDecalComponent;
@@ -178,6 +181,56 @@ public:
 	void NotifyUnitStateChanged();
 
 	/**
+	 * ЕДИНЫЙ СРЕЗ СОСТОЯНИЯ ДЛЯ АНИМАЦИЙ (фаза S2). Anim Blueprint читает ЭТО
+	 * одним узлом вместо опроса шести источников (теги ASC, флаги смерти,
+	 * компонент укрытий, статус path following).
+	 *
+	 * Пересобирается в `NotifyUnitStateChanged` — то есть ровно тогда, когда
+	 * что-то изменилось, а не каждый кадр. `bMoving` — единственное поле,
+	 * которое ABP имеет право уточнять сам по скорости, если нужна плавность.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Visual")
+	const FUnitVisualState& GetVisualState() const { return VisualState; }
+
+	/**
+	 * Какой МОНТАЖ выстрела играть по цели прямо сейчас: стойка берётся из
+	 * `UTacticsCombatStatics::GetFiringStance`, а конкретный ассет — из
+	 * `FireMontage*` этого юнита. BP-хук `OnShotFired` зовёт это и играет
+	 * результат, вместо того чтобы разбирать стойку у себя.
+	 *
+	 * OutFiringEyeLocation — точка, ОТКУДА реально идёт выстрел (для VFX дула и
+	 * для визуального сдвига при `StepOut`). ⚠️ Сдвиг только визуальный, с
+	 * возвратом: позиция юнита, его укрытие и диск занятости не меняются.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Visual")
+	UAnimMontage* GetFireMontageFor(const AActor* Target, EFiringStance& OutStance,
+		FVector& OutFiringEyeLocation) const;
+
+	/**
+	 * ПРИЖАТЬСЯ К УКРЫТИЮ: развернуть юнита лицом к стене по её нормали и
+	 * подтянуть вплотную. Зовётся по прибытии на позицию.
+	 *
+	 * ⚠️ Решение принято вместо отдельной анимации «вжаться в высокое укрытие»:
+	 * поза за укрытием читается САМА, если боец стоит вплотную и лицом к стене.
+	 * Одна анимация приседа плюс правильная постановка дают то же, что набор
+	 * cover-анимаций, но без набора cover-анимаций.
+	 *
+	 * ⚠️ Подтягивание НЕ меняет тактическую клетку: сдвиг ограничен
+	 * `CoverHugMaxNudge`, диск занятости и укрытие считаются от новой позиции
+	 * тем же кодом, что и раньше (сдвиг мал и остаётся внутри своей клетки).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Visual")
+	void HugCover();
+
+	/** Максимальный подтяг к стене при `HugCover` (см). 0 — только разворот. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Visual", meta = (ClampMin = "0"))
+	float CoverHugMaxNudge = 45.f;
+
+	/** Зазор между капсулой и стеной при прижимании (см). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Visual", meta = (ClampMin = "0"))
+	float CoverHugClearance = 6.f;
+
+	/**
 	 * Остаток применений способности за миссию (для серости кнопки HUD).
 	 * -1 = без лимита или способность юниту не выдана.
 	 */
@@ -271,4 +324,43 @@ protected:
 	bool bIsDead = false;
 	bool bIsDowned = false;
 	bool bIsEvacuated = false;
+
+	/** Кэш среза состояния для ABP; пересобирается в NotifyUnitStateChanged. */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Tactics|Visual",
+		meta = (AllowPrivateAccess = "true"))
+	FUnitVisualState VisualState;
+
+	/** Пересобрать VisualState из фактического состояния (единственное место). */
+	void RebuildVisualState();
+
+public:
+	// --- Монтажи действий (дизайнерские слоты, Ф10) ---------------------------
+	//
+	// ⚠️ ПОЗА живёт в стейт-машине ABP и берётся из `VisualState`; здесь только
+	// ДЕЙСТВИЯ — то, что играется один раз через Default Slot. Разделение
+	// обязательное: смешивание даёт залипшие состояния.
+
+	/** Выстрел стоя (нет укрытия между мной и целью). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Visual|Montages")
+	TObjectPtr<UAnimMontage> FireMontageOpen;
+
+	/** Привстать над низким укрытием, выстрелить, сесть обратно. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Visual|Montages")
+	TObjectPtr<UAnimMontage> FireMontageOverCover;
+
+	/** Выйти за край высокого укрытия, выстрелить, вернуться. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Visual|Montages")
+	TObjectPtr<UAnimMontage> FireMontageStepOut;
+
+	/** Реакция на попадание. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Visual|Montages")
+	TObjectPtr<UAnimMontage> HitReactMontage;
+
+	/** Смерть. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Visual|Montages")
+	TObjectPtr<UAnimMontage> DeathMontage;
+
+	/** Вход в наблюдение (вскинуть оружие). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Visual|Montages")
+	TObjectPtr<UAnimMontage> OverwatchEnterMontage;
 };

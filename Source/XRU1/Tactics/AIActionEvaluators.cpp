@@ -2,6 +2,9 @@
 #include "UnitAIController.h"
 #include "UnitBase.h"
 #include "GA_Attack.h"
+#include "CoverDetectionComponent.h" // BestCoverAround — предусловие глухой обороны
+#include "CoreGlobals.h"        // GFrameCounter — зерно розыгрыша овервотча
+#include "Math/RandomStream.h"
 
 // --- UAIEval_Retreat ----------------------------------------------------------
 
@@ -93,7 +96,10 @@ UAIEval_Shoot::UAIEval_Shoot()
 
 bool UAIEval_Shoot::IsApplicable(const FAIDecisionContext& Context) const
 {
-	return Context.bCanShootNow && Context.PrimaryThreat && Context.ActionPointsLeft >= 1;
+	// A8: при достигнутом лимите атакующих выстрел запрещён — юнит проваливается
+	// в занятую ветку (наблюдение/перемещение), а не стоит столбом.
+	return Context.bCanShootNow && !Context.bAttackThrottled &&
+		Context.PrimaryThreat && Context.ActionPointsLeft >= 1;
 }
 
 float UAIEval_Shoot::ScoreAction(const FAIDecisionContext& Context, FAIDecision& OutDecision) const
@@ -152,6 +158,46 @@ float UAIEval_AdvanceToCover::ScoreAction(const FAIDecisionContext& Context, FAI
 	return BasePriority;
 }
 
+// --- UAIEval_HunkerDown -------------------------------------------------------
+
+UAIEval_HunkerDown::UAIEval_HunkerDown()
+{
+	// Выше манёвра (80): пока укрытие РАБОТАЕТ, вжаться в него выгоднее, чем
+	// перебегать под ответным огнём. Ниже отступления (120): если юнит открыт,
+	// удваивать нечего и надо уходить.
+	BasePriority = 85.f;
+	DebugName = TEXT("HunkerDown");
+}
+
+bool UAIEval_HunkerDown::IsApplicable(const FAIDecisionContext& Context) const
+{
+	if (!Context.bLowHealth || Context.bCanShootNow || Context.bExposed ||
+		Context.ActionPointsLeft < 1 || !Context.Unit || !Context.Unit->HunkerAbilityClass)
+	{
+		return false;
+	}
+
+	// ⚠️ ДВА РАЗНЫХ УСЛОВИЯ УКРЫТИЯ, и нужны оба.
+	//  - `!bExposed` — «укрытие работает ПРОТИВ ГЛАВНОЙ УГРОЗЫ» (луч к стрелку);
+	//    это тактический смысл: удваивать нечего, если конкретный враг нас
+	//    и так простреливает.
+	//  - `BestCoverAround != None` — ровно то, что проверяет
+	//    `UGA_HunkerDown::CanActivateAbility` (через тег Cover.Half/Full).
+	// Совпадают они почти всегда, но не тождественны: луч к угрозе и 8 лучей по
+	// кругу — разные выборки направлений. Без второй проверки бот изредка
+	// выбирал бы действие, которое способность тут же отклоняет, и сжигал
+	// активацию впустую.
+	const UCoverDetectionComponent* Cover = Context.Unit->GetCoverDetection();
+	return Cover && Cover->BestCoverAround != ECoverType::None;
+}
+
+float UAIEval_HunkerDown::ScoreAction(const FAIDecisionContext& Context, FAIDecision& OutDecision) const
+{
+	OutDecision.Kind = EAIActionKind::Hunker;
+	OutDecision.Reason = TEXT("глухая оборона (мало HP, укрытие держит, ответить нечем)");
+	return BasePriority;
+}
+
 // --- UAIEval_CloseDistance ----------------------------------------------------
 
 UAIEval_CloseDistance::UAIEval_CloseDistance()
@@ -185,4 +231,68 @@ float UAIEval_CloseDistance::ScoreAction(const FAIDecisionContext& Context, FAID
 	OutDecision.AcceptanceRadius = 40.f;
 	OutDecision.Reason = TEXT("сближение до боевой дистанции (укрытий по пути нет)");
 	return BasePriority;
+}
+
+// --- UAIEval_Overwatch --------------------------------------------------------
+
+UAIEval_Overwatch::UAIEval_Overwatch()
+{
+	// ПОТОЛОК 45 — выше наступления к укрытию (40), но достижим только в
+	// «занятой» ветке A8: юнит, которому лимит атакующих ЗАПРЕТИЛ стрелять,
+	// обязан удерживать позицию, а не бежать вперёд (иначе лимит превращается в
+	// «беги на игрока безоружным»).
+	// В обычном случае («стрелять не по кому») скор = IdleOverwatchScore = 30,
+	// то есть ниже наступления: сначала пробуем занять позицию для выстрела.
+	BasePriority = 45.f;
+	DebugName = TEXT("Overwatch");
+}
+
+bool UAIEval_Overwatch::IsApplicable(const FAIDecisionContext& Context) const
+{
+	if (Context.ActionPointsLeft < 1 || Context.VisibleThreats.Num() == 0 ||
+		!Context.Unit || !Context.Unit->OverwatchAbilityClass)
+	{
+		return false;
+	}
+	// Два РАЗНЫХ основания встать в наблюдение:
+	//  - «не могу» (нет линии огня / вне дальности) — классический случай;
+	//  - «не разрешено» (A8, лимит атакующих) — занятая ветка XCOM.
+	return !Context.bCanShootNow || Context.bAttackThrottled;
+}
+
+float UAIEval_Overwatch::ScoreAction(const FAIDecisionContext& Context, FAIDecision& OutDecision) const
+{
+	OutDecision.Kind = EAIActionKind::Overwatch;
+
+	// Занятая ветка A8 — БЕЗ розыгрыша и с полным приоритетом: юниту прямо
+	// запретили стрелять, «иногда вместо этого побегу вперёд» здесь означало бы
+	// подставиться под отряд без возможности ответить.
+	if (Context.bAttackThrottled)
+	{
+		OutDecision.Reason = TEXT("наблюдение (лимит атакующих исчерпан — держим позицию)");
+		return BasePriority;
+	}
+
+	if (ActivationChance <= 0.f)
+	{
+		return -1.f;
+	}
+
+	// РОЗЫГРЫШ (аналог RandSelector XCOM). Зерно — юнит + номер кадра: внутри
+	// одной активации оно постоянно (значит ScoreAction воспроизводима и лог не
+	// врёт), а между активациями меняется. Обычный FMath::FRand дал бы разный
+	// ответ при повторном вызове того же оценщика и сделал бы лог бесполезным.
+	if (ActivationChance < 1.f)
+	{
+		const uint32 Seed = HashCombine(GetTypeHash(Context.Unit),
+			static_cast<uint32>(GFrameCounter));
+		if (FRandomStream(static_cast<int32>(Seed)).GetFraction() >= ActivationChance)
+		{
+			OutDecision.Reason = TEXT("наблюдение — розыгрыш не выпал");
+			return -1.f;
+		}
+	}
+
+	OutDecision.Reason = TEXT("наблюдение (стрелять не по кому — ждём движения)");
+	return IdleOverwatchScore;
 }

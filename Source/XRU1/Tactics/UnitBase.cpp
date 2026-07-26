@@ -6,6 +6,7 @@
 #include "TacticalAbility.h"
 #include "TacticalClassAbilities.h"
 #include "TacticsGameplayTags.h"
+#include "TacticsCombatStatics.h" // IsUnitInTransit / GetFiringStance для VisualState
 #include "TDAttributeSet.h"
 #include "UnitClasses.h"
 #include "AbilitySystemComponent.h"
@@ -123,7 +124,125 @@ void AUnitBase::SetHoverHighlight(bool bHovered)
 
 void AUnitBase::NotifyUnitStateChanged()
 {
+	// Срез для анимаций пересобирается ЗДЕСЬ и только здесь: это единственная
+	// точка, которую системы обязаны дёргать после фактического изменения
+	// состояния. Значит ABP и HUD всегда видят одну и ту же картину.
+	RebuildVisualState();
 	OnUnitStateChanged.Broadcast();
+}
+
+void AUnitBase::RebuildVisualState()
+{
+	FUnitVisualState State;
+
+	const UCoverDetectionComponent* Cover = GetCoverDetection();
+	State.Cover = Cover ? Cover->BestCoverAround : ECoverType::None;
+	State.CoverDirection = Cover ? Cover->BestCoverDirection : FVector::ZeroVector;
+	if (!State.CoverDirection.IsNearlyZero())
+	{
+		// В систему координат юнита: ABP думает «стена справа/слева/спереди», а
+		// не мировыми осями — иначе поза зависела бы от поворота камеры.
+		State.CoverDirectionLocal = GetActorRotation().UnrotateVector(State.CoverDirection);
+	}
+
+	State.bMoving = UTacticsCombatStatics::IsUnitInTransit(this);
+	State.bPlayerSide = GetGenericTeamId() == FGenericTeamId(TacticsTeamIds::Player);
+
+	// ПОЗА — приоритетом сверху вниз, тем же порядком, что у статуса в HUD
+	// (`UTacticalHUDStyleData::GetStatusForUnit`): один порядок на иконку и на
+	// анимацию, иначе игрок видит «глухая оборона» в HUD и бег в кадре.
+	const UAbilitySystemComponent* ASC = GetAbilitySystemComponent();
+	const auto HasTag = [ASC](const FGameplayTag& Tag)
+	{
+		return ASC && ASC->HasMatchingGameplayTag(Tag);
+	};
+
+	if (bIsDead)                                              { State.Pose = EUnitPose::Dead; }
+	else if (bIsDowned)                                       { State.Pose = EUnitPose::Downed; }
+	else if (HasTag(TacticsGameplayTags::State_HunkeredDown)) { State.Pose = EUnitPose::Hunkered; }
+	else if (HasTag(TacticsGameplayTags::State_Overwatch))    { State.Pose = EUnitPose::Overwatch; }
+	else if (State.bMoving)                                   { State.Pose = EUnitPose::Moving; }
+	else if (State.Cover == ECoverType::Full)                 { State.Pose = EUnitPose::HighCover; }
+	else if (State.Cover == ECoverType::Half)                 { State.Pose = EUnitPose::CrouchCover; }
+	else                                                      { State.Pose = EUnitPose::Stand; }
+
+	VisualState = State;
+}
+
+void AUnitBase::HugCover()
+{
+	const UCoverDetectionComponent* Cover = GetCoverDetection();
+	if (!Cover || Cover->BestCoverAround == ECoverType::None)
+	{
+		return; // укрытия нет — прижиматься не к чему
+	}
+	FVector ToWall = Cover->BestCoverDirection;
+	ToWall.Z = 0.f;
+	if (!ToWall.Normalize())
+	{
+		return;
+	}
+
+	// (1) РАЗВОРОТ лицом к стене по её нормали. Именно к стене, а не от неё:
+	// так читается «прижался», а выстрел всё равно делается из точки пика с
+	// доворотом на цель (см. EFiringStance::StepOut).
+	UTacticsCombatStatics::FaceActorTowards(this, GetActorLocation() + ToWall * 100.f);
+
+	if (CoverHugMaxNudge <= 0.f)
+	{
+		return;
+	}
+
+	// (2) ПОДТЯГИВАНИЕ вплотную. Свипаем капсулой к стене и встаём вплотную с
+	// зазором. Свип, а не телепорт: если между юнитом и стеной кто-то есть,
+	// подтянемся ровно до него и не провалимся сквозь геометрию.
+	const UCapsuleComponent* Capsule = GetCapsuleComponent();
+	UWorld* World = GetWorld();
+	if (!Capsule || !World)
+	{
+		return;
+	}
+
+	const FVector Start = GetActorLocation();
+	const FVector End = Start + ToWall * CoverHugMaxNudge;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(CoverHug), /*bTraceComplex=*/false, this);
+	FHitResult Hit;
+	const FCollisionShape Shape = FCollisionShape::MakeCapsule(
+		Capsule->GetScaledCapsuleRadius(), Capsule->GetScaledCapsuleHalfHeight());
+
+	// ⚠️ ЕДИНСТВЕННОЕ место в Tactics/, где трейс идёт ПО КАНАЛУ, и это верно:
+	// здесь вопрос физический — «куда пролезет капсула», а не «что остановит
+	// пулю». Значит юниты обязаны учитываться (в союзника вжиматься нельзя), то
+	// есть `GetShotGeometryObjects` тут был бы ошибкой.
+	FVector NewLocation = End;
+	if (World->SweepSingleByChannel(Hit, Start, End, FQuat::Identity,
+		Capsule->GetCollisionObjectType(), Shape, Params))
+	{
+		NewLocation = Start + ToWall * FMath::Max(0.f, Hit.Distance - CoverHugClearance);
+	}
+	SetActorLocation(NewLocation, /*bSweep=*/true);
+
+	// Позиция сдвинулась — укрытие и HUD обязаны пересчитаться от НОВОЙ точки.
+	if (UCoverDetectionComponent* MutableCover = GetCoverDetection())
+	{
+		MutableCover->EvaluateSurroundings();
+	}
+	NotifyUnitStateChanged();
+}
+
+UAnimMontage* AUnitBase::GetFireMontageFor(const AActor* Target, EFiringStance& OutStance,
+	FVector& OutFiringEyeLocation) const
+{
+	// Стойка и точка выстрела берутся у ЕДИНОГО источника — того же, что решает
+	// геометрию боя. Никакой отдельной «анимационной» логики укрытий быть не
+	// должно: разойдётся с тем, что засчитала игра.
+	OutStance = UTacticsCombatStatics::GetFiringStance(this, Target, OutFiringEyeLocation);
+	switch (OutStance)
+	{
+	case EFiringStance::OverCover: return FireMontageOverCover ? FireMontageOverCover : FireMontageOpen;
+	case EFiringStance::StepOut:   return FireMontageStepOut   ? FireMontageStepOut   : FireMontageOpen;
+	default:                       return FireMontageOpen;
+	}
 }
 
 void AUnitBase::PostInitializeComponents()

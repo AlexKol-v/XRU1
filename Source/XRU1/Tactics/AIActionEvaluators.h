@@ -80,6 +80,30 @@ public:
 };
 
 /**
+ * ГЛУХАЯ ОБОРОНА (A7/W2). Мало HP, юнит В УКРЫТИИ против главной угрозы, но
+ * ответить не может — вжаться и удвоить укрытие вместо бессмысленной перебежки
+ * через простреливаемое место.
+ *
+ * ⚠️ Стоит ВЫШЕ манёвра (85 против 80) и НИЖЕ отступления (120) намеренно:
+ * пока укрытие работает, сидеть в нём выгоднее, чем бежать; но если HP совсем
+ * мало и юнит открыт — приоритет у отхода.
+ *
+ * ⚠️ Проверяет ДВА условия укрытия (см. .cpp): «работает против главной угрозы»
+ * — это тактический смысл — и `BestCoverAround != None`, ровно то, что требует
+ * `UGA_HunkerDown::CanActivateAbility`. Иначе бот изредка выбирал бы действие,
+ * которое способность тут же отклонит, и сжигал бы активацию впустую.
+ */
+UCLASS()
+class XRU1_API UAIEval_HunkerDown : public UAIActionEvaluator
+{
+	GENERATED_BODY()
+public:
+	UAIEval_HunkerDown();
+	virtual bool IsApplicable(const FAIDecisionContext& Context) const override;
+	virtual float ScoreAction(const FAIDecisionContext& Context, FAIDecision& OutDecision) const override;
+};
+
+/**
  * СБЛИЖЕНИЕ (последний резерв): укрытий по пути нет — идём прямо к цели.
  * Единственный оценщик без дорогих запросов — он и страхует от «ход завис».
  */
@@ -91,4 +115,47 @@ public:
 	UAIEval_CloseDistance();
 	virtual bool IsApplicable(const FAIDecisionContext& Context) const override;
 	virtual float ScoreAction(const FAIDecisionContext& Context, FAIDecision& OutDecision) const override;
+};
+
+/**
+ * НАБЛЮДЕНИЕ (A7/W2). Врага видно, но выстрела нет (нет линии огня или шанс
+ * ниже порога) — встать в овервотч вместо того, чтобы бежать вперёд под ответ.
+ *
+ * ⚠️ **Требует W1.** До неё овервотч бота не выстрелил бы НИ РАЗУ: реакция
+ * висела на «врага увидел», а не на «видимый враг сдвинулся».
+ *
+ * ⚠️ **Рандомизация обязательна** (`ActivationChance`, XCOM `RandSelector`).
+ * Детерминированный овервотч читается наизусть: игрок один раз выясняет, что
+ * враг без линии огня ВСЕГДА встаёт в наблюдение, и дальше просто не входит в
+ * его сектор. Розыгрыш делается ОДИН раз за активацию по стабильному зерну
+ * (см. .cpp) — `ScoreAction` обязана быть чистой и воспроизводимой.
+ *
+ * ДВА основания встать в наблюдение, и они дают РАЗНЫЙ скор:
+ *  - «не могу стрелять» (нет линии огня) → `IdleOverwatchScore` = 30, ниже
+ *    наступления к укрытию (40): сначала пытаемся занять позицию для выстрела;
+ *    плюс розыгрыш `ActivationChance`;
+ *  - «не разрешено стрелять» (A8, лимит атакующих исчерпан) → полный
+ *    `BasePriority` = 45, БЕЗ розыгрыша: юнит обязан удерживать позицию, иначе
+ *    лимит атакующих превратился бы в «беги на игрока безоружным».
+ */
+UCLASS()
+class XRU1_API UAIEval_Overwatch : public UAIActionEvaluator
+{
+	GENERATED_BODY()
+public:
+	UAIEval_Overwatch();
+	virtual bool IsApplicable(const FAIDecisionContext& Context) const override;
+	virtual float ScoreAction(const FAIDecisionContext& Context, FAIDecision& OutDecision) const override;
+
+	/**
+	 * Вероятность встать в наблюдение, когда стрелять НЕ ПО КОМУ (0..1). 0 —
+	 * поведение выключено, 1 — детерминированный овервотч. На занятую ветку A8
+	 * не влияет: там наблюдение обязательно.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|AI", meta = (ClampMin = "0", ClampMax = "1"))
+	float ActivationChance = 0.33f;
+
+	/** Скор наблюдения в обычном случае «стрелять не по кому» (≤ BasePriority). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|AI", meta = (ClampMin = "0"))
+	float IdleOverwatchScore = 30.f;
 };

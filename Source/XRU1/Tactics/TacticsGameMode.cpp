@@ -18,9 +18,11 @@
 ATacticsGameMode::ATacticsGameMode()
 {
 	// Дефолтные пресеты сложности по GDD §10 (правятся в BP).
-	DifficultyParams.Add(EDifficultyLevel::Easy,   {80.f, 55.f, 12});
-	DifficultyParams.Add(EDifficultyLevel::Medium, {100.f, 65.f, 10});
-	DifficultyParams.Add(EDifficultyLevel::Hard,   {120.f, 70.f, 8});
+	// Последнее поле — лимит одновременно атакующих врагов (A8), verbatim XCOM 2
+	// `MaxEngagedEnemies`: Rookie 4 / Veteran 6 / Legend −1 (без лимита).
+	DifficultyParams.Add(EDifficultyLevel::Easy,   {80.f,  55.f, 12,  4});
+	DifficultyParams.Add(EDifficultyLevel::Medium, {100.f, 65.f, 10,  6});
+	DifficultyParams.Add(EDifficultyLevel::Hard,   {120.f, 70.f,  8, -1});
 }
 
 void ATacticsGameMode::BeginPlay()
@@ -131,6 +133,8 @@ void ATacticsGameMode::StartMissionCombat()
 		break;
 	}
 	TurnManager->SetTurnLimit(bHasBomb && Params ? Params->TurnLimit : 0);
+	// A8: лимит одновременно атакующих врагов — из того же пресета сложности.
+	TurnManager->SetMaxAttackersPerTurn(Params ? Params->MaxAttackersPerTurn : -1);
 	TurnManager->bAutoWinWhenEnemiesDead = bWinWhenAllEnemiesDead && !bHasBomb;
 
 	TurnManager->StartCombat(Players, Enemies);

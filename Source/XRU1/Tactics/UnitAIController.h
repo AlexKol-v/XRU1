@@ -137,9 +137,31 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Combat")
 	TSubclassOf<UGameplayEffect> DamageEffect;
 
+	/**
+	 * Сила расталкивания агентов Detour Crowd (`SetCrowdSeparationWeight`).
+	 * Больше — активнее обходят стоящих; слишком много даёт «магнитное»
+	 * отталкивание и рыскание. Разумный диапазон 1–4.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Nav", meta = (ClampMin = "0", ClampMax = "10"))
+	float CrowdSeparationWeight = 2.f;
+
 	/** Насколько близко подходить к точке интереса при разведке (см). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Combat", meta = (ClampMin = "0"))
 	float InvestigateAcceptanceRadius = 150.f;
+
+	/**
+	 * Шанс встать в НАБЛЮДЕНИЕ, дойдя до последней известной точки врага и никого
+	 * там не найдя (0..1). 0 — выключить, вернётся прежнее «сразу в патруль».
+	 *
+	 * ⚠️ Это сознательное УЛУЧШЕНИЕ относительно XCOM 2, а не копия. Самая частая
+	 * претензия игроков к тамошнему AI: враги почти никогда не встают в овервотч,
+	 * если сейчас не видят отряд, — то есть боец, слышавший стрельбу, вместо
+	 * удержания направления продолжает ходить по маршруту. У нас состояние
+	 * `Investigate` ровно и означает «знаю точку, не вижу цель», поэтому данные
+	 * для правильного поведения уже есть.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Combat", meta = (ClampMin = "0", ClampMax = "1"))
+	float InvestigateOverwatchChance = 0.5f;
 
 	/**
 	 * Радиус приёмки ПРОМЕЖУТОЧНОЙ вершины маршрута (см). Вершина — поворотная
@@ -166,7 +188,7 @@ public:
 	 * (иначе «крик» танка перетягивал бы врагов через всю карту).
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Combat", meta = (ClampMin = "0"))
-	float TauntPriorityRadius = 1200.f;
+	float TauntPriorityRadius = 2500.f;
 
 	// --- Веса боевых решений (утилити-скоринг позиций, XCOM-подход) -----------
 	//
@@ -221,17 +243,62 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights")
 	float HeightPositionBonus = 15.f;
 
-	/** Ближе этого расстояния к союзнику точка считается «в куче» (см). 0 — выключить. */
+	/**
+	 * Ближе этого расстояния к союзнику точка считается «в куче» (см). 0 — выкл.
+	 *
+	 * XCOM: `DEFAULT_AI_MIN_SPREAD_DISTANCE = 6.0` — это ТАЙЛЫ, а тайл XCOM 2 =
+	 * 96 юнитов Unreal, то есть ≈576 см. Раньше здесь стояло 250: штраф за кучу
+	 * срабатывал только когда бойцы стояли фактически вплотную, и «разойтись» он
+	 * почти не заставлял. Сверено с `XComAI.ini` 2026-07-25.
+	 */
 	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights", meta = (ClampMin = "0"))
-	float MinSpreadDistance = 250.f;
+	float MinSpreadDistance = 576.f;
 
 	/**
-	 * Множитель ПОЛОЖИТЕЛЬНОГО скора для точки в куче (XCOM
-	 * `DEFAULT_AI_SPREAD_WEIGHT_MULTIPLIER`). Только положительного: иначе
-	 * штраф превратился бы в поощрение для отрицательных скоров.
+	 * Множитель ПОЛОЖИТЕЛЬНОГО скора для точки в куче
+	 * (XCOM `DEFAULT_AI_SPREAD_WEIGHT_MULTIPLIER = 0.2`). Только положительного:
+	 * иначе штраф превратился бы в поощрение для отрицательных скоров.
+	 *
+	 * ⚠️ Раньше стояло 0.4 с комментарием «как в XCOM» — число было не сверено.
+	 * Verbatim-значение 0.2 (вдвое жёстче): кучная позиция теряет 80% ценности,
+	 * а не 60%.
 	 */
 	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights", meta = (ClampMin = "0", ClampMax = "1"))
-	float SpreadPenaltyMultiplier = 0.4f;
+	float SpreadPenaltyMultiplier = 0.2f;
+
+	/**
+	 * СПЛОЧЁННОСТЬ: вес «из точки видно СВОИХ» (XCOM `fAllyVisWeight`, в профилях
+	 * 0.5–4.0, у Defensive максимум). Раньше этого члена не было вовсе, и у AI
+	 * работал только анти-кучный штраф — то есть отряд умел РАЗБЕГАТЬСЯ, но не
+	 * умел держать линию. В XCOM это два независимых механизма: минимальная
+	 * дистанция разводит бойцов, а `fAllyVisWeight` не даёт им разойтись поодиночке
+	 * туда, откуда никто не поддержит.
+	 *
+	 * Считается как доля видимых союзников (0..1) × вес.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights")
+	float AllyVisibilityWeight = 10.f;
+
+	/**
+	 * Штраф за КАЖДУЮ угрозу в наблюдении, простреливающую точку (A7
+	 * `SafeToMove`). Сопоставим с `LineOfFireBonus`: бежать под один овервотч
+	 * ради выстрела ещё осмысленно, под два — уже нет.
+	 *
+	 * ⚠️ Проверяется КОНЕЧНАЯ точка, а не весь маршрут (в XCOM — маршрут).
+	 * Обоснование упрощения — в `EvaluatePoint`.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights", meta = (ClampMin = "0"))
+	float OverwatchExposurePenalty = 30.f;
+
+	/**
+	 * ⚠️ ОСОЗНАННОЕ ОТКЛОНЕНИЕ от XCOM: `CURR_TILE_LINGER_PENALTY = 0.75` не
+	 * переносим. В XCOM скор ТЕКУЩЕЙ клетки умножается на 0.75 — то есть игра
+	 * подталкивает врага двигаться. У нас противоположный знак (`RelocateBias`:
+	 * переезжаем, только если заметно лучше), и это сделано намеренно: главная
+	 * претензия к нашему боту по логам была «кровожадно бежит вперёд», а не
+	 * «стоит столбом». Перенос множителя усилил бы ровно тот дефект, от которого
+	 * мы уходили. Если бот начнёт залипать — сначала снижать `RelocateBias`.
+	 */
 
 	/** Бонус точке, из которой цель ПРОСТРЕЛИВАЕТСЯ (манёвр не теряет выстрел). */
 	UPROPERTY(EditDefaultsOnly, Category = "Tactics|AI|Weights")
@@ -481,6 +548,32 @@ protected:
 	 * чтобы шаг не зациклился на неоплаченном действии.
 	 */
 	bool TryFireAtTarget(AUnitBase* Unit, AActor* Target);
+
+	/**
+	 * Активирует способность БЕЗ ЦЕЛИ на самом юните (наблюдение, глухая
+	 * оборона). Успехом считается факт СПИСАНИЯ AP, а не возврат
+	 * TryActivateAbilityByClass — тот же критерий, что у TryFireAtTarget:
+	 * способность может активироваться и тут же отказаться по своим правилам,
+	 * и тогда шаг хода повторился бы вхолостую.
+	 */
+	bool TryActivateSelfAbility(AUnitBase* Unit, TSubclassOf<class UTacticalAbility> AbilityClass);
+
+	/** A8: отметить в TurnManager, что юнит вступил в бой (оплаченный выстрел). */
+	void NotifyAttackedForThrottle(const AUnitBase* Unit);
+
+public:
+	/**
+	 * ПРИОСТАНОВИТЬ/ПРОДОЛЖИТЬ текущее перемещение, не отменяя приказ. Нужно
+	 * реакционному выстрелу: в XCOM овервотч ПРЕРЫВАЕТ бегущего — он замирает,
+	 * выстрел разыгрывается, и только потом он бежит дальше.
+	 *
+	 * ⚠️ Именно `PauseMove`, а не `StopMovement`: последний отменил бы маршрут
+	 * целиком, и боец потерял бы ход. Возвращает false, если приостанавливать
+	 * нечего (юнит не в пути).
+	 */
+	bool SetMovementPaused(bool bPaused);
+
+protected:
 
 	/** Действия шага в состоянии Investigate. */
 	bool StepInvestigate(AUnitBase* Unit);

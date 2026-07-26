@@ -69,6 +69,42 @@ enum class ECoverShield : uint8
 };
 
 /**
+ * ПРЕВЬЮ ТОЧКИ ПЕРЕМЕЩЕНИЯ (XCOM: при наведении видно, во что ты вбегаешь).
+ *
+ * Игрок обязан знать ДО клика: сколько стволов будет смотреть на эту точку и
+ * какое укрытие он там получит. Без этого выбор позиции — угадайка, а вся
+ * механика укрытий работает вхолостую: её просто не видно в момент решения.
+ *
+ * Считается тем же кодом, что и настоящий бой (`EvaluateCoverAtLocation` +
+ * `HasLineOfSightFromLocation`), поэтому превью не может соврать.
+ */
+USTRUCT(BlueprintType)
+struct FTacticalMovePreview
+{
+	GENERATED_BODY()
+
+	/** Сколько живых врагов простреливает эту точку (есть линия огня оттуда/туда). */
+	UPROPERTY(BlueprintReadOnly, Category = "Tactics|Preview")
+	int32 EnemiesSeeing = 0;
+
+	/** От скольких из них укрытие в этой точке РАБОТАЕТ. */
+	UPROPERTY(BlueprintReadOnly, Category = "Tactics|Preview")
+	int32 EnemiesCovered = 0;
+
+	/** От скольких точка ОТКРЫТА — именно они и будут стрелять без штрафа. */
+	UPROPERTY(BlueprintReadOnly, Category = "Tactics|Preview")
+	int32 EnemiesExposed = 0;
+
+	/** Лучшее укрытие в точке против простреливающих (для иконки щита). */
+	UPROPERTY(BlueprintReadOnly, Category = "Tactics|Preview")
+	ECoverType BestCover = ECoverType::None;
+
+	/** Скольких врагов юнит будет ФЛАНКИРОВАТЬ из этой точки. */
+	UPROPERTY(BlueprintReadOnly, Category = "Tactics|Preview")
+	int32 EnemiesFlanked = 0;
+};
+
+/**
  * Как юнит стреляет из своей текущей позиции (для анимации Ф10 и превью Ф11).
  * Определяется UTacticsCombatStatics::GetFiringStance по тому, какая огневая
  * позиция дала линию огня:

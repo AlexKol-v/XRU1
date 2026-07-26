@@ -1,10 +1,11 @@
 #include "TacticalCameraPawn.h"
+#include "TacticsCombatStatics.h" // GetShotGeometryObjects — единая геометрия мира
 #include "GameFramework/SpringArmComponent.h"
 #include "Camera/CameraComponent.h"
 #include "Components/PostProcessComponent.h"
 #include "Engine/World.h"
 #include "Engine/HitResult.h"
-#include "Engine/EngineTypes.h" // ECollisionChannel / ECC_Visibility для трейсов кадра
+#include "Engine/EngineTypes.h"
 #include "CollisionQueryParams.h"
 
 ATacticalCameraPawn::ATacticalCameraPawn()
@@ -33,6 +34,11 @@ ATacticalCameraPawn::ATacticalCameraPawn()
 void ATacticalCameraPawn::BeginPlay()
 {
 	Super::BeginPlay();
+
+	// Стартовая высота пивота — собственная высота пешки (смещение 0), дальше её
+	// ведут focus/follow/кадр выстрела.
+	PivotWorldZ = GetActorLocation().Z;
+	PreShotPivotZ = PivotWorldZ;
 
 	// Обводка юнитов при наведении: PP-материал блендаблом на unbound-компонент.
 	if (OutlineMaterial && PostProcess)
@@ -109,11 +115,21 @@ void ATacticalCameraPawn::FocusOnLocation(const FVector& Location, bool bInstant
 	// Явный фокус отменяет следование за актором.
 	FollowTarget = nullptr;
 
+	// Камера смотрит на ПЛОСКОСТЬ, где стоит цель фокуса, а не на плоскость
+	// высоты своего спавна: на многоуровневой карте это разные вещи.
+	PivotWorldZ = Location.Z;
+
 	if (bInstant)
 	{
 		// Телепорт (старт боя): двигаем только в плоскости земли, высота пешки своя.
 		bHasFocusGoal = false;
 		SetActorLocation(FVector(Location.X, Location.Y, GetActorLocation().Z));
+		if (SpringArm)
+		{
+			FVector Offset = SpringArm->TargetOffset;
+			Offset.Z = FMath::Clamp(PivotWorldZ - GetActorLocation().Z, -MaxPivotZOffset, MaxPivotZOffset);
+			SpringArm->TargetOffset = Offset; // телепорт — без доводки
+		}
 	}
 	else
 	{
@@ -163,15 +179,23 @@ void ATacticalCameraPawn::Tick(float DeltaSeconds)
 
 	SpringArm->TargetArmLength = FMath::FInterpTo(SpringArm->TargetArmLength, TargetZoom, DeltaSeconds, InterpSpeed);
 
-	// Подъём точки вращения к линии груди в кадре выстрела (в тактике — 0).
+	// Высота точки вращения задана МИРОВОЙ координатой и пересчитывается в
+	// смещение относительно ТЕКУЩЕЙ высоты пешки каждый кадр — иначе расчёт и
+	// построение расходятся на любом перепаде высот (пешка по Z не двигается).
+	const float DesiredOffsetZ =
+		FMath::Clamp(PivotWorldZ - GetActorLocation().Z, -MaxPivotZOffset, MaxPivotZOffset);
 	FVector Offset = SpringArm->TargetOffset;
-	Offset.Z = FMath::FInterpTo(Offset.Z, TargetLookHeight, DeltaSeconds, InterpSpeed);
+	Offset.Z = FMath::FInterpTo(Offset.Z, DesiredOffsetZ, DeltaSeconds, InterpSpeed);
 	SpringArm->TargetOffset = Offset;
 
 	// Полёт к цели фокуса / следование за актором (XCOM-glide, только XY).
 	if (FollowTarget.IsValid())
 	{
 		FocusGoal = FollowTarget->GetActorLocation();
+		if (!bShotFraming)
+		{
+			PivotWorldZ = FocusGoal.Z; // сопровождаемый ушёл на уступ — камера за ним
+		}
 	}
 	else if (FollowTarget.IsStale())
 	{
@@ -229,7 +253,7 @@ void ATacticalCameraPawn::EnterShotFraming(const AActor* Shooter, const AActor* 
 	if (!bShotFraming)
 	{
 		PreShotPitch = TargetPitch;
-		PreShotLookHeight = TargetLookHeight;
+		PreShotPivotZ = PivotWorldZ;
 		// Если камера СЕЙЧАС летит к цели (только что выбрали бойца — glide ещё
 		// идёт), «прежняя» позиция — это КОНЕЦ полёта, а не промежуточная точка,
 		// иначе возврат после выстрела/отмены встанет посреди карты.
@@ -240,132 +264,282 @@ void ATacticalCameraPawn::EnterShotFraming(const AActor* Shooter, const AActor* 
 	bShotFraming = true;
 	ShotFrameTimeLeft = Duration;
 
-	const FVector ShooterLocation = Shooter->GetActorLocation();
-	const FVector TargetLocation = Target->GetActorLocation();
+	// --- Что кадр ОБЯЗАН показать: грудь стрелка и грудь цели ------------------
+	// Обе точки участвуют и в проверке видимости, и в решении «влезают ли в FOV».
+	const FVector ShooterAim = Shooter->GetActorLocation() + FVector(0.f, 0.f, ShotFrameAimHeight);
+	const FVector TargetAim = Target->GetActorLocation() + FVector(0.f, 0.f, ShotFrameAimHeight);
 
-	// --- Дистанция задаёт отъезд и точку обзора (адаптивная композиция XCOM) ---
-	// Близкий выстрел — крупный план плеча; дальний — отъезд + точка обзора ближе
-	// к середине, иначе на дальней цели «не видно ни стрелка, ни половины цели»
-	// (была фиксированная композиция независимо от дистанции).
-	const float Dist = FVector::Dist2D(ShooterLocation, TargetLocation);
+	FVector Axis = TargetAim - ShooterAim;
+	Axis.Z = 0.f;
+	const float Dist = Axis.Size();
+	if (!Axis.Normalize())
+	{
+		// Вырожденный случай (цель ровно над стрелком) — держим текущий ракурс.
+		Axis = FRotator(0.f, TargetYaw, 0.f).Vector();
+	}
+	const FVector Side = FVector::CrossProduct(Axis, FVector::UpVector).GetSafeNormal();
+
+	// --- Адаптив по дистанции (XCOM action-cam) --------------------------------
 	const float FarAlpha = ShotFrameFarDistance > 1.f
 		? FMath::Clamp(Dist / ShotFrameFarDistance, 0.f, 1.f) : 0.f;
-
+	const float Back = FMath::Lerp(ShotFrameBackNear, ShotFrameBackFar, FarAlpha);
+	const float Shoulder = FMath::Lerp(ShotFrameShoulderNear, ShotFrameShoulderFar, FarAlpha);
+	const float Lift = FMath::Lerp(ShotFrameHeightNear, ShotFrameHeightFar, FarAlpha);
 	const float Bias = FMath::Lerp(ShotFrameTargetBias, ShotFrameTargetBiasFar, FarAlpha);
-	const float ShotArm = FMath::Clamp(
-		FMath::Lerp(ShotFrameZoom, ShotFrameZoomFar, FarAlpha), ShotFrameZoomNear, MaxZoom);
 
-	// --- Наклон подстраивается под перепад высот стрелок↔цель ------------------
-	// Цель НИЖЕ (HeightDelta<0) → −(отрицательное) = наклон круче вниз; цель ВЫШЕ
-	// → наклон площе. Так уступы/этажи читаются в кадре, а не режут композицию.
-	const float HeightDelta = TargetLocation.Z - ShooterLocation.Z;
-	const float Pitch = FMath::Clamp(
-		ShotFramePitch - HeightDelta * ShotFramePitchPerZ, -75.f, -4.f);
+	const FVector LookPoint = FMath::Lerp(ShooterAim, TargetAim, Bias);
 
-	// --- Ось стрелок→цель и точка обзора ---------------------------------------
-	// Пружина тянется НАЗАД вдоль своего yaw → камера позади точки обзора. Yaw =
-	// направление стрелок→цель + плечевой доворот: цель открывается «из-за плеча».
-	FVector Axis = TargetLocation - ShooterLocation;
-	Axis.Z = 0.f;
-	float BaseYaw = TargetYaw;
-	if (Axis.Normalize())
+	// --- ПРАВИЛО 180°: пара сменилась — ось съёмки можно выбрать заново --------
+	if (LastFramedShooter.Get() != Shooter || LastFramedTarget.Get() != Target)
 	{
-		BaseYaw = Axis.Rotation().Yaw;
+		LastShoulderSign = 0.f;
 	}
 
-	const FVector PivotXY = FMath::Lerp(ShooterLocation, TargetLocation, Bias);
-	const FVector PivotWorld(PivotXY.X, PivotXY.Y, ShooterLocation.Z + ShotFrameLookHeight);
-	const FVector TargetAim(TargetLocation.X, TargetLocation.Y, TargetLocation.Z + ShotFrameLookHeight);
+	// --- ЛЕСТНИЦА КАНДИДАТОВ: плечо (±) × подъём (0/1/2 шага) ------------------
+	// Порядок перебора задаёт предпочтение: сначала оба плеча на «своей» высоте,
+	// и только если оттуда цель закрыта — подъём над укрытием. Так камера не
+	// уезжает в вертикаль без нужды, но и не показывает игроку стену.
+	//
+	// Выбираем МИНИМАЛЬНЫЙ штраф (схема XCOM `X2Camera_OverTheShoulder`), а не
+	// максимальный балл: у них так, и веса переносятся без пересчёта знаков.
+	FVector BestCam = ShooterAim - Axis * Back + Side * Shoulder + FVector(0.f, 0.f, Lift);
+	float BestPenalty = FLT_MAX;
+	float BestSideSign = LastShoulderSign != 0.f ? LastShoulderSign : 1.f;
 
-	// ВЫБОР ПЛЕЧА по геометрии — правит «всегда 1 ракурс» и вид в стену.
-	const float ShoulderOffset = PickShoulderOffset(
-		Shooter, Target, PivotWorld, TargetAim, BaseYaw, Pitch, ShotArm);
-	const float ChosenYaw = BaseYaw + ShoulderOffset;
-
-	// БЕЗОПАСНАЯ длина пружины — считаем ОДИН раз здесь, а не поштучной коллизией
-	// пружины (её тест каждый кадр упирался в укрытие у стрелка и давал резкий
-	// скачок + мигание на близких целях). Если позади точки обзора стена — камера
-	// встанет чуть перед ней; значение затем плавно интерполируется в Tick.
-	float SafeArm = ShotArm;
-	if (const UWorld* World = GetWorld())
+	auto RunLadder = [&]()
 	{
-		const FVector DesiredCam = PivotWorld - FRotator(Pitch, ChosenYaw, 0.f).Vector() * ShotArm;
-		FCollisionQueryParams Params;
-		Params.AddIgnoredActor(Shooter);
-		Params.AddIgnoredActor(Target);
-		FHitResult Hit;
-		if (World->LineTraceSingleByChannel(Hit, PivotWorld, DesiredCam, ECC_Visibility, Params))
+		BestPenalty = FLT_MAX;
+		for (int32 Step = 0; Step < 3; ++Step)
 		{
-			constexpr float WallPadding = 40.f; // отступ камеры от стены, см
-			SafeArm = FMath::Clamp(Hit.Distance - WallPadding, ShotFrameZoomNear, ShotArm);
+			for (const float SideSign : {1.f, -1.f})
+			{
+				FVector Cam = ShooterAim
+					- Axis * Back
+					+ Side * (Shoulder * SideSign)
+					+ FVector(0.f, 0.f, Lift + Step * ShotFrameClearanceLift);
+
+				Cam = FitSubjectsInFrame(Cam, LookPoint, ShooterAim, TargetAim);
+				Cam = PullCameraOutOfGeometry(LookPoint, Cam);
+
+				// Подъём — тоже компромисс: чем выше камера, тем меньше «из-за
+				// плеча» и больше «сверху». Штраф порядка веса закрытого корпуса.
+				const float Penalty = ScoreShotCandidate(Cam, LookPoint, ShooterAim, TargetAim, SideSign)
+					+ Step * PenaltyShooterWaistBlocked;
+				if (Penalty < BestPenalty)
+				{
+					BestPenalty = Penalty;
+					BestCam = Cam;
+					BestSideSign = SideSign;
+				}
+			}
+			// Кадр чистый — дальше поднимать незачем (подъём сам штрафуется).
+			if (BestPenalty <= KINDA_SMALL_NUMBER)
+			{
+				break;
+			}
+		}
+	};
+
+	RunLadder();
+
+	// ⚠️ ЕДИНСТВЕННОЕ основание нарушить правило 180°: со «своей» стороны ЦЕЛЬ не
+	// видно ни с одной высоты. Бесполезный кадр хуже, чем скачок через ось —
+	// но только он это и оправдывает. Проверяем по штрафу цели: он уникален по
+	// величине среди «мягких», и его наличие означает «в кого стреляем, не видно».
+	if (LastShoulderSign != 0.f && BestPenalty >= PenaltyTargetBlocked)
+	{
+		const float StickySide = LastShoulderSign;
+		LastShoulderSign = 0.f; // временно снимаем ось — оба плеча равноправны
+		RunLadder();
+		if (BestPenalty >= PenaltyTargetBlocked)
+		{
+			// И с другой стороны не лучше — остаёмся на прежней оси, чтобы хотя
+			// бы не дёргать зрителя зря.
+			LastShoulderSign = StickySide;
+			RunLadder();
 		}
 	}
 
-	TargetYaw = ChosenYaw;
-	TargetZoom = SafeArm;
-	TargetPitch = Pitch;
-	TargetLookHeight = ShotFrameLookHeight; // обзор на линии груди
+	// Запоминаем ось съёмки: пока пара стрелок↔цель та же, камера обязана
+	// оставаться со своей стороны (правило 180°, см. PenaltyCrosscut).
+	LastShoulderSign = BestSideSign;
+	LastFramedShooter = Shooter;
+	LastFramedTarget = Target;
+
+	// --- Перевод в параметры пружины -------------------------------------------
+	// Камера пружины = Pivot − Rot.Vector() × Arm. Берём Rot как взгляд из
+	// найденной позиции в точку взгляда, а Arm — как расстояние до неё: тогда
+	// конец пружины попадает РОВНО в BestCam, и посчитанное совпадает с
+	// показанным (прежняя схема это свойство теряла).
+	const FVector ToLook = LookPoint - BestCam;
+	const FRotator ShotRot = ToLook.Rotation();
+	const float Arm = FMath::Clamp(ToLook.Size(), ShotFrameMinArm, ShotFrameMaxArm);
+
+	TargetYaw = ShotRot.Yaw;
+	TargetPitch = FMath::Clamp(ShotRot.Pitch, -85.f, 45.f);
+	TargetZoom = Arm;
+	PivotWorldZ = LookPoint.Z;
 
 	// Следование за бегущим на время кадра снимаем — иначе перетянет фокус.
 	FollowTarget = nullptr;
-	FocusGoal = PivotXY; // XY точки обзора; высота берётся из TargetLookHeight
+	FocusGoal = LookPoint; // XY доводится полётом пешки, Z — через PivotWorldZ
 	bHasFocusGoal = true;
 }
 
-float ATacticalCameraPawn::PickShoulderOffset(
-	const AActor* Shooter, const AActor* Target,
-	const FVector& PivotWorld, const FVector& TargetAim,
-	float BaseYaw, float Pitch, float Arm) const
+bool ATacticalCameraPawn::IsSegmentClear(const FVector& From, const FVector& To, float* OutBlockedFraction) const
 {
-	const float Offset = FMath::Abs(ShotFrameYawOffset);
-	if (Offset < 1.f)
+	if (OutBlockedFraction)
 	{
-		return 0.f; // доворот отключён — строго вдоль оси
+		*OutBlockedFraction = 0.f;
 	}
-
 	const UWorld* World = GetWorld();
-	if (!World)
+	const float Length = FVector::Dist(From, To);
+	if (!World || Length < 1.f)
 	{
-		return Offset; // без мира — прежнее детерминированное поведение (одно плечо)
+		return true;
 	}
 
-	// Очко стороны: 1.0 идеально (камера видит цель и не за стеной), меньше — чем
-	// сильнее перекрыто. Пробуем оба плеча и берём лучшее.
-	auto ScoreSide = [&](float SignedOffset) -> float
+	// Толстый свип, а не волосяной луч: XCOM проверяет ракурс лучом толщиной
+	// `TraceWidth = 20`, и по той же причине — щель между мешами не считается
+	// «видно», зритель её тоже не увидит.
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(ShotFrameVis), /*bTraceComplex=*/false);
+	FHitResult Hit;
+	const bool bBlocked = ShotFrameTraceWidth > 0.f
+		? World->SweepSingleByObjectType(Hit, From, To, FQuat::Identity,
+			UTacticsCombatStatics::GetShotGeometryObjects(),
+			FCollisionShape::MakeSphere(ShotFrameTraceWidth), Params)
+		: World->LineTraceSingleByObjectType(Hit, From, To,
+			UTacticsCombatStatics::GetShotGeometryObjects(), Params);
+	if (!bBlocked)
 	{
-		const FRotator Rot(Pitch, BaseYaw + SignedOffset, 0.f);
-		const FVector CamPos = PivotWorld - Rot.Vector() * Arm;
+		return true;
+	}
+	if (OutBlockedFraction)
+	{
+		// 0 — стена у самого конца отрезка, 1 — прямо перед стартом.
+		*OutBlockedFraction = FMath::Clamp(1.f - Hit.Distance / Length, 0.f, 1.f);
+	}
+	return false;
+}
 
-		FCollisionQueryParams Params;
-		Params.AddIgnoredActor(Shooter);
-		Params.AddIgnoredActor(Target);
+FVector ATacticalCameraPawn::FitSubjectsInFrame(const FVector& CamPos, const FVector& LookPoint,
+	const FVector& SubjectA, const FVector& SubjectB) const
+{
+	// Полууглы кадра: горизонтальный — из FOV камеры, вертикальный — с учётом
+	// соотношения сторон. Вертикальный уже, поэтому именно он обычно и решает.
+	const float FovDegrees = Camera ? Camera->FieldOfView : 90.f;
+	const float TanH = FMath::Tan(FMath::DegreesToRadians(0.5f * FovDegrees)) * ShotFrameFovSafety;
+	const float TanV = TanH / 1.7777f; // 16:9
+	if (TanH <= KINDA_SMALL_NUMBER)
+	{
+		return CamPos;
+	}
 
-		float Score = 1.f;
-		FHitResult Hit;
-
-		// (а) камера не должна быть отгорожена стеной от точки обзора (иначе кадр
-		//     смотрит В стену со стороны камеры).
-		const float PivotToCam = FVector::Dist(PivotWorld, CamPos);
-		if (PivotToCam > 1.f && World->LineTraceSingleByChannel(
-			Hit, PivotWorld, CamPos, ECC_Visibility, Params))
+	FVector Result = CamPos;
+	for (int32 Iteration = 0; Iteration < 4; ++Iteration)
+	{
+		const FRotator ViewRot = (LookPoint - Result).Rotation();
+		float NeedScale = 1.f;
+		for (const FVector& Subject : { SubjectA, SubjectB })
 		{
-			Score -= (1.f - Hit.Distance / PivotToCam); // стена у пивота — хуже всего
+			// В систему координат камеры: X — вперёд, Y — вправо, Z — вверх.
+			const FVector Local = ViewRot.UnrotateVector(Subject - Result);
+			if (Local.X <= 1.f)
+			{
+				NeedScale = FMath::Max(NeedScale, 2.f); // фигура позади камеры — отъезжаем
+				continue;
+			}
+			NeedScale = FMath::Max(NeedScale, FMath::Abs(Local.Y) / (Local.X * TanH));
+			NeedScale = FMath::Max(NeedScale, FMath::Abs(Local.Z) / (Local.X * TanV));
+		}
+		if (NeedScale <= 1.f)
+		{
+			break;
 		}
 
-		// (б) цель должна читаться из позиции камеры.
-		const float CamToTarget = FVector::Dist(CamPos, TargetAim);
-		if (CamToTarget > 1.f && World->LineTraceSingleByChannel(
-			Hit, CamPos, TargetAim, ECC_Visibility, Params))
+		// Отъезд назад по оси взгляда: угловой размер сцены падает примерно
+		// обратно пропорционально дистанции, поэтому пары итераций хватает.
+		const float CurrentArm = FVector::Dist(Result, LookPoint);
+		const float NewArm = FMath::Min(CurrentArm * FMath::Min(NeedScale, 2.f), ShotFrameMaxArm);
+		if (NewArm <= CurrentArm + 1.f)
 		{
-			Score -= (1.f - Hit.Distance / CamToTarget);
+			break; // упёрлись в потолок отъезда
 		}
-		return Score;
-	};
+		Result = LookPoint + (Result - LookPoint).GetSafeNormal() * NewArm;
+	}
+	return Result;
+}
 
-	const float RightScore = ScoreSide(+Offset);
-	const float LeftScore = ScoreSide(-Offset);
-	// При равенстве — стабильно правое плечо, чтобы кадр не дёргался между сторонами.
-	return (LeftScore > RightScore + KINDA_SMALL_NUMBER) ? -Offset : +Offset;
+FVector ATacticalCameraPawn::PullCameraOutOfGeometry(const FVector& LookPoint, const FVector& CamPos) const
+{
+	const UWorld* World = GetWorld();
+	const FVector ToCam = CamPos - LookPoint;
+	const float Arm = ToCam.Size();
+	if (!World || Arm < 1.f)
+	{
+		return CamPos;
+	}
+
+	// Толстый свип, а не луч: волосяной трейс проскакивает в щель между мешами,
+	// и камера оказывалась внутри стены целиком.
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(ShotFrameArm), /*bTraceComplex=*/false);
+	FHitResult Hit;
+	if (World->SweepSingleByObjectType(Hit, LookPoint, CamPos, FQuat::Identity,
+		UTacticsCombatStatics::GetShotGeometryObjects(),
+		FCollisionShape::MakeSphere(20.f), Params))
+	{
+		const float SafeArm = FMath::Clamp(Hit.Distance - ShotFrameWallPadding, ShotFrameMinArm, Arm);
+		return LookPoint + ToCam / Arm * SafeArm;
+	}
+	return CamPos;
+}
+
+float ATacticalCameraPawn::ScoreShotCandidate(const FVector& CamPos, const FVector& LookPoint,
+	const FVector& ShooterAim, const FVector& TargetAim, float SideSign) const
+{
+	// ⚠️ ШТРАФ, а не балл: чем МЕНЬШЕ, тем лучше. Так устроен
+	// `X2Camera_OverTheShoulder` в XCOM, и веса переносятся один в один.
+	float Penalty = 0.f;
+
+	// (1) ЦЕЛЬ — главное. Кадр, где не видно, в кого стреляешь, бесполезен.
+	if (!IsSegmentClear(CamPos, TargetAim))
+	{
+		Penalty += PenaltyTargetBlocked;
+	}
+
+	// (2) СТРЕЛОК — раздельно голова и корпус, как в XCOM. Разделение не
+	// формальность: «видно каску над укрытием» и «видно бойца целиком» — разные
+	// кадры, и первый допустим, а раньше обе ситуации считались одинаково.
+	const FVector ShooterHead = ShooterAim + FVector(0.f, 0.f, 55.f);
+	const FVector ShooterWaist = ShooterAim - FVector(0.f, 0.f, 35.f);
+	const bool bHeadClear = IsSegmentClear(CamPos, ShooterHead);
+	const bool bWaistClear = IsSegmentClear(CamPos, ShooterWaist);
+	if (!bHeadClear && !bWaistClear)
+	{
+		Penalty += PenaltyShooterNotVisible;
+	}
+	else
+	{
+		if (!bHeadClear)  { Penalty += PenaltyShooterHeadBlocked; }
+		if (!bWaistClear) { Penalty += PenaltyShooterWaistBlocked; }
+	}
+
+	// (3) Камера отгорожена стеной от точки взгляда — она внутри геометрии.
+	if (!IsSegmentClear(CamPos, LookPoint))
+	{
+		Penalty += PenaltyBlockedStart;
+	}
+
+	// (4) ПРАВИЛО 180°. Переход на другую сторону оси стрелок→цель меняет фигуры
+	// местами в кадре и читается как «камеру развернуло». Штраф заведомо
+	// перебивает всё остальное: сторона меняется, только если с прежней цель не
+	// видно вообще (64 < 1000, значит один закрытый кадр смену НЕ оправдывает,
+	// а вот безвыходная ситуация — оправдывает, потому что там штраф копится).
+	if (LastShoulderSign != 0.f && SideSign * LastShoulderSign < 0.f)
+	{
+		Penalty += PenaltyCrosscut;
+	}
+	return Penalty;
 }
 
 void ATacticalCameraPawn::AbandonShotFraming()
@@ -383,7 +557,10 @@ void ATacticalCameraPawn::AbandonShotFraming()
 	TargetYaw = TacticalYaw;
 	TargetZoom = TacticalZoom;
 	TargetPitch = PreShotPitch;
-	TargetLookHeight = PreShotLookHeight;
+	// Высоту пивота тоже возвращаем: иначе панорама, начатая из прицеливания,
+	// уехала бы по карте на линии груди вместо тактической плоскости. Вызовы
+	// focus/follow перезапишут её сразу после Abandon — это правильный порядок.
+	PivotWorldZ = PreShotPivotZ;
 }
 
 void ATacticalCameraPawn::ClearShotFraming()
@@ -400,7 +577,7 @@ void ATacticalCameraPawn::ClearShotFraming()
 	TargetYaw = TacticalYaw;
 	TargetZoom = TacticalZoom;
 	TargetPitch = PreShotPitch;
-	TargetLookHeight = PreShotLookHeight;
+	PivotWorldZ = PreShotPivotZ;
 	FocusGoal = PreShotLocation;
 	bHasFocusGoal = true;
 }

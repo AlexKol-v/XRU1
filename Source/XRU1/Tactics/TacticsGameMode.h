@@ -28,6 +28,20 @@ struct FTacticsDifficultyParams
 	/** Лимит ходов игрока до взрыва бомбы (0 = таймера нет). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Difficulty", meta = (ClampMin = "0"))
 	int32 TurnLimit = 10;
+
+	/**
+	 * СКОЛЬКО ВРАГОВ МАКСИМУМ АТАКУЕТ ЗА ОДИН ХОД (A8). −1 — без лимита.
+	 *
+	 * Verbatim XCOM 2 (`XComAI.ini`, `MaxEngagedEnemies`): Rookie 4, Veteran 6,
+	 * Commander 6, Legend −1. У нас три уровня, поэтому 4 / 6 / −1.
+	 *
+	 * ⚠️ Это САМЫЙ дешёвый и самый честный регулятор сложности: он не подкручивает
+	 * врагу точность и не отнимает у игрока информацию — просто ограничивает,
+	 * сколько стволов смотрит на отряд одновременно. Превысившие лимит не «стоят
+	 * столбом»: они уходят в занятую ветку — наблюдение или перемещение.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Difficulty", meta = (ClampMin = "-1"))
+	int32 MaxAttackersPerTurn = 6;
 };
 
 /**
