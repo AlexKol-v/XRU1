@@ -14,30 +14,108 @@
 
 ---
 
-## Блок E1 — Анимации: сборка `ABP_Soldier` ⭐ приоритет
+## Блок E0 — Структура Content и перенос ассетов ✅ ЗАВЕРШЕНО (2026-07-26)
+
+Реорганизация и перенос из донора выполнены, весь юнитовский контент лежит по
+единой чистой структуре. Подробный ход работ — ниже в блоке E1 (шаги
+E1.0-ter/E1.0-bis/E1.0 оставлены как есть, историческая ценность: там разбор
+конкретных ловушек порядка операций). Итоговое состояние на 2026-07-26:
+
+```
+/Game/XRU1Game/Units/
+    BP_Unit_Assault / Sniper / Medic / Tank / Marauder      — 5 юнитов, Mesh->Anim Class = ABP_Solider
+    Anim/
+        ABP_Solider                — создан, назначен всем 5; граф пока НЕ переделан (заготовка)
+        Cover/    (6)   anim_CoverDown_Idle_L/R, _Look_L/R, _Loop_L/R
+        Crouch/   (31)  anim_Crouch_*, BS_Crouch_new, повороты/лупы — ОТРЕТАРГЕЧЕНО на наш скелет
+        Death/    (6)   MM_Death_*
+        Revive/   (4)   anim_Downed_Idle_R, anim_Knocked_*, anim_Self_Revive_F_R
+        Rifle/    (39)  MM_Rifle_*, AIM/, HitReact/, Jog/, Jump/, Walk/
+        Unarmed/  (27)  MM_Idle, BS_Idle_Walk_Run, Jump/ — используется заготовкой ABP_Solider
+    Meshes/
+        SKM_Manny_Simple, SKM_Quinn_Simple   — тела юнитов (Manny/Quinn), материалы восстановлены
+        SK_Mannequin                          — ОСНОВНОЙ скелет (у него же Compatible Skeletons)
+        SK_Mannequin_AnimLib                  — скелет анимационной библиотеки (Cover/Revive)
+        Materials/, Textures/, Rigs/           — зависимости тел (Control Rig и т.д.)
+    Weapons/
+        AssaultRifle/ SMG/ LMG/ Sniper/ Common/   — по стволу на класс, ПОЛНОСТЬЮ (меш+материалы+текстуры+BP)
+```
+
+Что за этим стоит и что важно знать при дальнейшей работе:
+
+- **Скрипты переноса** `Content/Python/reorganize_assets.py` и `cleanup_step2.py`
+  оставлены в проекте как исторический артефакт (не перезапускать — пути-источники
+  уже не существуют). Правило на будущее, если понадобится похожая массовая
+  операция: **порядок Save All → Fix Up Redirectors, не наоборот** (обоснование —
+  врезка в E1.0-ter ниже).
+- **Мусор шаблона Top Down удалён** (`/Game/Characters`, `/Game/InfimaGames`,
+  `/Game/OtherAssets`, дублирующий `/Game/Cursor`, `BP_TopDownCharacter`,
+  `BP_TopDownGameMode`) — перед каждым удалением проверялась зависимость через
+  `unreal_asset_dependencies`, что удаляемое не используется реальным уровнем
+  `Lvl_TopDown`. **Уровень и его рабочее окружение (`TopDown/LevelPrototyping`,
+  `MI_Colorway`) не тронуты.**
+- **`Config/DefaultEngine.ini`**: `GlobalDefaultGameMode` переключён с удалённого
+  `BP_TopDownGameMode` на `/Game/XRU1Game/Core/GM_Tactics` — это только
+  fallback-дефолт движка, `Lvl_TopDown` его не использует (у уровня свой
+  `WorldSettings → GameMode Override = GM_Tactics`, проверено).
+- 🔴 **Найдена и починена (2026-07-26) битая ссылка на скелет у Cover/Revive.**
+  10 анимаций (`Anim/Cover/*` — 6 шт., `Anim/Revive/*` — 4 шт.) после переноса
+  скелета библиотеки (`SKELETON_MOVE` в первом скрипте) остались ссылаться на
+  СТАРЫЙ путь `/Game/OtherAssets/.../SK_Mannequin`, который к моменту финальной
+  чистки был физически удалён — `Skeleton` этих анимаций указывал в никуда
+  (`LoadErrors: … зависимый пакет … был недоступен`). Починено переназначением
+  `Skeleton` на `/Game/XRU1Game/Units/Meshes/SK_Mannequin_AnimLib` (это тот же
+  самый скелет библиотеки, просто по новому адресу) и пересохранением всех 10
+  файлов. **Урок:** после массового rename/move всегда проверять не только
+  Content Browser (там всё выглядит нормально, пока ассет не открыт), а
+  реально загрузить/пересохранить переехавшие ассеты и посмотреть Output Log
+  на `LoadErrors` — Asset Registry может годами хранить мёртвую ссылку молча.
+- **Наименования 4 BP оружия слегка разнобойные** (память о починке
+  «Custom version too new», см. E1.0-bis ниже): `BP_AssaultRifle_Default`,
+  `BP_LMG_Default` (переименованы), но `BP_SMG_Default_Example`,
+  `BP_Sniper_Default_Example` (остались с суффиксом донора). Работать не
+  мешает, косметика; переименовать при желании через Content Browser (rename
+  сам поправит ссылки, тут они пока нигде не используются).
+
+---
+
+## Блок E1 — Анимации: сборка `ABP_Solider` ⭐ приоритет
 
 Полный контекст и обоснование схемы — [14_ANIMATION_PLAN.md](14_ANIMATION_PLAN.md).
-**C++ готов целиком, дописывать в коде нечего.**
+**C++ готов целиком, дописывать в коде нечего.** Перенос и чистка ассетов
+(шаги 1 и 3 ниже) — готовы, блок E0 выше. Актуальный фронт работы — **шаг 2**
+(меш оружия в руку) и **шаги 4–11** (граф `ABP_Solider`).
 
 > ### 📋 КОРОТКИЙ ПУТЬ (делать строго по порядку)
 >
 > | # | Шаг | Где | Готово |
 > |---|---|---|---|
-> | 1 | Перенести crouch-анимации из `UE-HW` | Content Browser | [ ] |
-> | 2 | Найти и поставить меш винтовки в руку | `BP_Unit_*` | [ ] |
-> | 3 | Создать `ABP_Soldier`, назначить 5 юнитам | Content Browser | [ ] |
-> | 4 | В `Event Update Animation` — один узел `Get Visual State` | `ABP_Soldier` | [ ] |
+> | 1 | Перенести crouch-анимации из `UE-HW` | Content Browser | [x] |
+> | 2 | Найти и поставить меш винтовки в руку | `BP_Unit_*` | [ ] ⬅️ ТЫ ЗДЕСЬ |
+> | 3 | Создать `ABP_Solider`, назначить 5 юнитам | Content Browser | [x] |
+> | 4 | В `Event Update Animation` — один узел `Get Visual State` | `ABP_Solider` | [ ] |
 > | 5 | Собрать Blend Space стойки и приседа | Content Browser | [ ] |
-> | 6 | Собрать стейт-машину «Поза» (8 состояний) | `ABP_Soldier` | [ ] |
-> | 7 | Добавить **Default Slot** перед Output Pose | `ABP_Soldier` | [ ] |
+> | 6 | Собрать стейт-машину «Поза» (8 состояний) | `ABP_Solider` | [ ] |
+> | 7 | Добавить **Default Slot** перед Output Pose | `ABP_Solider` | [ ] |
 > | 8 | Создать 5 монтажей | Content Browser | [ ] |
 > | 9 | Назначить монтажи в слоты юнитов | `BP_Unit_*` | [ ] |
 > | 10 | Повесить монтажи на BP-хуки | `BP_Unit_*` | [ ] |
-> | 11 | Проверить в PIE по чеклисту E1.9 | PIE | [ ] |
+> | 11 | Проверить в PIE по чеклисту E1.10 | PIE | [ ] |
 >
-> Дальше — каждый шаг подробно.
+> ⚠️ Шаг 3 выполнен раньше шага 2 (не страшно — они не зависят друг от друга):
+> `ABP_Solider` уже существует и назначен, но внутри у него пока граф-заготовка
+> от `ABP_Unarmed` (Idle/Walk/Run/Jump без оружия) — шаги 4–7 его полностью
+> перестраивают.
+>
+> Дальше — каждый шаг подробно **(пути уже актуальные, `/Game/XRU1Game/Units/...`)**.
 
-### E1.0-ter ⭐ ШАГ 0 — НАВЕСТИ ПОРЯДОК В `Content` (делать ПЕРВЫМ)
+### E1.0-ter ✅ ШАГ 0 — НАВЕСТИ ПОРЯДОК В `Content` — СДЕЛАНО, раздел ниже оставлен как история
+
+> ✅ **Выполнено 2026-07-25/26.** Итоговая структура и найденные по пути
+> проблемы — см. блок **E0** в начале файла. Раздел ниже оставлен целиком как
+> запись о том, ЧТО именно пошло не так и почему — пригодится, если снова
+> понадобится массовый rename/move ассетов. Если ты просто продолжаешь работу
+> с шага 2/4 — этот раздел можно пропустить.
 
 Всё перенесённое легло по «чужим» путям (`/Game/OtherAssets/…`,
 `/Game/InfimaGames/…`, `/Game/Characters/…`). Работать так можно, но потом
@@ -57,39 +135,86 @@
 3. Tools → Execute Python Script… → выбрать скрипт.
    Первый запуск идёт в режиме проверки и только печатает план в Output Log.
 4. Убедиться, что план разумный → открыть скрипт, поставить `DRY_RUN = False` → запустить снова.
-5. ПКМ по `/Game` → **Fix Up Redirectors in Folder**.
-6. Ctrl+Shift+S (сохранить всё), закоммитить.
+5. ⚠️ **Ctrl+Shift+S (Save All) — ОБЯЗАТЕЛЬНО ДО следующего шага.**
+6. ПКМ по `/Game` → **Fix Up Redirectors in Folder**.
+7. Ещё раз Ctrl+Shift+S, закоммитить.
 
-**Что получится:**
+> 🔴 **ПОРЯДОК ШАГОВ 5 И 6 КРИТИЧЕН — проверено на своей шкуре (2026-07-25).**
+> Редиректор живёт до тех пор, пока ссылающийся на него ассет не будет
+> ПЕРЕСОХРАНЁН. Схлопнешь редиректоры раньше — ссылка повисает навсегда, и
+> починить её можно только руками, переназначив ассет.
+>
+> В первый прогон Save All сделали ПОСЛЕ Fix Up, и повисло три группы ссылок:
+> - `MI_Manny_01/02_New` → текстуры тела ⇒ **юниты стали серыми**
+>   (`Failed to compile Material Instance … Default Material will be used`);
+> - `BS_Crouch_new` → 12 анимаций приседа;
+> - 4 BP оружия → меши рамы/цевья/магазина/прицелов.
+>
+> Ничего не потерялось — всё лежит по новым путям, но переназначать пришлось
+> вручную.
 
-```
-/Game/XRU1Game/Units/
-    BP_Unit_Assault / Sniper / Medic / Tank / Marauder
-    Meshes/   SK_Mannequin, SK_Mannequin_AnimLib
-    Anim/     Cover/ Crouch/ Revive/ Rifle/ Death/   (+ ABP_Soldier, Montages/)
-    Weapons/  AssaultRifle/ SMG/ LMG/ Sniper/ Common/
-```
+**Получилось (см. дерево в блоке E0 выше — совпадает с планом):** мусор шаблона
+(`Characters/`, `InfimaGames/`, `OtherAssets/`, дублирующий `Cursor/`) удалён
+пачкой после проверки `unreal_asset_dependencies`, что ничего из него не
+держит `Lvl_TopDown`.
 
-После этого всё, что осталось вне `/Game/XRU1Game/` и `/Game/TopDown/`, — мусор
-шаблона, и его можно удалять пачкой (сначала Reference Viewer на всякий случай).
+- [x] Скрипт отработал, Fix Up Redirectors сделан, проект открывается без ошибок.
 
-- [ ] Скрипт отработал, Fix Up Redirectors сделан, проект открывается без ошибок.
+> 🔴 **Дополнительная находка при финальной проверке (2026-07-26):** сам
+> Fix Up Redirectors не покрыл ссылку `Skeleton` у 10 анимаций Cover/Revive —
+> подробности и фикс см. блок **E0** («Найдена и починена битая ссылка»). Если
+> увидишь `LoadErrors` на `SK_Mannequin` при открытии чего-то в `Anim/Cover`
+> или `Anim/Revive` — это должно быть уже почищено; если нет, лечится так же:
+> **Skeleton → `/Game/XRU1Game/Units/Meshes/SK_Mannequin_AnimLib` → Save**.
 
-### E1.0-bis ⭐ УЖЕ ПЕРЕНЕСЕНО АГЕНТОМ (2026-07-25) — только подключить
+> 🔴 **НАХОДКА (2026-07-26, проверено через MCP `unreal_asset_dependencies`):
+> Crouch-анимации привязаны к ЧУЖОМУ скелету.** Игрок перенёс Crouch из
+> `UE-HW` вручную (Migrate), ДО того как появился скрипт реорганизации. Migrate
+> сохранил их hard-reference `Skeleton` на `/Game/Characters/Mannequins/Meshes/
+> SK_Mannequin` — это СТАРЫЙ шаблонный скелет. Подтверждено прямым запросом
+> зависимостей `anim_Crouch_Idle` — как минимум 30 файлов держали `Characters/`
+> живым.
+>
+> ✅ **РЕШЕНО (2026-07-25):** выбран вариант 1 — **Retarget Animation Assets →
+> Duplicate Anim Assets and Retarget** на `/Game/XRU1Game/Units/Meshes/
+> SK_Mannequin`, старые копии удалены. Сейчас все 31 файл `Anim/Crouch/`
+> подтверждённо ссылаются на наш `SK_Mannequin` (проверено
+> `unreal_asset_dependencies` на `anim_Crouch_Idle` — среди зависимостей
+> `SKM_Manny_Simple` и `SK_Mannequin`, `Characters/` нет).
+>
+> ✅ **Compatible Skeletons у нашего `SK_Mannequin` заполнен** — подтверждено
+> запросом зависимостей: в списке есть `SK_Mannequin_AnimLib` (скелет
+> анимационной библиотеки, на нём играют Cover/Revive).
+
+✅ **Оба «подводных камня» ниже — тоже закрыты, проверено 2026-07-26:**
+
+1. **`ABP_Solider` не ссылается на `/Game/Characters/`.** Его зависимости —
+   только `/Game/XRU1Game/Units/Anim/Unarmed/*` (Idle/BlendSpace/Jump/Fall/Land)
+   и `SK_Mannequin`/`SKM_Manny_Simple`/`CR_Mannequin_FootIK` — все свои.
+   Граф внутри пока не переделан под оружие/укрытия (это и есть шаги 4–7), но
+   ссылок на удалённый шаблон нет — почистить папку `Characters/` было можно
+   сразу, что и произошло.
+2. **У снайперки `SM_Sniper_Scope` использует Render Target** (`RT_Sniper_Scope`
+   через `MI_Sniper_Scope_Render`) — прицел рисует живую картинку каждый кадр.
+   Для шутера от первого лица это нужно, для тактической камеры сверху — чистая
+   трата кадра. **Назначить на слот прицела любой непрозрачный `MI`** (например
+   `MI_Sniper_01`) либо просто не цеплять `SM_Sniper_Scope` к оружию.
+
+### E1.0-bis ✅ ПЕРЕНЕСЕНО и РАЗЛОЖЕНО (2026-07-25/26) — итоговые пути
 
 Разбор `UE-HW/Content/OtherAssets/FreeAnimationLibrary` и
-`UE-HW/Content/InfimaGames/ModernGunsBundle`. Скопировано файловой системой с
-сохранением относительных путей (оба проекта UE 5.7, ассеты самодостаточны —
-ссылаются только внутрь своих папок, проверено чтением ссылок в `.uasset`).
+`UE-HW/Content/InfimaGames/ModernGunsBundle`. Скопировано файловой системой
+между проектами, затем разложено по чистой структуре реорганизацией (блок E0).
 
-| Что | Куда легло | Зачем |
+| Что | Где лежит сейчас | Зачем |
 |---|---|---|
-| **6 анимаций укрытия** `anim_CoverDown_Idle_L/R`, `_Look_L/R`, `_Loop_L/R` | `/Game/OtherAssets/FreeAnimationLibrary/Animations/Cover/` | ⭐ **Это ровно то, чего не хватало.** `Idle_L/R` — прижаться к стене слева/справа, `Look_L/R` — выглянуть |
-| **4 анимации раненого** `anim_Downed_Idle_R`, `anim_Knocked_Reviver/Reviving`, `anim_Self_Revive_F_R` | `.../Animations/Revive/` | поза `Downed` и подъём медиком — механики уже есть в коде |
-| `SK_Mannequin` (скелет библиотеки, 0.19 МБ) | `.../Demo/Characters/Mannequins/Meshes/` | без него анимации не откроются |
-| **4 ствола ПОЛНОСТЬЮ** (меши + материалы + текстуры) | `/Game/InfimaGames/ModernGunsBundle/` | по стволу на класс |
+| **6 анимаций укрытия** `anim_CoverDown_Idle_L/R`, `_Look_L/R`, `_Loop_L/R` | `/Game/XRU1Game/Units/Anim/Cover/` | ⭐ **Это ровно то, чего не хватало.** `Idle_L/R` — прижаться к стене слева/справа, `Look_L/R` — выглянуть |
+| **4 анимации раненого** `anim_Downed_Idle_R`, `anim_Knocked_Reviver/Reviving`, `anim_Self_Revive_F_R` | `/Game/XRU1Game/Units/Anim/Revive/` | поза `Downed` и подъём медиком — механики уже есть в коде |
+| `SK_Mannequin_AnimLib` (скелет библиотеки, переименован во избежание коллизии имён) | `/Game/XRU1Game/Units/Meshes/` | Skeleton для Cover/Revive (см. Compatible Skeletons выше) |
+| **4 ствола ПОЛНОСТЬЮ** (меши + материалы + текстуры) | `/Game/XRU1Game/Units/Weapons/*/` | по стволу на класс |
 
-**Итого 285 файлов, 1.6 ГБ.**
+**Итого перенесено 285 файлов, ~1.6 ГБ** (текстуры позже сжаты до
+`Maximum Texture Size = 512`, см. [14_ANIMATION_PLAN.md](14_ANIMATION_PLAN.md)).
 
 **Раскладка оружия по классам:**
 
@@ -110,15 +235,17 @@
 
 > ⚠️ **Анимации библиотеки привязаны к СВОЕМУ `SK_Mannequin`**, а не к нашему.
 > Кости те же (UE5 Manny), поэтому ретаргет не нужен — достаточно совместимости:
-> открыть **наш** скелет (`/Game/Characters/Mannequins/Meshes/SK_Mannequin` →
-> вкладка Skeleton) → **Compatible Skeletons** → добавить
-> `/Game/OtherAssets/FreeAnimationLibrary/Demo/Characters/Mannequins/Meshes/SK_Mannequin`.
-> После этого анимации выбираются в нашем ABP напрямую. Если совместимость не
-> сработает — `Retarget Animation Assets` (штатная процедура).
+> открыть **наш** скелет (`/Game/XRU1Game/Units/Meshes/SK_Mannequin` → вкладка
+> Skeleton) → **Compatible Skeletons** → добавить
+> `/Game/XRU1Game/Units/Meshes/SK_Mannequin_AnimLib`. После этого анимации
+> выбираются в нашем ABP напрямую.
 
-- [ ] Открыть XRU1, дождаться импорта новых ассетов.
-- [ ] Добавить совместимость скелетов (см. врезку выше).
-- [ ] Проверить, что `anim_CoverDown_Idle_Right` открывается и играет на нашем меше.
+- [x] Открыть XRU1, дождаться импорта новых ассетов.
+- [x] Добавить совместимость скелетов (см. врезку выше) — подтверждено:
+      `SK_Mannequin_AnimLib` есть в зависимостях `SK_Mannequin`.
+- [x] Проверить, что `anim_CoverDown_Idle_Right` открывается и играет на нашем
+      меше — их `Skeleton` указывает на `SK_Mannequin_AnimLib` (починено
+      2026-07-26, см. блок E0 «Найдена и починена битая ссылка»).
 
 ### E1.0 ШАГ 1 — Перенести присед из проекта `UE-HW` ✅ СДЕЛАНО ИГРОКОМ
 
@@ -146,40 +273,53 @@
 5. Заодно перенести `ABP_Unarmed_Modify` — он не нужен в игре, но полезен как
    рабочий пример графа с приседом.
 
-- [ ] Анимации приседа лежат в `/Game/XRU1Game/Units/Anim/Crouch/`.
-- [ ] Открывается `anim_Crouch_Idle`, скелет совпадает с нашим.
+- [x] Анимации приседа лежат в `/Game/XRU1Game/Units/Anim/Crouch/` (31 файл).
+- [x] Открывается `anim_Crouch_Idle`, скелет совпадает с нашим (отретаргечено).
 
-### E1.1 ШАГ 2 — Меш оружия в руке ⬅️ ТЫ ЗДЕСЬ
+### E1.1 ШАГ 2 — Меш оружия в руке ⬅️ ТЫ ЗДЕСЬ (следующий шаг)
 
 ⚠️ **Без этого Rifle-анимации будут играть «с пустыми руками»** — руки сложены
 под винтовку, а винтовки нет.
 
-Меши **уже перенесены** (E1.0-bis), брать ничего не надо:
+Меши **уже перенесены** (E1.0-bis), с текстурами, брать ничего не надо:
 
 | Класс | Меш | Путь |
 |---|---|---|
-| Assault, Medic, Tank, **Мародёр** | `SK_AssaultRifle_Frame` | `/Game/InfimaGames/ModernGunsBundle/ModernAssaultRifle/Meshes/` |
-| Sniper | `SK_Sniper_Frame` | `/Game/InfimaGames/ModernGunsBundle/ModernSniper/Meshes/` |
+| Assault, Medic, Tank, **Мародёр** | `SK_AssaultRifle_Frame` | `/Game/XRU1Game/Units/Weapons/AssaultRifle/Meshes/` |
+| Sniper | `SK_Sniper_Frame` | `/Game/XRU1Game/Units/Weapons/Sniper/Meshes/` |
+
+> 💡 Если захочется у каждого класса своё оружие визуально (а не общий
+> автомат на четверых) — то же самое, но взять `SK_SMG_Frame`
+> (`Weapons/SMG/Meshes/`) для Медика и `SK_LightMachineGun_Frame`
+> (`Weapons/LMG/Meshes/`) для Танка — они тоже полностью готовы (меш + материал
+> + текстуры). Раскладка по классам из E1.0-bis это и предполагала; таблица
+> выше — минимальный вариант «на скорую руку» с одним автоматом на всех.
 
 - [ ] В `BP_Unit_*` добавить **`Skeletal Mesh Component`** (меши скелетные, не
       статичные), **Parent Socket = `hand_r`** (сокет есть на скелете Manny).
 - [ ] Подправить трансформ в вьюпорте: оружие должно лежать в правой руке
       стволом вперёд. Ориентир — повернуть по Yaw/Roll на 90° и подвинуть на
       несколько см; точные значения подбираются глазом за минуту.
-- [ ] Материал: меши загрузятся серым (текстуры не переносили — см. E1.0-bis).
-      Назначить любой тёмный `MI` из проекта либо оставить как есть.
+- [ ] Материал уже назначен (текстуры перенесены и сжаты до 512px) — трогать
+      не нужно, если только не хочется другой раскраски.
 - [ ] `Collision → NoCollision` на компоненте оружия: оно не должно ни резать
       навмеш, ни попадать в трейсы укрытия/линии огня.
 
-### E1.2 ШАГ 3 — Создать `ABP_Soldier`
+### E1.2 ШАГ 3 — Создать `ABP_Solider` ✅ СДЕЛАНО
 
-В проекте **один** Animation Blueprint — `/Game/Characters/Mannequins/Anims/
-Unarmed/ABP_Unarmed`, то есть БЕЗОРУЖНЫЙ шаблонный. Он и стоит у юнитов —
-отсюда «бойцы бегают без оружия».
+> ✅ **Выполнено.** `ABP_Solider` существует и назначен `Mesh → Anim Class` у
+> всех пяти `BP_Unit_*` (проверено `unreal_asset_dependencies` на каждом BP).
+> Внутри — пока не переделанный граф-заготовка от `ABP_Unarmed` (стейт-машины
+> `Locomotion`: Idle/Walk-Run и `Main States`: Locomotion/Jump/Fall Loop/Land,
+> все анимации безоружные из `Anim/Unarmed/`). Шаги 4–7 ниже полностью
+> перестраивают этот граф под оружие/укрытия/присед.
+>
+> ⚠️ Асcет называется **`ABP_Solider`** (опечатка донора, без второй «d») —
+> ссылки в шагах 4–11 ниже используют это же имя.
 
-- [ ] Duplicate `ABP_Unarmed` → `/Game/XRU1Game/Units/Anim/ABP_Soldier`.
-- [ ] `BP_Unit_Assault/Sniper/Medic/Tank/Marauder` → компонент `Mesh` →
-      **Anim Class = `ABP_Soldier`**.
+- [x] Duplicate `ABP_Unarmed` → `/Game/XRU1Game/Units/Anim/ABP_Solider`.
+- [x] `BP_Unit_Assault/Sniper/Medic/Tank/Marauder` → компонент `Mesh` →
+      **Anim Class = `ABP_Solider`**.
 
 ### E1.3 ШАГ 4 — Переменные ABP (Event Blueprint Update Animation)
 
@@ -287,7 +427,7 @@ Root Motion.
 рук «держу длинноствол»; и автомат, и снайперка держатся одинаково. Меняется
 только МЕШ в сокете `hand_r`.
 
-- [ ] Один `ABP_Soldier` на всех. Разное оружие = разный меш в `BP_Unit_*`.
+- [ ] Один `ABP_Solider` на всех. Разное оружие = разный меш в `BP_Unit_*`.
 - [ ] Если захочется отличать визуально сильнее — добавить в ABP переменную
       `WeaponType` и подменять Idle/Fire на уровне стейта. **Для курсовой не
       нужно**: на тактической камере разницы стойки не видно, а лишний набор
