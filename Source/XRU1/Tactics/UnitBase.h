@@ -389,6 +389,14 @@ protected:
 	UFUNCTION(BlueprintImplementableEvent, Category = "Tactics|State")
 	void OnEvacuated();
 
+	/**
+	 * Юнит получил урон и остался жив (не смерть, не переход в Downed — у них
+	 * свои хуки `OnDied`/`OnDownedChanged`). Зовётся из `HandleHealthChanged`
+	 * для проигрывания `HitReactMontage`.
+	 */
+	UFUNCTION(BlueprintImplementableEvent, Category = "Tactics|State")
+	void OnHitReact();
+
 	/** Роль в ростере. Переопределяется в подклассах/BP. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Unit")
 	EUnitRole UnitRole = EUnitRole::Assault;

@@ -140,7 +140,7 @@ git-LFS меньше на порядок.
 | **`HugCover()`** | — | прижимание к укрытию: разворот **ВДОЛЬ стены лицом к краю укрытия** (не носом в стену — см. правило 3 в §3.2) + **подшаг** вплотную, ограниченный навмешем. И то и другое плавно, через `CharacterMovement`, — у юнита есть настоящая `Velocity`, поэтому шаг играет обычная локомоция, а `bMoving` на это время = true |
 | **`FaceTowardsSmooth(Location)`** | — | плавный доворот на месте; полная дельта кладётся в `PendingTurnYaw`, по ней ABP выбирает клип `Turn_045/090/135/180` и сторону. Зовётся при наводке на цель |
 | Слоты монтажей на `AUnitBase` | `FireMontageOpen`, `FireMontageOverCover`, `FireMontageStepOut`, `HitReactMontage`, `DeathMontage`, `OverwatchEnterMontage` | дизайнер назначает ассеты в BP юнита, C++ выбирает нужный |
-| `OnShotFired`, `OnReactionShot`, `OnDied`, `OnDownedChanged`, `OnEvacuated`, `OnCoverStateChanged` | BP-хуки | точки запуска монтажей |
+| `OnShotFired`, `OnReactionShot`, `OnDied`, `OnDownedChanged`, `OnEvacuated`, `OnCoverStateChanged`, `OnHitReact` | BP-хуки | точки запуска монтажей. ⚠️ `OnShotFired` — на `UGA_Attack` (BP-наследник ability, не юнит), `OnReactionShot` — на `UGA_Overwatch`, остальные — на `AUnitBase` |
 | `NotifyUnitStateChanged` | — | пересобирает `VisualState` и шлёт `OnUnitStateChanged`; зовут все системы после изменения состояния |
 
 ⚠️ **Приоритет позы совпадает с приоритетом иконки статуса в HUD**

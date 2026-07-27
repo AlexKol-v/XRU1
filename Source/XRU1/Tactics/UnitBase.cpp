@@ -705,6 +705,11 @@ void AUnitBase::HandleHealthChanged(const FOnAttributeChangeData& Data)
 	// после снятия тега Downed, поэтому промежуточный delegate здесь пропускаем.
 	if (Data.OldValue > 0.f)
 	{
+		// HitReact только на реальный урон, не на лечение (NewValue > OldValue).
+		if (Data.NewValue < Data.OldValue)
+		{
+			OnHitReact();
+		}
 		NotifyUnitStateChanged();
 	}
 }

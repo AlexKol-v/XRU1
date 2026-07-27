@@ -319,15 +319,27 @@ PIE поза читается как надо, проверять здесь н�
 
 - [ ] Назначить 5 монтажей в слоты `BP_Unit_*` (Class Defaults →
       `Tactics|Visual|Montages`).
-- [ ] `OnShotFired(Target, bHit)`:
+- [ ] `OnShotFired(Target, bHit)` — хук лежит **не на `BP_Unit_*`, а на `UGA_Attack`**
+      (protected `BlueprintImplementableEvent`, `GA_Attack.h`). `AttackAbilityClass`
+      юнита по умолчанию — сырой C++-класс без графа: нужен BP-наследник
+      `GA_Attack_BP` (Content Browser → Blueprint Class → родитель `GA_Attack`),
+      назначенный в `AttackAbilityClass` каждого `BP_Unit_*` (Class Defaults →
+      `Tactics|Abilities`). Один общий BP подходит всем классам — логика в графе
+      читает `Get Avatar Actor from Actor Info` → Cast to `UnitBase`:
       1. `GetFireMontageFor(Target)` → монтаж, `OutStance`, `OutFiringEyeLocation`;
       2. если `OutStance == StepOut`: `AI Move To` в `OutFiringEyeLocation`
          (спроецированную на пол) → `Face Actor Towards` цели → `Play Anim Montage`
          (выстрел) → по окончании `AI Move To` обратно → **`HugCover()`**;
       3. иначе — просто `Play Anim Montage` (стойка уже верная).
-- [ ] `OnReactionShot(Target, bHit)` → то же самое.
-- [ ] `OnDied` → `DeathMontage` (случайный из 6).
-- [ ] Попадание по юниту → `HitReactMontage` (случайный из 8).
+- [ ] `OnReactionShot(Target, bHit)` — та же схема, но хук на `UGA_Overwatch`:
+      BP-наследник `GA_Overwatch_BP`, назначить в `OverwatchAbilityClass`.
+- [ ] `OnDied` — хук уже на самом юните (`AUnitBase`, категория `Tactics|State`):
+      реализовать прямо в Event Graph каждого `BP_Unit_*` → `DeathMontage`
+      (случайный из 6).
+- [ ] `OnHitReact` — новый C++-хук на `AUnitBase` (добавлен 2026-07-27,
+      `HandleHealthChanged` зовёт его при реальном уроне живому юниту, не на
+      лечение и не вместо `OnDied`/`OnDownedChanged`): реализовать в Event Graph
+      каждого `BP_Unit_*` → `HitReactMontage` (случайный из 8).
 
 ⚠️ **Монтаж выстрела играть сразу, ничего перед ним не ждать.** Хук приходит уже
 после расчёта попадания: любая задержка означает, что цель дёрнется от попадания
