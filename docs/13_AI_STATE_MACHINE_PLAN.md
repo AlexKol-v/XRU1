@@ -764,10 +764,24 @@ UPROPERTY(BlueprintAssignable, Category = "Tactics|Visual") FOnUnitAction       
 > параметры по умолчанию, а его уже слушают виджеты. Направление читается
 > свойством `BestCoverDirection`.
 
-## S2 — Зеркало состояния `FUnitVisualState` `[ ]`
+## S2 — Зеркало состояния `FUnitVisualState` `[x]`
 
 Часть II целиком: новый заголовок, поля и делегаты на `AUnitBase`, заполнение
 из пяти источников (§II.5), приоритет позы.
+
+> ✅ **Реализовано** (2026-07-25), но **не дословно по §II.4** — за фактической
+> структурой идти в [UnitVisualState.h](../Source/XRU1/Tactics/UnitVisualState.h),
+> спецификация выше историческая. Отличия: поза зовётся `EUnitPose` (не
+> `EUnitStance`); полей `bAiming`/`AimLocation`/`FiringStance`/`StepOutLocation`
+> нет — стойка и точка выстрела спрашиваются в момент выстрела через
+> `AUnitBase::GetFireMontageFor`, чтобы не хранить устаревающий снимок;
+> пересборка идёт в существующем `NotifyUnitStateChanged`, отдельного
+> `RefreshVisualState`/`OnVisualStateChanged` не заводили. Добавлены поля
+> `CoverDirectionLocal` (стена в осях юнита), **`PeekSideLocal`** (с какой стороны
+> кончается укрытие; источник — `UCoverDetectionComponent::FindPeekEdgeSide`) и
+> **`PendingTurnYaw`** (угол начатого доворота на месте; источник —
+> `AUnitBase::FaceTowardsSmooth`). Оба потребляет ABP, см.
+> [14_ANIMATION_PLAN §3](14_ANIMATION_PLAN.md).
 
 - ⚠️ `RefreshVisualState` шлёт делегат **только при фактическом изменении** —
   иначе ABP будет дёргаться каждый кадр.

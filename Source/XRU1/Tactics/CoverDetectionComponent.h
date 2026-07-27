@@ -138,6 +138,26 @@ public:
 	static void GatherCoverSides(const UWorld* World, const FVector& Base,
 		const UCoverTuningDataAsset* Tuning, const AActor* Ignored, TArray<FCoverSide>& OutSides);
 
+	/**
+	 * С КАКОЙ СТОРОНЫ КОНЧАЕТСЯ укрытие юнита: мировое направление ВДОЛЬ стены
+	 * (XY, нормализовано) в сторону ближайшего края. Zero — укрытия нет или в
+	 * пределах `PeekEdgeMaxDistance` края не нашлось (глухая стена).
+	 *
+	 * Нужно анимации выглядывания: боец в укрытии смотрит туда, где стена
+	 * заканчивается, а не «в среднем вбок». Та же математика, что у огневых
+	 * позиций (`UTacticsCombatStatics::GetFiringPositions`): шагаем вдоль стены
+	 * с шагом `PeekEdgeStep`, пока трейс в стену не перестанет её находить.
+	 *
+	 * ⚠️ Отличие от огневых позиций: там край ищется ОТНОСИТЕЛЬНО ЦЕЛИ (ось —
+	 * направление на цель), здесь цели нет — ось берётся от самой стены
+	 * (`BestCoverDirection`). Поэтому это отдельная функция, а не параметр той:
+	 * вопросы разные («откуда стрелять по нему» и «куда выглядывать вообще»).
+	 *
+	 * OutEdgeDistance — расстояние до края (см) от позиции юнита, 0 если края нет.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Cover")
+	FVector FindPeekEdgeSide(float& OutEdgeDistance) const;
+
 	/** Численный бонус защиты против конкретного стрелка (0 / Half / Full). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Cover")
 	float GetDefenseBonusAgainst(const AActor* Threat) const;

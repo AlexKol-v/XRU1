@@ -200,6 +200,71 @@ ECoverType UCoverDetectionComponent::EvaluateSurroundings()
 	return BestCoverAround;
 }
 
+FVector UCoverDetectionComponent::FindPeekEdgeSide(float& OutEdgeDistance) const
+{
+	OutEdgeDistance = 0.f;
+
+	const AActor* Owner = GetOwner();
+	const UWorld* World = Owner ? Owner->GetWorld() : nullptr;
+	if (!World || BestCoverAround == ECoverType::None)
+	{
+		return FVector::ZeroVector; // прятаться не за чем — выглядывать неоткуда
+	}
+
+	FVector ToWall = BestCoverDirection;
+	ToWall.Z = 0.f;
+	if (!ToWall.Normalize())
+	{
+		return FVector::ZeroVector;
+	}
+
+	// Ось ВДОЛЬ стены. Знак роли не играет: обе стороны проверяются одинаково,
+	// а результат — мировой вектор, который вызывающий переводит в свои оси.
+	FVector Side = FVector::CrossProduct(ToWall, FVector::UpVector);
+	if (!Side.Normalize())
+	{
+		return FVector::ZeroVector;
+	}
+
+	const UCoverTuningDataAsset* Tuning = GetTuning();
+	const FVector FloorBase = Owner->GetActorLocation() - FVector(0.f, 0.f, OwnerCapsuleHalfHeight(Owner));
+	const float Step = FMath::Max(1.f, Tuning->PeekEdgeStep);
+
+	// Шагаем вдоль стены в обе стороны, пока трейс В СТЕНУ её находит. Первый
+	// шаг, на котором стены уже нет, — и есть край. Побеждает БЛИЖНИЙ край: у
+	// пиллара, где стена кончается с обеих сторон, выглядывать логично в ту,
+	// до которой ближе. При точной ничьей выигрывает +Side — детерминированно,
+	// иначе сторона дёргалась бы между пересчётами.
+	FVector BestSide = FVector::ZeroVector;
+	float BestEdgeDistance = TNumericLimits<float>::Max();
+	for (const float SideSign : {1.f, -1.f})
+	{
+		for (float Offset = Step; Offset <= Tuning->PeekEdgeMaxDistance; Offset += Step)
+		{
+			const FVector Probe = FloorBase + Side * (SideSign * Offset);
+			if (TraceCoverAtLocation(World, Probe, ToWall, Tuning->CoverTraceDistance,
+				Tuning->HalfCoverHeight, Tuning->FullCoverHeight, Owner) != ECoverType::None)
+			{
+				continue; // ещё за укрытием — шагаем дальше к краю
+			}
+
+			if (Offset < BestEdgeDistance)
+			{
+				BestEdgeDistance = Offset;
+				BestSide = Side * SideSign;
+			}
+			break; // край на этой стороне найден, дальше только открытое место
+		}
+	}
+
+	if (BestSide.IsNearlyZero())
+	{
+		return FVector::ZeroVector; // глухая стена шире PeekEdgeMaxDistance
+	}
+	OutEdgeDistance = BestEdgeDistance;
+	return BestSide;
+}
+
 ECoverType UCoverDetectionComponent::GetCoverAgainst(const AActor* Threat) const
 {
 	const AActor* Owner = GetOwner();

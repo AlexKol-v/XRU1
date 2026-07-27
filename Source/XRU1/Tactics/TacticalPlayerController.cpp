@@ -362,7 +362,7 @@ void ATacticalPlayerController::UpdateHoverHighlight()
 	// выбора, враг — контекст атаки; цвет обводки различает stencil-значение).
 	AUnitBase* NewHovered = nullptr;
 	FHitResult Hit;
-	if (GetHitResultUnderCursor(ECC_Pawn, /*bTraceComplex=*/false, Hit))
+	if (TraceUnderCursor(Hit))
 	{
 		AUnitBase* Unit = Cast<AUnitBase>(Hit.GetActor());
 		if (Unit && !Unit->IsDead() && !Unit->IsEvacuated())
@@ -612,13 +612,34 @@ TArray<AUnitBase*> ATacticalPlayerController::GetSquad() const
 
 // --- Клики ----------------------------------------------------------------------
 
+bool ATacticalPlayerController::TraceUnderCursor(FHitResult& OutHit) const
+{
+	ATacticalPlayerController* MutableThis = const_cast<ATacticalPlayerController*>(this);
+
+	const bool bPawnHit = MutableThis->GetHitResultUnderCursor(ECC_Pawn, /*bTraceComplex=*/false, OutHit);
+	if (bPawnHit && Cast<AUnitBase>(OutHit.GetActor()))
+	{
+		return true; // живой юнит — попали сразу
+	}
+
+	// Промах по юниту (или упёрлись в пол за ним) — пробуем канал, на котором
+	// павшие остаются блокирующими.
+	FHitResult VisibilityHit;
+	if (MutableThis->GetHitResultUnderCursor(ECC_Visibility, false, VisibilityHit))
+	{
+		if (Cast<AUnitBase>(VisibilityHit.GetActor()) || !bPawnHit)
+		{
+			OutHit = VisibilityHit;
+			return true;
+		}
+	}
+	return bPawnHit;
+}
+
 void ATacticalPlayerController::HandleSelectPressed()
 {
 	FHitResult Hit;
-	if (!GetHitResultUnderCursor(ECC_Pawn, /*bTraceComplex=*/false, Hit))
-	{
-		GetHitResultUnderCursor(ECC_Visibility, false, Hit);
-	}
+	TraceUnderCursor(Hit);
 
 	AActor* Clicked = Hit.GetActor();
 	if (!Clicked)
@@ -1100,11 +1121,13 @@ void ATacticalPlayerController::SetAttackTarget(AUnitBase* Target)
 		Target->SetHoverHighlight(true);
 
 		// Стрелок разворачивается лицом к взятой цели (XCOM: читаемость наводки —
-		// видно, в кого целится). Тот же хелпер, что и у выстрела, — поворот
-		// прицела и поворот выстрела едины.
+		// видно, в кого целится). ПЛАВНО: доворот на месте виден игроку и играется
+		// анимацией (`VisualState.PendingTurnYaw`), а к моменту выстрела угол уже
+		// сведён — мгновенный `FaceActorTowards` внутри `ResolveShot` остаётся
+		// страховкой и ничего не дёргает.
 		if (SelectedUnit)
 		{
-			UTacticsCombatStatics::FaceActorTowards(SelectedUnit, Target->GetActorLocation());
+			SelectedUnit->FaceTowardsSmooth(Target->GetActorLocation());
 		}
 
 		if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
