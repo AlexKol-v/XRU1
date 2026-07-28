@@ -8,7 +8,6 @@
 
 class UAIPerceptionComponent;
 class UAISenseConfig_Sight;
-class UGameplayEffect;
 class UAIActionEvaluator;
 class AUnitBase;
 
@@ -129,13 +128,6 @@ public:
 	float PeripheralVisionHalfAngle = 180.f;
 
 	// --- Параметры хода -------------------------------------------------------
-
-	/**
-	 * GE урона для ФОЛБЭК-выстрела (когда юниту не назначен AttackAbilityClass).
-	 * В штатном пути урон определяет сама GA_Attack.
-	 */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Combat")
-	TSubclassOf<UGameplayEffect> DamageEffect;
 
 	/**
 	 * Сила расталкивания агентов Detour Crowd (`SetCrowdSeparationWeight`).
@@ -542,9 +534,9 @@ protected:
 	/**
 	 * Выстрел AI по цели. Штатный путь — событие Event.Attack: те же правила,
 	 * стоимость AP (включая XCOM-сжигание остатка) и BP-хуки (VFX/анимация),
-	 * что и у выстрела игрока. Фолбэк прямым ResolveShot — только для юнитов,
-	 * которым в BP не назначен AttackAbilityClass.
-	 * false — выстрел не состоялся (способность отказала): ход юнита завершается,
+	 * что и у выстрела игрока. Прямой ResolveShot-фолбэк запрещён: отсутствие
+	 * AttackAbilityClass — configuration error, а не второй боевой pipeline.
+	 * false — action не принят (способность отказала): ход юнита завершается,
 	 * чтобы шаг не зациклился на неоплаченном действии.
 	 */
 	bool TryFireAtTarget(AUnitBase* Unit, AActor* Target);
@@ -557,9 +549,6 @@ protected:
 	 * и тогда шаг хода повторился бы вхолостую.
 	 */
 	bool TryActivateSelfAbility(AUnitBase* Unit, TSubclassOf<class UTacticalAbility> AbilityClass);
-
-	/** A8: отметить в TurnManager, что юнит вступил в бой (оплаченный выстрел). */
-	void NotifyAttackedForThrottle(const AUnitBase* Unit);
 
 public:
 	/**

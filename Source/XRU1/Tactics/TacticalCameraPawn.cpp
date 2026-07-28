@@ -80,6 +80,11 @@ void ATacticalCameraPawn::AddRotationStep(float Direction)
 		// Нормализуем сразу, иначе yaw копится без ограничений (см. Tick).
 		// TacticalYaw — постоянный выбор игрока; action-camera меняет только
 		// TargetYaw и после себя всегда возвращается к TacticalYaw.
+		if (bShotFraming)
+		{
+			AbandonShotFraming();
+		}
+
 		TacticalYaw = FRotator::NormalizeAxis(
 			TacticalYaw + RotationStep * FMath::Sign(Direction));
 		if (!bShotFraming)
@@ -91,6 +96,11 @@ void ATacticalCameraPawn::AddRotationStep(float Direction)
 
 void ATacticalCameraPawn::AddZoomInput(float Input)
 {
+	if (!FMath::IsNearlyZero(Input) && bShotFraming)
+	{
+		AbandonShotFraming();
+	}
+
 	TacticalZoom = FMath::Clamp(TacticalZoom - Input * ZoomStep, MinZoom, MaxZoom);
 	if (!bShotFraming)
 	{
@@ -237,7 +247,10 @@ void ATacticalCameraPawn::FrameShot(const AActor* Shooter, const AActor* Target)
 
 void ATacticalCameraPawn::FrameShotForDuration(const AActor* Shooter, const AActor* Target, float Duration)
 {
-	EnterShotFraming(Shooter, Target, Duration > 0.f ? Duration : ShotFrameDuration);
+	const float ResolvedDuration = Duration < 0.f
+		? -1.f
+		: (Duration > 0.f ? Duration : ShotFrameDuration);
+	EnterShotFraming(Shooter, Target, ResolvedDuration);
 }
 
 void ATacticalCameraPawn::EnterShotFraming(const AActor* Shooter, const AActor* Target, float Duration)

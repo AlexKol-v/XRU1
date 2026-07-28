@@ -7,10 +7,10 @@
 | `BP_` | Blueprint-класс (акторы, компоненты, GameMode `GM_`) | `BP_Unit_Assault`, `GM_Tactics` |
 | `WBP_` | Widget Blueprint | `WBP_MainMenu`, `WBP_TacticalHUD` |
 | `CBS_` / `CTS_` | CommonButtonStyle / CommonTextStyle Blueprint | `CBS_Menu_Primary`, `CTS_Title` |
-| `ABP_` | Animation Blueprint | `ABP_Soldier` |
+| `ABP_` | Animation Blueprint | `ABP_Solider` (фактическое legacy-имя) |
 | `AM_` | Anim Montage | `AM_Fire` |
 | `BS_` | Blend Space | `BS_Idle_Walk_Run` |
-| `GA_` / `GE_` | BP-наследники способностей/эффектов | `GA_Heal`, `GE_TauntShield` |
+| `BP_GA_` / `GE_` | BP-наследники ability / Gameplay Effect | `BP_GA_Attack`, `GE_TauntShield`; C++-классы — `UGA_*` |
 | `DA_` | Data Asset | `DA_Quest_Tutorial` |
 | `IMC_` / `IA_` | Input Mapping Context / Input Action | `IMC_Tactical`, `IA_EndTurn` |
 | `L_` | уровень (карта) | `L_Mission01` |
@@ -75,8 +75,10 @@
    запускает сам (фон), долгие (>5 мин: lfs push, скачивание паков) — отдаёт
    пользователю.
 4. После правок C++ — переиндексировать codebase-memory (`index_repository`).
-5. Бинарные ассеты (.uasset) агент не редактирует — только через инструкции
-   пользователю (05_EDITOR_GUIDE) либо создание из C++.
+5. Бинарные ассеты `.uasset` менять только через Unreal Editor/UnrealClaude MCP,
+   не файловыми утилитами. После каждой MCP-правки: compile/save, read-back тем
+   же query и PIE-проверка пропорционально риску; Montage Notify/Slot tracks,
+   которые MCP не читает, проверяет пользователь в Editor.
 6. Русский язык в ответах/комментариях, идентификаторы — английские.
 
 ## 7. Определение «сделано» (общее)

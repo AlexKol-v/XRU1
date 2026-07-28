@@ -1,9 +1,13 @@
 # 14 — Анимации: схема и инвентаризация
 
-> **Статус:** подготовка завершена, сборка графа `ABP_Solider` в работе —
-> пройдены шаги 4–5 (переменные ABP, Blend Space), стейт-машина позы (шаг 6)
-> почти собрана: осталось добавить **Inertialization** и проверить сторону
-> `Left`/`Right` в PIE (см. 15-й док §6.3/E1.6). Текущий фронт — шаг 7.
+> **Статус 2026-07-28:** `ABP_Solider`, Inertialization, Default Slot, пять
+> монтажей и BP-хуки шагов E1.7–E1.8 собраны и проверены чтением MCP. Это ещё не
+> означает приёмку: PIE выявил гонки StepOut/fire/death/cover-turn. Текущий
+> фронт — не E1.9, а A16-P1–A16-P3
+> [глобального аудита](16_UNREAL_MCP_TECH_AUDIT.md).
+> C++-часть A16 собрана 2026-07-28, но два fire BP и пять death callbacks ещё
+> требуют ручной миграции; до неё выстрел безопасно отменяется watchdog с
+> возвратом AP. Исполняемый чеклист — [17_MANUAL_EDITOR_CHECKLIST.md](17_MANUAL_EDITOR_CHECKLIST.md).
 > Пошаговая инструкция для редактора — [15_EDITOR_TASKS.md](15_EDITOR_TASKS.md),
 > блок E1.
 >
@@ -26,12 +30,13 @@
    включая полный Rifle-набор (idle ADS, fire, dry fire, equip, reload,
    aim-офсеты, walk/jog по 8 направлений, прыжок), 8 hit-react, 6 смертей,
    присед с доворотами, укрытие, revive. Полная раскладка — §2.
-3. **Схема ABP — гибрид**, стандартный для тактик: стейт-машина держит
-   локомоцию и ПОЗУ, монтажи через Default Slot играют ДЕЙСТВИЯ (выстрел,
-   реакция на попадание, смерть, вход в наблюдение).
-4. **C++ готов.** `FUnitVisualState`, `GetVisualState()`, `GetFireMontageFor()`,
-   `HugCover()`, `FaceTowardsSmooth()`, слоты монтажей — §3. В редакторе
-   остаётся собрать граф.
+3. **Схема ABP — гибрид:** стейт-машина держит локомоцию и постоянную ПОЗУ,
+   монтажи через Slot играют разовые ДЕЙСТВИЯ. Для смерти one-shot принадлежит
+   только `Dying` montage, а `Dead` хранит terminal pose/ragdoll.
+4. **Граф готов, action pipeline — нет.** Текущие `FUnitVisualState`,
+   `GetFireMontageFor()`, `HugCover()` и `FaceTowardsSmooth()` не образуют одну
+   транзакцию и конфликтуют при повороте/StepOut. Требуемый контракт — §3 и
+   аудит 16 §5.
 
 ---
 
@@ -66,7 +71,7 @@ Motion Matching, у нас нет — а цена (замена системы �
 | Rifle/Walk, 8 направлений | `MF_Rifle_Walk_{Fwd,Bwd,Left,Right,Fwd_Left,Fwd_Right,Bwd_Left,Bwd_Right}` (8) | сэмплы `BS_Rifle_Locomotion` на Speed≈150 |
 | Rifle/Jog, 8 направлений | `MF_Rifle_Jog_*` (8) | сэмплы `BS_Rifle_Locomotion` на Speed≈450 |
 | Rifle/Fire | `MM_Rifle_Fire` (1) | `AM_Fire_Open` |
-| Rifle/DryFire | `MM_Rifle_DryFire` (1) | `AM_Fire_OverCover` — короче и без полной отдачи: снимок из-за укрытия обязан отличаться от выстрела в полный рост |
+| Rifle/DryFire | `MM_Rifle_DryFire` (1) | текущий segment `AM_Fire_OverCover`, но только временный кандидат: вручную проверить muzzle/recoil и gameplay-кадр |
 | Rifle/Equip + Reload | `MM_Rifle_Equip`, `MM_Rifle_Reload` (2) | оба в `AM_Overwatch_Enter`, два бита одного монтажа (вскинул → дослал патрон) |
 | Rifle/AIM | `AO_Rifle`, `MM_Rifle_Idle_ADS_AO_CU/CD/CC` (4) | Aim Offset поверх позы |
 | Rifle/HitReact | 8 | `AM_HitReact`, выбор явным `Random Integer` |
@@ -117,10 +122,12 @@ git-LFS меньше на порядок.
 ```
                  ┌─────────────── Anim Graph ───────────────┐
   Стейт-машина   │  Idle / Locomotion / Jump-Fall-Land      │
-  «ПОЗА»         │  CrouchCover, HighCover (Enter→Loop→Look)│
+  «ПОЗА»         │  CrouchCover, HighCover (Loop→Look)      │
                  │  Overwatch / Hunkered / TurnInPlace      │
                  │  Downed / Dead                           │
                  └──────────────────┬───────────────────────┘
+                                    │
+                            [ Inertialization ]
                                     │
                             [ Default Slot ]   ← сюда бьют МОНТАЖИ
                                     │
@@ -135,12 +142,12 @@ git-LFS меньше на порядок.
 
 | Что зовём из BP | Что отдаёт | Зачем |
 |---|---|---|
-| **`GetVisualState()`** → `FUnitVisualState` | `Pose` (Stand/Moving/CrouchCover/HighCover/Overwatch/Hunkered/Downed/Dead), `Cover`, `CoverDirection`, `CoverDirectionLocal`, **`PeekSideLocal`**, **`PendingTurnYaw`**, `bMoving`, `bPlayerSide` | ЕДИНЫЙ вход стейт-машины: одно чтение вместо опроса шести источников (теги ASC, флаги смерти, компонент укрытий, path following), которые расходятся между собой |
-| **`GetFireMontageFor(Target, OutStance, OutEye)`** | `UAnimMontage*` + `EFiringStance` + точка, откуда реально идёт выстрел | BP не разбирает стойку сам: и монтаж, и геометрия берутся у того же кода, что решает бой |
-| **`HugCover()`** | — | прижимание к укрытию: разворот **ВДОЛЬ стены лицом к краю укрытия** (не носом в стену — см. правило 3 в §3.2) + **подшаг** вплотную, ограниченный навмешем. И то и другое плавно, через `CharacterMovement`, — у юнита есть настоящая `Velocity`, поэтому шаг играет обычная локомоция, а `bMoving` на это время = true |
-| **`FaceTowardsSmooth(Location)`** | — | плавный доворот на месте; полная дельта кладётся в `PendingTurnYaw`, по ней ABP выбирает клип `Turn_045/090/135/180` и сторону. Зовётся при наводке на цель |
+| **`GetVisualState()`** → `FUnitVisualState` | `Pose`, cover/local direction, `PeekSideLocal`, `PendingTurnYaw`, movement/side | Единый вход AnimBP уже работает, но активная firing side не должна пересчитываться из текущего local Y: нужен immutable action context |
+| **`GetFireMontageFor(Target, OutStance, OutEye)`** | montage + `EFiringStance` + **eye/LOS point** | Выбор стойки существует; `OutEye` нельзя передавать в `AI Move To` как root/capsule goal. Целевой `FFiringSolution` должен отдельно хранить eye point и nav/root transform |
+| **`HugCover()`** | текущий smooth turn/nudge | В текущей версии конкурирует с StepOut `OnMoveCompleted` и BP-вызовом. После A16-P2 вызывается только action/movement coordinator по конкретному move intent |
+| **`FaceTowardsSmooth(Location)`** | `PendingTurnYaw` + actor turn | Сейчас один из нескольких писателей yaw; после A16-P2 остаётся внутренней операцией единого orientation owner, а AnimBP только читает snapshot |
 | Слоты монтажей на `AUnitBase` | `FireMontageOpen`, `FireMontageOverCover`, `FireMontageStepOut`, `HitReactMontage`, `DeathMontage`, `OverwatchEnterMontage` | дизайнер назначает ассеты в BP юнита, C++ выбирает нужный |
-| `OnShotFired`, `OnReactionShot`, `OnDied`, `OnDownedChanged`, `OnEvacuated`, `OnCoverStateChanged`, `OnHitReact` | BP-хуки | точки запуска монтажей. ⚠️ `OnShotFired` — на `UGA_Attack` (BP-наследник ability, не юнит), `OnReactionShot` — на `UGA_Overwatch`, остальные — на `AUnitBase` |
+| `OnShotFired`, `OnReactionShot`, `OnDied`, `OnHitReact` и другие BP-хуки | текущие presentation hooks | Физически подключены, но `OnShotFired`/`OnReactionShot` сейчас приходят **после** `ResolveShot`; orchestration StepOut/fire/return будет вынесена из latent BP в C++ action coordinator |
 | `NotifyUnitStateChanged` | — | пересобирает `VisualState` и шлёт `OnUnitStateChanged`; зовут все системы после изменения состояния |
 
 ⚠️ **Приоритет позы совпадает с приоритетом иконки статуса в HUD**
@@ -148,54 +155,55 @@ git-LFS меньше на порядок.
 Half → Stand. Один порядок на иконку и на анимацию — иначе игрок видит в HUD
 «глухая оборона», а в кадре бег.
 
-### 3.2 Три правила, на которых держится схема
+### 3.2 Правила целевой схемы после аудита
 
-1. **Выглядывание — часть ПОЗЫ, а не пролог выстрела.** `Look_L/R` играются из
-   ожидания в укрытии и возвращаются в него же. Перед выстрелом их играть
-   нельзя: `OnShotFired` приходит уже после расчёта попадания, и задержка
-   означала бы, что цель дёргается от попадания раньше, чем стрелок выстрелил.
-2. **Пик — это перемещение, а не анимация.** При `EFiringStance::StepOut` юнит
-   выбегает в точку из `OutFiringEyeLocation`, стреляет обычным `AM_Fire_Open` и
-   возвращается. Поэтому `FireMontageStepOut` остаётся пустым (C++ подставит
-   `FireMontageOpen`). Тактическая клетка при этом не меняется: укрытие, щит и
-   диск занятости считаются от домашней точки — инвариант §II.6 п.5 в 11-м доке.
-3. **Стойка в укрытии — ВДОЛЬ стены, а не носом в неё.** `anim_CoverDown_*`
-   сняты для бойца, стоящего боком к укрытию и смотрящего на угол, из-за
-   которого он выглядывает — это единственная стойка, при которой у клипов
-   совпадают ожидаемая и фактическая ориентация. `HugCover()` разворачивает
-   именно так: направление берёт `UCoverDetectionComponent::FindPeekEdgeSide`
-   (шаг вдоль стены с `PeekEdgeStep`, пока трейс находит стену — тот же приём,
-   что у огневых позиций), при отсутствии края — старый разворот к стене
-   (глухая стена, выглядывать всё равно некуда).
-
-   При такой стойке `PeekSideLocal` (−1 слева, +1 справа) можно снова читать
-   напрямую из `CoverDirectionLocal.Y` — стена гарантированно сбоку. Это НЕ
-   то же самое, что было раньше: первая редакция ставила юнита носом в стену
-   (`CoverDirectionLocal ≈ (1,0,0)`, Y — шум) и вычисляла сторону отдельным
-   трейсом до края; после того как стойку поменяли на «вдоль стены», этот
-   отдельный трейс стал не нужен для выбора клипа — `PeekSideLocal` снова прямое
-   чтение `Y`, а `FindPeekEdgeSide` используется только для ориентации `HugCover`
-   и для флага «есть куда выглядывать» (`bHasPeekEdge`, если он равен false —
-   стена глухая, `Look`-клип не запускается).
-
-   ⚠️ C++ **не доворачивает корпус дополнительно** при входе в `Look`
-   (`bTurnBodyOnPeek = false` по умолчанию) — весь поворот к краю уже заложен в
-   сам клип. Если довернуть ещё и актором, углы складываются, и боец оказывается
-   развёрнут почти на 180° — с этого и начинались «вывернутые» позы.
+1. **Урон фиксирует animation event, а не activation event.** В fire montage
+   ставится один `FireCommit` Montage Notify (`Branching Point`) на кадре
+   muzzle/recoil. Активная ability сверяет `ActionId`, montage instance и
+   `bShotCommitted`, после чего ровно один раз вызывает `ResolveShot`. До notify
+   interrupt означает «выстрела не было».
+2. **StepOut — одна action-транзакция, а не свободная BP-цепочка.** C++ хранит
+   `CoverAnchor`, wall normal/tangent, target, frozen side, отдельные eye и root
+   transforms, outbound/return route и move request ids. Ability завершается
+   после возврата/abort, а не сразу после запуска BP event.
+3. **Сторона укрытия выбирается один раз для target.** `FindPeekEdgeSide`
+   (ближайший край без target), `GetFiringPositions` (край относительно target)
+   и текущий `CoverDirectionLocal.Y` больше не являются тремя независимыми
+   истинами. Активную `PeekSide` хранит `FCoverActionContext`; cosmetic idle-look
+   не может её менять. Между actions компонент удерживает
+   `ActiveCoverAnchor/WallId` с hysteresis, чтобы на углу normal не прыгала при
+   каждом evaluate даже при неизменном типе FullCover.
+4. **Один владелец actor rotation.** Path following/action coordinator задаёт
+   yaw, AnimBP только отображает `PendingTurnYaw/AimYaw`. Hover, idle peek,
+   `HugCover`, `ResolveShot` и BP не пишут rotation параллельно.
+5. **Full cover остаётся standing.** `anim_CoverDown_*` допустимы для Half;
+   HighCover использует standing lean/upper-body additive. Crouched TurnInPlace
+   не включается для HighCover.
+6. **Смерть имеет один one-shot owner:** `Alive → Dying` montage → terminal
+   `Dead` pose/ragdoll. `Dead` state не проигрывает вторую death sequence.
 
 ### 3.3 Набор монтажей (5 ассетов на 6 слотов)
 
 1. `AM_Fire_Open` — выстрел стоя, `MM_Rifle_Fire`.
 2. `AM_Fire_OverCover` — привстать из-за низкого укрытия, выстрел, сесть;
-   источник `MM_Rifle_DryFire`.
+   сейчас использует `MM_Rifle_DryFire`, но ассет не принимается до ручной
+   проверки muzzle/recoil, weapon socket и кадра `FireCommit` в PIE.
 3. `AM_HitReact` — реакция на попадание, случайный выбор из 8.
-4. `AM_Death` — смерть, случайный выбор из 6.
+4. `AM_Death` — единственный one-shot падения в `Dying`, случайный выбор из 6;
+   по завершению — terminal `Dead`, без второй sequence.
 5. `AM_Overwatch_Enter` — `MM_Rifle_Equip` → `MM_Rifle_Reload` одним монтажом.
 6. `FireMontageStepOut` — **пустой намеренно** (см. правило 2 выше).
+
+Оба fire montage обязаны содержать один `FireCommit` Branching Point. C++ A16-P1
+уже требует этот сигнал; dedicated MCP не может подтвердить notify track, а текущий
+применяет урон раньше монтажа — поэтому набор создан, но ещё не принят.
 
 ---
 
 ## 4. Приёмка
+
+> Текущий результат 2026-07-28: **FAIL/PARTIAL**. Ниже целевые критерии; полный
+> набор негативных/interrupt/path кейсов — аудит 16 §7.
 
 - У низкого укрытия боец **приседает**, при выстреле привстаёт и садится обратно.
 - У высокого и низкого — стоит **вплотную, ВДОЛЬ стены, лицом к краю укрытия**

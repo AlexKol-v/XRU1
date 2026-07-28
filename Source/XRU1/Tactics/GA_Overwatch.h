@@ -4,11 +4,14 @@
 #include "UObject/ObjectKey.h" // ключи трекинга движущихся целей без удержания ссылок
 #include "Engine/EngineTypes.h" // FTimerHandle
 #include "TacticalAbility.h"
+#include "TacticalFireActionContext.h"
 #include "TacticsTypes.h"
 #include "GA_Overwatch.generated.h"
 
 class UAIPerceptionComponent;
 class UGameplayEffect;
+class UAnimMontage;
+class AUnitBase;
 struct FAIStimulus;
 
 /**
@@ -18,8 +21,9 @@ struct FAIStimulus;
  * вошедшему в его зону видимости (AIPerception Sight). Право на выстрел даёт
  * ОБЩИЙ предикат UGA_Attack::CanTargetActor (враждебность, живость, дальность
  * оружия, линия огня) — тот же, что у выстрела игрока и AI: радиус перцепции
- * шире дальности стрельбы, реагировать на недостижимые цели нельзя. Расчёт
- * выстрела — UTacticsCombatStatics::ResolveShot (укрытие цели учитывается там).
+	 * шире дальности стрельбы, реагировать на недостижимые цели нельзя. Необратимая
+	 * механика выполняется только `FireCommit` из montage notify; укрытие цели уже
+	 * учтено в замороженном шансе reaction-action.
  *
  * Пока способность активна, на юните висит тег State.Overwatch
  * (ActivationOwnedTags); он же блокирует повторную активацию. Способность
@@ -81,6 +85,49 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Overwatch")
 	TSubclassOf<UGameplayEffect> DamageEffect;
 
+	/** Аварийный timeout зависшего reaction montage/coordinator. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Overwatch", meta = (ClampMin = "1"))
+	float ReactionActionTimeout = 10.f;
+
+	/** Активна только вложенная reaction-транзакция, не parent Overwatch целиком. */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Overwatch|Action")
+	bool IsReactionActionInProgress() const { return ReactionAction.IsActive(); }
+
+	/** ActionId текущей реакции; invalid guid между реакциями. */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Overwatch|Action")
+	FGuid GetActiveReactionActionId() const { return ReactionAction.ActionId; }
+
+	/** Guard для любого latent BP callback: false для callback предыдущей реакции. */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Overwatch|Action")
+	bool IsReactionActionCurrent(const FGuid& ActionId) const
+	{
+		return ReactionAction.Matches(ActionId);
+	}
+
+	/** Immutable montage/stance/root plan одной reaction-action. */
+	UFUNCTION(BlueprintCallable, BlueprintPure = false,  Category = "Tactics|Overwatch|Action")
+	UAnimMontage* GetReactionActionPresentation(const FGuid& ActionId,
+		EFiringStance& OutStance, FVector& OutHomeRootLocation,
+		FVector& OutPresentationRootLocation) const;
+
+	/** Query для общего controller/AI barrier; parent Overwatch здесь не считается. */
+	static bool GetReactionActionInProgressFor(const AUnitBase* Unit, FGuid& OutActionId);
+
+	/** C++ guard для native notify: навсегда связывает reaction ActionId с одним montage instance. */
+	bool AcceptFireCommitMontageInstance(const FGuid& ActionId, int32 MontageInstanceId);
+
+	/** Guarded mechanics commit из FireCommit notify reaction montage. */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Overwatch|Action")
+	bool FireCommit(const FGuid& ActionId, bool& bOutHit);
+
+	/** Montage/return завершены; только теперь снимается пауза mover и слот очереди. */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Overwatch|Action")
+	bool CompleteReactionAction(const FGuid& ActionId);
+
+	/** Реакция сорвана; лимит увеличивается только если FireCommit уже состоялся. */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Overwatch|Action")
+	bool AbortReactionAction(const FGuid& ActionId);
+
 	/**
 	 * Как часто опрашивать движущихся врагов (сек). Не каждый кадр: предикат
 	 * гоняет линию огня с выглядыванием по каждому врагу.
@@ -96,9 +143,17 @@ public:
 	float ReactionMinTravel = 50.f;
 
 protected:
-	/** BP-хук для VFX/звука/анимации реакционного выстрела. */
+	/** Новый pre-presentation вход одной вложенной reaction-транзакции. */
+	UFUNCTION(BlueprintImplementableEvent, Category = "Tactics|Overwatch|Action")
+	void OnReactionActionStarted(AActor* Target, FGuid ActionId);
+
+	/** Post-commit BP-хук для VFX/звука; второй montage отсюда не запускать. */
 	UFUNCTION(BlueprintImplementableEvent, Category = "Tactics|Overwatch")
 	void OnReactionShot(AActor* Target, bool bHit);
+
+	/** Terminal-хук очистки presentation state одной реакции. */
+	UFUNCTION(BlueprintImplementableEvent, Category = "Tactics|Overwatch|Action")
+	void OnReactionActionTerminated(FGuid ActionId, bool bShotCommitted, bool bAborted);
 
 	/** Колбэк AIPerception: враг замечен -> пробуем реакционный выстрел. */
 	UFUNCTION()
@@ -126,8 +181,8 @@ protected:
 	 */
 	bool TryReactTo(AActor* Target);
 
-	/** Реакционный выстрел по цели: бросок против укрытия + урон через GAS. */
-	void FireReactionShot(AActor* Target);
+	/** Создать reaction snapshot, занять очередь и приостановить движущуюся цель. */
+	bool BeginReactionAction(AActor* Target);
 
 	/** Находит AIPerceptionComponent у аватара способности (контроллер или пешка). */
 	UAIPerceptionComponent* GetOwnerPerception() const;
@@ -140,6 +195,15 @@ protected:
 	/** Таймер опроса движущихся целей (снимается в EndAbility). */
 	FTimerHandle ReactionCheckTimer;
 
+	/** Watchdog вложенной реакции; не штатное окончание кадра/движения. */
+	FTimerHandle ReactionActionWatchdogTimer;
+
+	/** Движущаяся цель, которую эта реакция обязана отпустить ровно один раз. */
+	TWeakObjectPtr<AActor> PausedReactionMover;
+
+	/** Snapshot/guards только текущей вложенной реакции. */
+	FTacticalFireActionContext ReactionAction;
+
 	/**
 	 * Точка, с которой цель начала ТЕКУЩЕЕ непрерывное перемещение. Запись
 	 * появляется, когда цель замечена в движении, и стирается, когда та встала.
@@ -150,4 +214,12 @@ protected:
 
 	/** По кому уже отработали в ТЕКУЩЕМ его перемещении. */
 	TSet<TObjectKey<AActor>> ReactedThisMove;
+
+	void HandleReactionActionTimeout(FGuid ActionId);
+	void ClearReactionActionWatchdog();
+	void ResumeReactionMover();
+	bool IsFrozenReactionCommitValid() const;
+	void EndReactionPresentation() const;
+	void StopReactionMontage(const FTacticalFireActionContext& FinishedAction) const;
+	void CheckCombatOutcomeAfterReaction() const;
 };

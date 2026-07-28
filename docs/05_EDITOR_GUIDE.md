@@ -4,6 +4,10 @@
 Имена ассетов — по [06_CONVENTIONS.md](06_CONVENTIONS.md). Все создаваемые
 BP-классы наследуются от **уже существующих C++ классов** (см. 03_CODE_OVERVIEW).
 
+> Для текущего блокера fire/death после C++ A16 использовать не общие разделы
+> ниже, а точный [ручной чеклист 17](17_MANUAL_EDITOR_CHECKLIST.md): старые
+> ability BP сейчас watchdog-отменяют выстрел и возвращают AP.
+
 ---
 
 ## 1. Структура Content/ (создать папки один раз)
@@ -129,42 +133,20 @@ Epic положил готовый конвейер ретаргета:
 
 Death/HitReact в GASP НЕТ — используем донорские (`MM_Death_*`, `MM_HitReact_*`).
 
-### 4.1 ABP_Soldier — расширение стокового ABP (решение — 04_ROADMAP этап 4)
+### 4.1 `ABP_Solider` — текущая анимационная схема
 
-**Статус:** базовая локомоция (idle/бег) у юнитов УЖЕ работает — на стоковом
-ABP шаблона. Двигает юнита `AIController`, поэтому в C++ включён
-`bUseAccelerationForPaths` (конструктор `AUnitBase`) — без него стоковое
-условие `Should Move` (= `Speed>0 AND Acceleration≠0`) не видит AI-движение
-(path following по умолчанию задаёт скорость напрямую, минуя Acceleration).
-Ту же логику Should Move сохранять и в новых ветках ABP.
+> **Актуализировано 2026-07-28:** старые шаги создания `ABP_Soldier` больше не
+> выполнять. Фактический ассет —
+> `/Game/XRU1Game/Units/Anim/ABP_Solider` (историческая опечатка в имени), он
+> назначен всем пяти юнитам. Граф, Inertialization/Default Slot и пять монтажей
+> собраны. Пошаговый статус — `15_EDITOR_TASKS.md`; архитектурные исправления и
+> PIE-матрица — `16_UNREAL_MCP_TECH_AUDIT.md`.
 
-**Почему НЕ GASP-риг целиком:** motion matching в GASP предсказывает
-траекторию по вводу игрока — при движении через `AI MoveTo` даёт футслайдинг
-и неверные направления; для дискретных стоек тактики он и не нужен.
-Из GASP берём только отдельные секвенции через ретаргет §4.0.
-
-**Шаги:**
-1. Дублировать стоковый ABP (который сейчас стоит на юнитах, ABP_Manny) →
-   `Content/XRU1Game/Units/ABP_Soldier`. НЕ child-класс — дубликат: свободно
-   правим state machine, не боясь обновлений шаблона.
-2. Ретаргет недостающих секвенций из GASP по §4.0: crouch idle, crouch walk
-   loop; сложить в `Content/XRU1Game/Units/Anims/GASP/`.
-3. Event Graph — добавить переменные из Pawn-владельца (`AUnitBase`;
-   каст к нему делать ОТДЕЛЬНО от расчёта Speed, чтобы локомоция не зависела
-   от успеха каста):
-   - `bIsDead`, `bIsDowned` (по событиям смерти этапа 1),
-   - **`CoverState`** — из `CoverDetection->BestCoverAround` (None/Half/Full;
-     обновлять по делегату `OnCoverStateChanged`),
-   - `bOverwatch` — наличие тега `State.Overwatch` на ASC.
-4. State Machine — добавить состояния (правило стоек — GDD §12.1):
-   - `Idle_Open` ↔ `Move` — уже есть в стоке (idle/run по Should Move)
-   - `Idle_HalfCover` — **crouch idle (GASP)**; движение у укрытия — crouch walk
-   - `Idle_FullCover` — rifle idle + лёгкий lean к стене (упрощённо — та же idle)
-   - `Overwatch` — ADS-поза (`MF_Rifle_Idle_ADS` из донора)
-   - `Downed` — лежит (кадр Death-анимации на паузе), `Death` — по bIsDead
-5. Slot «UpperBody» для монтажей. Монтажи: `MM_Rifle_Fire` → AM_Fire,
-   `MM_HitReact_*` → AM_HitReact, `MM_Death_*` → AM_Death (донорские).
-6. Назначить ABP_Soldier в Mesh всех BP-юнитов (взамен стокового).
+Сохраняются решения: Manny + `CharacterMovementComponent`,
+`bUseAccelerationForPaths`, собственная state machine без GASP Motion Matching.
+AnimBP читает единый `GetVisualState`; gameplay action/урон/StepOut в BP не
+оркестрировать. HalfCover — crouch, HighCover — standing lean, death one-shot —
+только Dying montage, fire gameplay commit — по `FireCommit` Branching Point.
 
 ### 4.2 BP-классы юнитов
 
@@ -236,15 +218,17 @@ ABP шаблона. Двигает юнита `AIController`, поэтому в 
    `Оса`, `Шприц`, `Молот` и соответствующие способности. Если нужен другой
    позывной, изменить только `Tactics|Unit → UnitDisplayName`; класс от этого
    не изменится.
-6. Меш/AnimBP/оружие относятся к визуальной полировке: сейчас четыре BP уже
-   используют `SKM_Manny_Simple` + `ABP_Unarmed` и общий HUD. Позже заменить их
-   на `ABP_Soldier` и прикрепить винтовку в сокет `weapon_r` по §4.1.
+6. Меш/AnimBP/оружие уже назначены: все пять BP используют `ABP_Solider` и свой
+   weapon BP. Сокет/transform/`NoCollision` сверять по E1.1 в
+   `15_EDITOR_TASKS.md`; не возвращать `ABP_Unarmed`.
 
 ### 4.3 Враг
 `BP_Unit_Marauder` от `AUnitBase` (не от AUnit_*): `DefaultTeamId = 2`, меш
-Manny с тёмным материалом, статы: BaseAim 65 / ShotDamage 20 (HP и aim
-переопределит `ATacticsGameMode` по сложности). Способности врагу не нужны
-(его ход ведёт `AUnitAIController` напрямую через ResolveShot).
+Quinn с тёмным материалом, статы: BaseAim 65 / ShotDamage 20 (HP и aim
+переопределит `ATacticsGameMode` по сложности). `AttackAbilityClass` и
+`OverwatchAbilityClass` используют те же `BP_GA_Attack`/`BP_GA_Overwatch`, что
+отряд. Текущий прямой fallback `ResolveShot` не имеет presentation-цепочки и
+должен быть удалён в A16-P1: отсутствующий ability class — config error без урона.
 **Патруль**: на размещённом на карте экземпляре врага заполнить массив
 `PatrolPoints` (TargetPoint'ы уровня) — без точек юнит стоит на посту;
 тревога поднимется от шума выстрелов или визуального контакта (GDD §8).
@@ -353,8 +337,10 @@ Manny с тёмным материалом, статы: BaseAim 65 / ShotDamage 
    - триггеры: box-триггеры зон («пустырь», «укрытие», «зона B»…), события
      `OnCoverStateChanged`, `OnActionPointsChanged`, `OnCombatEnded`, кастомные
      события способностей;
-   - **форс-выстрелы**: level BP вызывает `UTacticsCombatStatics::ResolveShot`
-     с BaseHitChance = 100 (шаг A4) или 0 (шаг A7) от имени врага;
+   - **форс-выстрелы**: level BP запускает общий attack action API и передаёт
+     roll override `100%` (шаг A4) или `0%` (шаг A7) в `FShotContext`;
+     `ResolveShot` — внутренняя mechanics-функция и напрямую из Level BP не
+     вызывается, иначе обходятся montage/`FireCommit`/cleanup;
    - **раненый Клин** (шаг A9): Клин с самого старта спавнится в стороне,
      скрыт; по триггеру телепорт к точке + `SetDowned(true)` + показать;
    - подсветка целевых точек — декаль-маркер (P2, по желанию);

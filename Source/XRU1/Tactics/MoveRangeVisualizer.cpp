@@ -96,6 +96,68 @@ bool AMoveRangeVisualizer::ShowForUnit(AUnitBase* Unit)
 	return true;
 }
 
+bool AMoveRangeVisualizer::PlanMoveForUnit(AUnitBase* Unit, const FVector& Goal,
+	int32 MaxActionPoints, FMoveOrderPlan& OutPlan)
+{
+	OutPlan = FMoveOrderPlan();
+	Hide();
+	CurrentUnit = Unit;
+
+	const UActionPointsComponent* ActionPoints = Unit ? Unit->GetActionPoints() : nullptr;
+	if (!ActionPoints || ActionPoints->CurrentActionPoints <= 0 || MaxActionPoints <= 0)
+	{
+		return false;
+	}
+
+	const int32 AvailableActionPoints = FMath::Min(ActionPoints->CurrentActionPoints, MaxActionPoints);
+	const double BudgetOne = Unit->MoveRange;
+	const double BudgetMax = BudgetOne * static_cast<double>(AvailableActionPoints);
+	if (!BuildDistanceField(Unit, BudgetOne, BudgetMax))
+	{
+		Hide();
+		return false;
+	}
+
+	// Дальняя тактическая цель сначала обрезается по navmesh-длине до бюджета AP.
+	// Так AI движется вдоль коридоров, а не выбирает эвклидово ближайшую сторону стены.
+	FVector BudgetedGoal = Goal;
+	UTacticsCombatStatics::GetPointAlongPathBudget(
+		this, Unit, Unit->GetActorLocation(), Goal, static_cast<float>(BudgetMax), BudgetedGoal);
+
+	// PlanMoveTo остаётся единственным валидатором цели и конструктором маршрута.
+	// Визуальные секции намеренно не создаём: это служебный расчёт в чужую фазу.
+	bool bPlanned = PlanMoveTo(BudgetedGoal, OutPlan);
+	if (!bPlanned)
+	{
+		// Navmesh не знает о динамических дисках бойцов. Если его бюджетная точка
+		// оказалась за союзником, берём достижимый сэмпл поля, ближайший к этой
+		// точке: маршрут начинает обход уже на текущем AP, а не упирается в капсулу.
+		double BestDistanceSq = TNumericLimits<double>::Max();
+		int32 BestSample = INDEX_NONE;
+		for (int32 Index = 0; Index < Field.Num(); ++Index)
+		{
+			const FZoneSample& Sample = Field[Index];
+			if (!Sample.bReachable || Sample.PathDist <= CellSize * 0.5)
+			{
+				continue;
+			}
+
+			const double DistanceSq = FVector::DistSquared2D(SampleLocation(Index), BudgetedGoal);
+			if (DistanceSq < BestDistanceSq)
+			{
+				BestDistanceSq = DistanceSq;
+				BestSample = Index;
+			}
+		}
+		if (BestSample != INDEX_NONE)
+		{
+			bPlanned = PlanMoveTo(SampleLocation(BestSample), OutPlan);
+		}
+	}
+	SetActorHiddenInGame(true);
+	return bPlanned && OutPlan.ActionPointCost <= AvailableActionPoints;
+}
+
 void AMoveRangeVisualizer::Hide()
 {
 	ZoneMesh->ClearAllMeshSections();

@@ -144,39 +144,44 @@ unrealengine.com/fabfreecontent (**лимитированные бесплатн
 
 ## Этап 4 — Юниты: BP-классы и анимации — ~2 сессии
 
-> **Решение по анимациям (2026-07-16, GDD §12.1 уточнён практикой):**
-> ABP_Soldier строим как **дубликат стокового ABP_Manny, расширенный state
+> **Решение по анимациям (уточнено аудитом 2026-07-28):**
+> `ABP_Solider` построен как **дубликат стокового ABP_Manny, расширенный state
 > machine**, а НЕ на GASP-риге с motion matching: MM заточен под траектории
 > ввода игрока — с `AIController::MoveTo` даёт футслайдинг и неверные
 > направления (подтверждено форумом Epic), и для пошаговой тактики с
-> дискретными стойками избыточен. Недостающие анимации (crouch idle/walk,
-> ADS, death) **точечно ретаргетим из GASP** по конвейеру 05_EDITOR_GUIDE §4.0.
-> База (idle/бег) уже работает на стоковом ABP — см. чекбокс ниже.
+> дискретными стойками избыточен. Нужный rifle/crouch/cover/death/hit-react
+> набор уже лежит в `/Game/XRU1Game/Units/Anim`. Граф и монтажи физически
+> собраны, но PIE-приёмка выявила блокирующие гонки; план исправления —
+> `16_UNREAL_MCP_TECH_AUDIT.md` §6.
 
 - [x] **Базовая локомоция юнитов работает** (2026-07-16): стоковый ABP на
   SK_Mannequin играет idle/бег при AI-движении. Потребовался C++-фикс:
   `bUseAccelerationForPaths` в конструкторе `AUnitBase` — иначе path following
   задаёт скорость напрямую без Acceleration, и условие Should Move стокового
   ABP (`Speed>0 AND Acceleration≠0`) никогда не срабатывает
-- [ ] ABP_Soldier (дубликат стокового ABP → `Content/XRU1Game/Units/`):
-  слоты монтажей Fire/HitReact/Death, поза Downed (лежит) — 05_EDITOR_GUIDE §4.1
-- [ ] Ретаргет из GASP (§4.0): crouch idle + crouch walk loop (+ idle-вариации
-  по желанию) → `Content/XRU1Game/Units/Anims/GASP/`
-- [ ] **Стойки укрытий**: ABP читает `BestCoverAround`/`OnCoverStateChanged` →
-  half cover = **crouch** (GASP crouch idle/walk), full cover = стоя у стены,
-  открыт = боевая стойка; Overwatch = ADS-поза (GDD §12.1)
+- [x] `ABP_Solider` создан, назначен всем пяти юнитам; AnimGraph содержит
+  state machines, Inertialization, Default Slot и Control Rig; MCP validate
+  `UpToDate`, без compile errors/warnings (2026-07-28)
+- [x] Rifle/crouch/cover/downed/death/hit-react набор перенесён и читается
+  Asset Registry; пять montage-ассетов созданы
+- [~] **Стойки укрытий исправлены в C++/ABP, но не приняты PIE**: Full Look
+  standing, active wall/side стабилизированы; ручная матрица — документ 17
 - [x] Созданы `BP_Unit_Assault/Sniper/Medic/Tank` с правильными родителями;
-  у новых BP сохранены Manny, `ABP_Unarmed`, selection ring и squad HUD;
+  **на момент создания** у BP были Manny, `ABP_Unarmed`, selection ring и HUD;
   нативные `BaseMaxHealth`/Aim/Range, Squadsight и классовые способности
   исправлены (HP 100/80/90/150 переносится в GAS до старта HUD); на
   `Lvl_TopDown` стоит ровно по одному бойцу каждого класса (MCP, 2026-07-22)
-- [ ] Визуальная полировка четырёх BP: Quinn для разнообразия, винтовка в
-  `weapon_r`, заменить временный `ABP_Unarmed` на `ABP_Soldier`
-- [x] `BP_Unit_Marauder` (враг, `AUnitBase`) создан и размещён в двух
-  экземплярах: TeamId=2, BaseAim=65, ShotDamage=20, squad abilities пусты;
+- [x] У всех пяти `BP_Unit_*` назначены `ABP_Solider`, weapon BP и ability BP;
+  Marauder использует Quinn, остальные Manny (MCP, 2026-07-28)
+- [x] `BP_Unit_Marauder` (враг, `AUnitBase`) создан; Asset Registry видит четыре
+  external actor instances в `Lvl_TopDown` (точный runtime spawn/count проверить
+  после открытия уровня): TeamId=2, BaseAim=65, ShotDamage=20;
   стартовые HP/Aim затем переопределяет `ATacticsGameMode` по сложности
-- [ ] Монтажи: AM_Fire, AM_HitReact, AM_Death (+ хук из BP-событий
-  OnShotFired/OnDied/OnReactionShot)
+- [!] C++ fire/death lifecycle собран, но сохранённые `BP_GA_Attack`,
+  `BP_GA_Overwatch` и пять `OnDied` не мигрированы: текущий выстрел watchdog-
+  отменяется с возвратом AP. Выполнить `17_MANUAL_EDITOR_CHECKLIST.md`.
+- [~] Cover/rotation context и enemy route реализованы в C++; принять только
+  после BP migration и матрицы аудита 16 §7 / документа 17 §6
 - [x] HUD юнита: пипсы AP + иконка укрытия в WBP над головой — 4
   WBP-наследника + `DA_UnitHUD_Squad/Enemy` + назначение в BP юнитов,
   проверено чтением через MCP 2026-07-20
@@ -188,7 +193,8 @@ unrealengine.com/fabfreecontent (**лимитированные бесплатн
 - [ ] Собрать добавленную контрастную подложку overhead status и принять её
   на светлом, сером и синем фоне уровня; Blueprint/WBP для неё не нужен
 
-**DoD:** на тестовой карте 4 бойца и 2 врага стреляют с анимацией и звуком,
+**DoD (не достигнут):** на тестовой карте 4 бойца и враги стреляют с синхронной
+анимацией и звуком,
 у half-cover юнит приседает, у full — стоит у стены, смерть/Downed
 проигрываются, HP/AP видны над головами.
 
@@ -289,7 +295,9 @@ unrealengine.com/fabfreecontent (**лимитированные бесплатн
 
 **Почему отдельно:** поле на каждого врага в каждый шаг хода — заметная
 стоимость (замерить `xru1.MoveRange.LogBuildTime 1`), и это уже не багфикс
-перемещения, а работа над поведением AI. Текущее поведение врагов рабочее.
+перемещения, а работа над поведением AI. **PIE 2026-07-28 подтвердил, что текущее
+поведение не является рабочим критерием:** в узком месте враг упирается в
+союзника и останавливается; задача повышена до блокера A16-P3.
 
 > **✅ Прогресс 2026-07-21 — утилити-скоринг с весами** (`03_CODE_OVERVIEW.md
 > §2.6`): отступление при низком HP, манёвр в укрытие с линией огня, рывок к

@@ -1,6 +1,7 @@
 #include "UnitBase.h"
 #include "ActionPointsComponent.h"
 #include "CoverDetectionComponent.h"
+#include "CoverTuningDataAsset.h"
 #include "GA_Attack.h"
 #include "GA_Overwatch.h"
 #include "TacticalAbility.h"
@@ -161,6 +162,12 @@ void AUnitBase::RebuildVisualState()
 	{
 		State.PeekSideLocal = FMath::Sign(State.CoverDirectionLocal.Y);
 	}
+	// Во время уже начатого cosmetic peek сторона неизменяема: разворот actor
+	// не имеет права посреди клипа переключить Left/Right на противоположный.
+	if (bPeekActive && !FMath::IsNearlyZero(FrozenPeekSide))
+	{
+		State.PeekSideLocal = FrozenPeekSide;
+	}
 
 	// ЕСТЬ ЛИ КУДА ВЫГЛЯДЫВАТЬ — отдельный вопрос от стороны: у глухой стены
 	// сторона известна, а края нет.
@@ -187,7 +194,8 @@ void AUnitBase::RebuildVisualState()
 		return ASC && ASC->HasMatchingGameplayTag(Tag);
 	};
 
-	if (bIsDead)                                              { State.Pose = EUnitPose::Dead; }
+	if (bIsDead && !bDeathMontageOwnsPose)                    { State.Pose = EUnitPose::Dead; }
+	else if (bIsDead)                                         { State.Pose = EUnitPose::Stand; }
 	else if (bIsDowned)                                       { State.Pose = EUnitPose::Downed; }
 	else if (HasTag(TacticsGameplayTags::State_HunkeredDown)) { State.Pose = EUnitPose::Hunkered; }
 	else if (HasTag(TacticsGameplayTags::State_Overwatch))    { State.Pose = EUnitPose::Overwatch; }
@@ -231,11 +239,11 @@ void AUnitBase::HugCover()
 	const FVector FaceDirection = EdgeSide.IsNearlyZero()
 		? (bCoverHugFaceWall ? ToWall : -ToWall) // глухая стена — выглядывать некуда
 		: EdgeSide;
-	FaceTowardsSmooth(GetActorLocation() + FaceDirection * 100.f,
-		/*bPlayTurnAnimation=*/false, CoverHugTurnRate);
+	const FVector DesiredFacingTarget = GetActorLocation() + FaceDirection * 100.f;
 
 	if (CoverHugMaxNudge <= 0.f)
 	{
+		FaceTowardsSmooth(DesiredFacingTarget, /*bPlayTurnAnimation=*/false, CoverHugTurnRate);
 		return;
 	}
 
@@ -245,6 +253,7 @@ void AUnitBase::HugCover()
 	UWorld* World = GetWorld();
 	if (!Capsule || !World)
 	{
+		FaceTowardsSmooth(DesiredFacingTarget, /*bPlayTurnAnimation=*/false, CoverHugTurnRate);
 		return;
 	}
 
@@ -286,7 +295,10 @@ void AUnitBase::HugCover()
 			if (NavSys->ProjectPointToNavigation(FMath::Lerp(StartFoot, TargetFoot, Alpha),
 				Projected, NavExtent))
 			{
-				Reachable = FMath::Lerp(Start, TargetLocation, Alpha);
+				// ProjectPointToNavigation возвращает точку ПОД НОГАМИ, а actor
+				// хранит центр капсулы. Прямое присваивание Projected.Location
+				// утопило бы root на CapsuleHalfHeight.
+				Reachable = Projected.Location + FVector(0.f, 0.f, FloorOffset);
 				break;
 			}
 		}
@@ -296,6 +308,7 @@ void AUnitBase::HugCover()
 	// Идти уже некуда — не поднимаем шаг ради пары миллиметров.
 	if (FVector::DistSquared2D(Start, TargetLocation) < FMath::Square(CoverHugArriveTolerance))
 	{
+		FaceTowardsSmooth(DesiredFacingTarget, /*bPlayTurnAnimation=*/false, CoverHugTurnRate);
 		return;
 	}
 
@@ -316,7 +329,13 @@ void AUnitBase::HugCover()
 		Movement->MaxWalkSpeed = CoverHugStepSpeed;
 	}
 	CoverHugStepTarget = TargetLocation;
+	CoverHugFacingDirection = FaceDirection.GetSafeNormal2D();
 	CoverHugStepElapsed = 0.f;
+	// Новый cover step отменяет прежний turn: иначе Tick продолжит крутить actor
+	// одновременно с физическим подшагом.
+	bTurningInPlace = false;
+	PendingTurnAmount = 0.f;
+	ActiveTurnRate = 0.f;
 	bCoverHugStepping = true;
 
 	// Поза становится «идёт» ДО первого кадра подшага, иначе юнит успеет
@@ -342,7 +361,14 @@ void AUnitBase::FaceTowardsSmooth(const FVector& TargetLocation, bool bPlayTurnA
 	// из них выглядит как подёргивание. Такие углы сводим сразу.
 	if (FMath::Abs(Delta) < TurnInPlaceMinAngle)
 	{
+		// Предыдущий большой turn мог ещё жить в Tick. Перед мгновенным малым
+		// поворотом атомарно гасим его, иначе следующий кадр повернёт actor назад.
+		bTurningInPlace = false;
+		TurnTargetYaw = DesiredYaw;
+		PendingTurnAmount = 0.f;
+		ActiveTurnRate = 0.f;
 		UTacticsCombatStatics::FaceActorTowards(this, TargetLocation);
+		NotifyUnitStateChanged();
 		return;
 	}
 
@@ -387,7 +413,11 @@ void AUnitBase::UpdateCoverPeek(float DeltaSeconds)
 		if (bPeekActive)
 		{
 			bPeekActive = false;
-			FaceCoverWall();
+			if (bTurnBodyOnPeek)
+			{
+				FaceCoverWall();
+			}
+			FrozenPeekSide = 0.f;
 			NotifyUnitStateChanged();
 		}
 		return;
@@ -427,6 +457,7 @@ void AUnitBase::UpdateCoverPeek(float DeltaSeconds)
 	if (CoverIdleTime >= CoverPeekDuration)
 	{
 		bPeekActive = false;
+		FrozenPeekSide = 0.f;
 		CoverIdleTime = 0.f;
 		// Новая задержка каждый раз: иначе бойцы в отряде выглядывают синхронно,
 		// как метрономы.
@@ -488,7 +519,7 @@ void AUnitBase::UpdateCoverHugStep(float DeltaSeconds)
 	// заниженную скорость нельзя: боец пополз бы весь ход шагом.
 	if (UTacticsCombatStatics::IsUnitInTransit(this))
 	{
-		FinishCoverHugStep();
+		FinishCoverHugStep(/*bApplyCoverFacing=*/false);
 		return;
 	}
 
@@ -510,7 +541,7 @@ void AUnitBase::UpdateCoverHugStep(float DeltaSeconds)
 	AddMovementInput(ToTarget / Distance, 1.f);
 }
 
-void AUnitBase::FinishCoverHugStep()
+void AUnitBase::FinishCoverHugStep(bool bApplyCoverFacing)
 {
 	bCoverHugStepping = false;
 	CoverHugStepElapsed = 0.f;
@@ -529,6 +560,12 @@ void AUnitBase::FinishCoverHugStep()
 	{
 		MutableCover->EvaluateSurroundings();
 	}
+	if (bApplyCoverFacing && !CoverHugFacingDirection.IsNearlyZero())
+	{
+		FaceTowardsSmooth(GetActorLocation() + CoverHugFacingDirection * 100.f,
+			/*bPlayTurnAnimation=*/false, CoverHugTurnRate);
+	}
+	CoverHugFacingDirection = FVector::ZeroVector;
 	NotifyUnitStateChanged();
 }
 
@@ -543,6 +580,7 @@ void AUnitBase::UpdateTurnInPlace(float DeltaSeconds)
 		SetActorRotation(FRotator(Current.Pitch, TurnTargetYaw, Current.Roll));
 		bTurningInPlace = false;
 		PendingTurnAmount = 0.f;
+		ActiveTurnRate = 0.f;
 		NotifyUnitStateChanged(); // ABP гасит анимацию доворота
 		return;
 	}
@@ -551,12 +589,24 @@ void AUnitBase::UpdateTurnInPlace(float DeltaSeconds)
 }
 
 UAnimMontage* AUnitBase::GetFireMontageFor(const AActor* Target, EFiringStance& OutStance,
-	FVector& OutFiringEyeLocation) const
+	FVector& OutFiringEyeLocation, FVector& OutPresentationRootLocation) const
 {
 	// Стойка и точка выстрела берутся у ЕДИНОГО источника — того же, что решает
 	// геометрию боя. Никакой отдельной «анимационной» логики укрытий быть не
 	// должно: разойдётся с тем, что засчитала игра.
 	OutStance = UTacticsCombatStatics::GetFiringStance(this, Target, OutFiringEyeLocation);
+	OutPresentationRootLocation = GetActorLocation();
+
+	if (OutStance == EFiringStance::StepOut)
+	{
+		const UCoverTuningDataAsset* Tuning = UTacticsCombatStatics::GetCoverTuning(GetWorld());
+		// GetFiringPositions уже вернул nav-projected root, прошедший occupancy и
+		// capsule sweep. Вторая независимая проекция здесь раньше сдвигала капсулу
+		// до 51 см, но оставляла frozen eye на старом месте — механика и персонаж
+		// стреляли из разных точек. Обратное преобразование теперь точное.
+		OutPresentationRootLocation = OutFiringEyeLocation
+			- FVector(0.f, 0.f, Tuning->EyeHeightOffset);
+	}
 	switch (OutStance)
 	{
 	case EFiringStance::OverCover: return FireMontageOverCover ? FireMontageOverCover : FireMontageOpen;
@@ -642,6 +692,47 @@ void AUnitBase::BeginPlay()
 	{
 		ASC->GetGameplayAttributeValueChangeDelegate(UTDAttributeSet::GetHealthAttribute())
 			.AddUObject(this, &AUnitBase::HandleHealthChanged);
+	}
+	if (CoverDetection)
+	{
+		CoverDetection->OnActiveCoverChanged.AddDynamic(this, &AUnitBase::HandleActiveCoverChanged);
+	}
+}
+
+void AUnitBase::HandleActiveCoverChanged(int32 /*NewRevision*/)
+{
+	// Full→Full не вызывает старый OnCoverStateChanged, но направление позы и
+	// сторона peek уже другие. Публикуем один согласованный visual snapshot.
+	NotifyUnitStateChanged();
+}
+
+void AUnitBase::PreviewAimAtTarget(const AActor* Target)
+{
+	if (!Target || bIsDead || bIsDowned || bIsEvacuated)
+	{
+		return;
+	}
+
+	const UCoverDetectionComponent* Cover = GetCoverDetection();
+	const bool bHasActiveCover = Cover && Cover->BestCoverAround != ECoverType::None &&
+		!Cover->ActiveCoverNormal.IsNearlyZero();
+	if (!bHasActiveCover)
+	{
+		FaceTowardsSmooth(Target->GetActorLocation());
+		return;
+	}
+
+	// В укрытии actor rotation — часть стабильного cover snapshot. Cycling цели
+	// меняет только aim/camera presentation и не конкурирует с HugCover/peek.
+	const bool bHadTurn = bTurningInPlace || !FMath::IsNearlyZero(PendingTurnAmount) ||
+		!FMath::IsNearlyZero(ActiveTurnRate);
+	bTurningInPlace = false;
+	TurnTargetYaw = GetActorRotation().Yaw;
+	PendingTurnAmount = 0.f;
+	ActiveTurnRate = 0.f;
+	if (bHadTurn)
+	{
+		NotifyUnitStateChanged();
 	}
 }
 
@@ -770,6 +861,11 @@ void AUnitBase::Die()
 		return;
 	}
 	bIsDead = true;
+	// Пока назначенный montage играет через BP-хук, Dead state не запускает
+	// вторую death sequence под тем же Default Slot. Если montage отсутствует,
+	// старый Dead state остаётся штатным fallback.
+	bDeathMontageOwnsPose = DeathMontage != nullptr;
+	bDeathPresentationActive = bDeathMontageOwnsPose;
 
 	// Труп не подсвечивается: гасим кольцо и обводку.
 	SetSelectionHighlight(false);
@@ -794,7 +890,9 @@ void AUnitBase::Die()
 	// склоне поза вообще висит в воздухе). Поэтому по её окончании тело уходит в
 	// физику и доваливается само. Длительность берём у назначенного монтажа —
 	// один источник правды с тем, что реально играет BP.
-	const float Delay = DeathMontage ? DeathMontage->GetPlayLength() : RagdollDelay;
+	const float Delay = DeathMontage
+		? FMath::Max(RagdollDelay, DeathMontage->GetPlayLength() + 0.25f)
+		: RagdollDelay;
 	if (Delay > 0.f)
 	{
 		GetWorldTimerManager().SetTimer(RagdollTimerHandle, this, &AUnitBase::StartRagdoll, Delay, false);
@@ -805,8 +903,24 @@ void AUnitBase::Die()
 	}
 }
 
+void AUnitBase::NotifyDeathMontageFinished(bool bInterrupted)
+{
+	if (!bIsDead || !bDeathPresentationActive)
+	{
+		return;
+	}
+	UE_LOG(LogTemp, Verbose, TEXT("[Death] %s montage %s — terminal ragdoll"),
+		*GetNameSafe(this), bInterrupted ? TEXT("interrupted") : TEXT("completed"));
+	StartRagdoll();
+}
+
 void AUnitBase::StartRagdoll()
 {
+	// Terminal-флаг гасим до любых ранних выходов: callback и watchdog могут
+	// прийти в соседних кадрах, но владение death-pose при этом остаётся навсегда.
+	GetWorldTimerManager().ClearTimer(RagdollTimerHandle);
+	bDeathPresentationActive = false;
+
 	USkeletalMeshComponent* MeshComp = GetMesh();
 	if (!MeshComp || MeshComp->IsSimulatingPhysics())
 	{

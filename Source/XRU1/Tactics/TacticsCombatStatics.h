@@ -81,6 +81,15 @@ public:
 		TSubclassOf<UGameplayEffect> DamageEffectClass);
 
 	/**
+	 * Только необратимая механика выстрела: использует уже зафиксированный итоговый
+	 * шанс и применяет roll/урон/шум. Не поворачивает actor, не управляет камерой
+	 * и НЕ завершает бой: CheckCombatOutcome вызывает action coordinator только
+	 * после terminal presentation, чтобы lethal hit не оборвал montage/возврат.
+	 */
+	static bool ResolveShotMechanics(AActor* Shooter, AActor* Target, float ResolvedHitChance,
+		float Damage, TSubclassOf<UGameplayEffect> DamageEffectClass, const FVector& ShotOrigin);
+
+	/**
 	 * Дальность визуального контакта отряда (см): на неё смотрят Squadsight
 	 * снайпера и «видит ли отряд действующего врага» для камеры. Один порог на
 	 * оба случая — иначе камера и правила стрельбы расходятся.
@@ -163,6 +172,14 @@ public:
 		const AActor* Target, const AActor* Shooter = nullptr);
 
 	/**
+	 * Повторная проверка LOS из ЗАФИКСИРОВАННОЙ точки выстрела. Источник не
+	 * пересчитывается из текущего transform стрелка; цель может показать только
+	 * реально видимую центральную/краевую точку своего текущего укрытия.
+	 */
+	static bool HasLineOfSightFromFrozenOrigin(const UWorld* World, const FVector& FiringEyeLocation,
+		const AActor* Target);
+
+	/**
 	 * ЕДИНЫЙ источник позиций выглядывания. Собирает точки ГЛАЗ, из которых Unit
 	 * может стрелять/быть виден, и НИЧЕГО не решает про видимость (перебор пар —
 	 * в HasLineOfSightFromLocation). Зовётся ДВАЖДЫ с переставленными аргументами:
@@ -180,8 +197,9 @@ public:
 	/**
 	 * Стойка выстрела и точка глаз, из которой стрелок реально стреляет (для
 	 * анимации Ф10 и превью Ф11). LOS из центра + half/full между стрелком и
-	 * целью → OverCover; LOS из центра без укрытия → Open; LOS только из
-	 * выглядывания у края → StepOut. Нет LOS → Open, точка = центр глаз.
+	 * целью и HalfCover → OverCover; FullCover никогда не даёт приседание над
+	 * стеной и продолжает поиск target-aware края → StepOut. LOS из центра без
+	 * укрытия → Open. Нет подходящего края/LOS → Open, точка = центр глаз.
 	 */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Combat")
 	static EFiringStance GetFiringStance(const AActor* Shooter, const AActor* Target, FVector& OutFiringEyeLocation);

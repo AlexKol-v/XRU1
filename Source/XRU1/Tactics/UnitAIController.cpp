@@ -6,10 +6,11 @@
 #include "CoverDetectionComponent.h"
 #include "CoverTuningDataAsset.h"
 #include "TacticsCombatStatics.h"
-#include "TacticsGameplayEffects.h"
 #include "TacticsGameplayTags.h"
 #include "TurnManagerSubsystem.h"
 #include "GA_Attack.h"
+#include "GA_Overwatch.h"
+#include "MoveRangeVisualizer.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemGlobals.h"
 #include "AbilitySystemBlueprintLibrary.h"
@@ -39,6 +40,21 @@ static TAutoConsoleVariable<int32> CVarLogAICombat(
 	TEXT("1 — логировать боевые решения вражеского AI (укрытие/выстрел/сближение)."),
 	ECVF_Default);
 
+namespace
+{
+	bool IsFireSubactionInProgress(const AUnitBase* Unit, FGuid* OutActionId = nullptr)
+	{
+		FGuid ActionId;
+		const bool bInProgress = UGA_Attack::GetAttackActionInProgressFor(Unit, ActionId) ||
+			UGA_Overwatch::GetReactionActionInProgressFor(Unit, ActionId);
+		if (OutActionId)
+		{
+			*OutActionId = bInProgress ? ActionId : FGuid();
+		}
+		return bInProgress;
+	}
+}
+
 AUnitAIController::AUnitAIController(const FObjectInitializer& ObjectInitializer)
 	// Detour Crowd вместо стокового path following: агенты знают друг о друге
 	// и бегущий огибает стоящих (обход юнитов в ДВИЖЕНИИ; занятость точек —
@@ -58,8 +74,6 @@ AUnitAIController::AUnitAIController(const FObjectInitializer& ObjectInitializer
 	Perception->ConfigureSense(*SightConfig);
 	Perception->SetDominantSense(UAISense_Sight::StaticClass());
 	SetPerceptionComponent(*Perception);
-
-	DamageEffect = UGE_ShotDamage::StaticClass();
 
 	// Дефолтный набор вариантов действия (ADR-1). Порядок в массиве роли не
 	// играет — перебор сортируется по потолку скора; здесь он лишь читаемый.
@@ -129,14 +143,13 @@ void AUnitAIController::OnPossess(APawn* InPawn)
 	bHasThreatLocation = false;
 	PatrolIndex = 0;
 
-	// Валидация настройки BP — один раз при вселении, а не на каждом выстреле:
-	// без AttackAbilityClass юнит стреляет фолбэком (мимо GA_Attack, а значит
-	// без BP-хуков анимации/VFX выстрела).
+	// Валидация настройки BP — один раз при вселении. Второго прямого
+	// damage-pipeline нет: без GA атака безопасно отклоняется.
 	const AUnitBase* Unit = Cast<AUnitBase>(InPawn);
 	if (Unit && !Unit->AttackAbilityClass)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[AI] У %s не назначен AttackAbilityClass — выстрелы пойдут ")
-			TEXT("в обход GA_Attack (без хуков анимации/VFX). Задай класс в Class Defaults BP юнита."),
+		UE_LOG(LogTemp, Error, TEXT("[AI] У %s не назначен AttackAbilityClass — атака запрещена. ")
+			TEXT("Задай BP_GA_Attack в Class Defaults BP юнита."),
 			*GetNameSafe(InPawn));
 	}
 }
@@ -191,8 +204,20 @@ void AUnitAIController::AdvanceTurnStep()
 	UActionPointsComponent* ActionPoints = Unit ? Unit->GetActionPoints() : nullptr;
 
 	// Нет пешки/очков действия или юнит выбыл — заканчиваем.
-	if (!Unit || !ActionPoints || !ActionPoints->HasActionsLeft() ||
-		!UTacticsCombatStatics::IsUnitAlive(Unit))
+	if (!Unit || !ActionPoints || !UTacticsCombatStatics::IsUnitAlive(Unit))
+	{
+		FinishUnitTurn();
+		return;
+	}
+
+	// AP обычного выстрела уже списаны в Begin, но следующий decision/finish
+	// разрешён только после montage + ReturnToAnchor/Abort terminal callback.
+	if (IsFireSubactionInProgress(Unit))
+	{
+		ScheduleNextStep();
+		return;
+	}
+	if (!ActionPoints->HasActionsLeft())
 	{
 		FinishUnitTurn();
 		return;
@@ -902,35 +927,28 @@ bool AUnitAIController::TryFireAtTarget(AUnitBase* Unit, AActor* Target)
 	const bool bHasAttackAbility = ASC && Unit->AttackAbilityClass &&
 		ASC->FindAbilitySpecFromClass(Unit->AttackAbilityClass) != nullptr;
 
-	if (bHasAttackAbility)
+	if (!bHasAttackAbility)
 	{
-		const int32 PointsBefore = ActionPoints->CurrentActionPoints;
-
-		FGameplayEventData Payload;
-		Payload.Instigator = Unit;
-		Payload.Target = Target;
-		UAbilitySystemBlueprintLibrary::SendGameplayEventToActor(
-			Unit, TacticsGameplayTags::Event_Attack, Payload);
-
-		// Способность не заплатила AP (отказала по своим правилам) — считаем,
-		// что выстрела не было: иначе шаг хода повторялся бы бесконечно.
-		const bool bFired = ActionPoints->CurrentActionPoints < PointsBefore;
-		if (bFired)
-		{
-			NotifyAttackedForThrottle(Unit);
-		}
-		return bFired;
+		UE_LOG(LogTemp, Error, TEXT("[AI] %s: AttackAbilityClass не назначен/не выдан; "
+			"прямой ResolveShot запрещён"), *GetNameSafe(Unit));
+		return false;
 	}
 
-	// Фолбэк: у юнита не назначен AttackAbilityClass (не настроен BP; о чём
-	// предупредили один раз в OnPossess). Правила те же — точность через общий
-	// расчёт, выстрел завершает активацию.
-	ActionPoints->TrySpendActionPoint();
-	ActionPoints->SpendAllRemaining();
-	UTacticsCombatStatics::ResolveShot(Unit, Target,
-		UGA_Attack::ComputeEffectiveAim(Unit, Target), Unit->ShotDamage, DamageEffect);
-	NotifyAttackedForThrottle(Unit);
-	return true;
+	FGameplayEventData Payload;
+	Payload.Instigator = Unit;
+	Payload.Target = Target;
+	UAbilitySystemBlueprintLibrary::SendGameplayEventToActor(
+		Unit, TacticsGameplayTags::Event_Attack, Payload);
+
+	// Принятие действия подтверждает ActionId, а не мгновенная дельта AP.
+	FGuid ActionId;
+	const bool bAccepted = UGA_Attack::GetAttackActionInProgressFor(Unit, ActionId);
+	if (bAccepted)
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("[AI] %s: attack accepted id=%s"),
+			*GetNameSafe(Unit), *ActionId.ToString(EGuidFormats::Digits));
+	}
+	return bAccepted;
 }
 
 bool AUnitAIController::SetMovementPaused(bool bPaused)
@@ -961,20 +979,6 @@ bool AUnitAIController::SetMovementPaused(bool bPaused)
 		PathComp->ResumeMove(RequestID);
 	}
 	return true;
-}
-
-void AUnitAIController::NotifyAttackedForThrottle(const AUnitBase* Unit)
-{
-	// A8: счёт «сколько врагов вступило в бой в этом ходу». Отмечаем ровно в
-	// точке ОПЛАЧЕННОГО выстрела — оба пути (способность и фолбэк) идут сюда,
-	// иначе лимит зависел бы от того, настроен ли у BP AttackAbilityClass.
-	if (const UWorld* World = GetWorld())
-	{
-		if (UTurnManagerSubsystem* TurnManager = World->GetSubsystem<UTurnManagerSubsystem>())
-		{
-			TurnManager->NotifyUnitAttacked(Unit);
-		}
-	}
 }
 
 bool AUnitAIController::StepInvestigate(AUnitBase* Unit)
@@ -1057,11 +1061,40 @@ bool AUnitAIController::StepPatrol(AUnitBase* Unit)
 
 bool AUnitAIController::MoveWithBudget(AUnitBase* Unit, const FVector& Goal, float AcceptanceRadius)
 {
-	// Обрезаем путь бюджетом 1 AP (MoveRange по длине пути навмеша, не по прямой).
-	// GetPointAlongPathBudget заодно УСЕКАЕТ путь там, где не протиснуться мимо
-	// стоящего юнита: AI подходит насколько может, а не упирается в толпу и не
-	// теряет ход. Поле дистанций (как у игрока) здесь не строим — оно дорогое,
-	// а врагу достаточно «дойти насколько можно» без точной зоны.
+	if (!Unit || !Unit->GetActionPoints())
+	{
+		return false;
+	}
+
+	// В бою враг использует ровно тот же occupancy-aware планировщик, что и игрок:
+	// волна заранее огибает диски союзников, а не надеется на локальный Detour Crowd.
+	if (const UTurnManagerSubsystem* TurnManager = GetWorld()
+		? GetWorld()->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
+		TurnManager && TurnManager->IsInCombat())
+	{
+		ATacticalPlayerController* PlayerController = GetWorld()
+			? Cast<ATacticalPlayerController>(GetWorld()->GetFirstPlayerController()) : nullptr;
+		FMoveOrderPlan Plan;
+		if (!PlayerController ||
+			!PlayerController->PlanMoveForUnit(Unit, Goal, /*MaxActionPoints=*/1, Plan) ||
+			Plan.PathPoints.Num() < 2)
+		{
+			return false;
+		}
+
+		bTurnMoveInProgress = true; // AP спишется в OnMoveCompleted.
+		const EPathFollowingRequestResult::Type Result = MoveAlongRoute(
+			Plan.PathPoints, FMath::Min(AcceptanceRadius, 40.f));
+		if (Result == EPathFollowingRequestResult::RequestSuccessful)
+		{
+			Unit->NotifyUnitStateChanged();
+			return true;
+		}
+		bTurnMoveInProgress = false;
+		return false;
+	}
+
+	// Вне пошагового боя оставляем дешёвый navmesh-путь для патруля.
 	FVector BudgetedGoal;
 	if (!UTacticsCombatStatics::GetPointAlongPathBudget(this, Unit, Unit->GetActorLocation(), Goal,
 		Unit->MoveRange, BudgetedGoal))
@@ -1121,6 +1154,13 @@ EPathFollowingRequestResult::Type AUnitAIController::MoveAlongRoute(const TArray
 	if (RoutePoints.Num() < 2 || !GetPawn())
 	{
 		return EPathFollowingRequestResult::Failed;
+	}
+	if (AUnitBase* Unit = Cast<AUnitBase>(GetPawn()))
+	{
+		if (UCoverDetectionComponent* Cover = Unit->GetCoverDetection())
+		{
+			Cover->RequestActiveCoverReselection();
+		}
 	}
 
 	RouteLegs = RoutePoints;
@@ -1204,6 +1244,13 @@ void AUnitAIController::OnMoveCompleted(FAIRequestID RequestID, const FPathFollo
 		return;
 	}
 
+	// Снимок назначения берём ДО Super: latent AI Move To может разбудить BP и
+	// завершить ability прямо внутри callback, но это не превращает service move
+	// задним числом в обычный tactical move.
+	const AUnitBase* UnitBeforeCallback = Cast<AUnitBase>(GetPawn());
+	const bool bFireActionServiceMove = !bTurnMoveInProgress &&
+		IsFireSubactionInProgress(UnitBeforeCallback);
+
 	Super::OnMoveCompleted(RequestID, Result);
 
 	// Дошли до промежуточной вершины маршрута — продолжаем ломаную. Ход НЕ
@@ -1215,6 +1262,15 @@ void AUnitAIController::OnMoveCompleted(FAIRequestID RequestID, const FPathFollo
 			return;
 		}
 		StopRoute(); // финальная вершина или срыв — дальше общий разбор финиша
+	}
+
+	if (bFireActionServiceMove)
+	{
+		if (AUnitBase* Unit = Cast<AUnitBase>(GetPawn()))
+		{
+			Unit->NotifyUnitStateChanged();
+		}
+		return;
 	}
 
 	// Юнит встал на новую позицию — пересчитать укрытие (и для приказов игрока тоже).

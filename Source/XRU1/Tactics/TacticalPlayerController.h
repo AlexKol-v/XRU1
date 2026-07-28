@@ -15,6 +15,7 @@ class UMenuScreenBase;
 class UPrimaryGameLayout;
 class ABombObjective;
 class AEvacZone;
+struct FMoveOrderPlan;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnSelectedUnitChanged, AUnitBase*, NewSelected);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnHoveredUnitChanged, AUnitBase*, NewHovered);
@@ -107,6 +108,10 @@ public:
 	/** Юниты отряда (сторона игрока, живые) — для портретов HUD. */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Control")
 	TArray<AUnitBase*> GetSquad() const;
+
+	/** Служебный общий планировщик пути для AI без показа зоны хода. */
+	bool PlanMoveForUnit(AUnitBase* Unit, const FVector& Goal, int32 MaxActionPoints,
+		FMoveOrderPlan& OutPlan);
 
 	/** Кнопка/хоткей «Завершить ход». */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Control")
@@ -230,6 +235,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Control")
 	void NotifyShotFired(AActor* Shooter, AActor* Target);
 
+	/** Закрыть кадр обычного выстрела после terminal callback fire-action. */
+	void EndShotPresentation();
+
 	/**
 	 * РЕАКЦИОННЫЙ выстрел (наблюдение) — кадр «из-за плеча» ПЛЮС замедление мира.
 	 * В XCOM 2 срабатывание овервотча — отдельный кинематографический момент:
@@ -261,6 +269,9 @@ public:
 	 *  3. Мир замедляется на время реакции (`ReactionFireSloMoRate`).
 	 */
 	bool TryBeginReactionShot(AActor* Shooter, AActor* Target);
+
+	/** Досрочно закрыть только camera/slow-mo presentation реакции. Движением владеет GA. */
+	void EndReactionShotPresentation();
 
 	/**
 	 * Замедление мира на время кадра реакционного выстрела (XCOM: 0.66).
@@ -410,20 +421,13 @@ protected:
 	TWeakObjectPtr<AActor> PendingEnemyCameraUnit;
 	float LastEnemyVisibilityCheckTime = -1000.f;
 
-	/**
-	 * Возврат нормальной скорости времени после реакционного выстрела. Хэндл
-	 * ОДИН на все реакции: очередь выстрелов продлевает замедление, а не
-	 * оставляет мир навсегда в слоу-мо из-за перекрывшихся таймеров.
-	 */
-	FTimerHandle SloMoRestoreTimer;
-
 	/** Реакционный выстрел сейчас играется — второй наблюдатель ждёт своей очереди. */
 	bool bReactionPlaying = false;
 
-	/** Кого приостановили на время реакции (по окончании обязаны отпустить). */
-	TWeakObjectPtr<AActor> PausedReactionMover;
+	/** Time dilation до входа в reaction-window: чужая presentation-система могла уже изменить время. */
+	float TimeDilationBeforeReaction = 1.f;
 
-	/** Завершение окна реакции: отпустить бегущего, вернуть время, снять флаг. */
+	/** Завершение presentation-окна реакции: вернуть время и снять camera-slot. */
 	void EndReactionWindow();
 
 	/** Навести камеру на центр живого отряда (без выбора юнита). */
@@ -548,6 +552,12 @@ protected:
 	 * Ничего не делает, пока хоть один боец может действовать или ещё в пути.
 	 */
 	void TryAutoEndTurn();
+
+	/** Активна ли у юнита обычная fire action или вложенная reaction subaction. */
+	bool IsUnitActionInProgress(const AUnitBase* Unit, FGuid* OutActionId = nullptr) const;
+
+	/** Есть ли незавершённая fire/reaction action у любого живого бойца отряда. */
+	bool IsAnySquadActionInProgress() const;
 
 	/** Играет ли камера кадр выстрела прямо сейчас (автопереходы ждут его конца). */
 	bool IsCameraFramingShot() const;

@@ -8,6 +8,7 @@
 #include "GameFramework/Actor.h"
 #include "GameFramework/Character.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/PrimitiveComponent.h"
 #include "Engine/World.h"
 #include "CollisionQueryParams.h"
 #include "DrawDebugHelpers.h"
@@ -43,6 +44,107 @@ namespace
 			}
 		}
 		return 88.f;
+	}
+
+	/**
+	 * Кандидат активной стены. `FCoverSide` остаётся старым публичным DTO, а
+	 * runtime identity/плоскость нужны только latch-логике компонента.
+	 */
+	struct FCoverCandidate
+	{
+		const FCoverSide* Side = nullptr;
+		FVector WallNormal = FVector::ZeroVector;
+		float PlaneDistance = 0.f;
+		int64 WallId = 0;
+		TWeakObjectPtr<UPrimitiveComponent> HitComponent;
+	};
+
+	/**
+	 * Runtime-id поверхности: identity компонента + квантованные normal/plane.
+	 * Компонент отличает соседние modular meshes, а plane — две грани одного
+	 * ящика. Квантование убирает микрошум hit result между evaluate.
+	 */
+	int64 MakeCoverWallId(const UObject* ObjectIdentity, const FVector& WallNormal,
+		float PlaneDistance)
+	{
+		const uint32 ObjectHash = ObjectIdentity ? PointerHash(ObjectIdentity) : 0u;
+		const int32 NormalX = FMath::RoundToInt(WallNormal.X * 50.f); // шаг 0.02
+		const int32 NormalY = FMath::RoundToInt(WallNormal.Y * 50.f);
+		const int32 PlaneBucket = FMath::RoundToInt(PlaneDistance / 5.f); // 5 см
+
+		uint32 SurfaceHash = HashCombine(GetTypeHash(NormalX), GetTypeHash(NormalY));
+		SurfaceHash = HashCombine(SurfaceHash, GetTypeHash(PlaneBucket));
+		uint64 Packed = (static_cast<uint64>(ObjectHash) << 32) | SurfaceHash;
+		Packed &= 0x7fffffffffffffffULL; // Blueprint-friendly положительный int64
+		return static_cast<int64>(Packed != 0 ? Packed : 1ULL); // 0 зарезервирован для «нет стены»
+	}
+
+	FCoverCandidate MakeCoverCandidate(const FCoverSide& Side, const UWorld* World,
+		const FVector& FloorBase, const UCoverTuningDataAsset* Tuning, const AActor* Owner)
+	{
+		FCoverCandidate Candidate;
+		Candidate.Side = &Side;
+		Candidate.WallNormal = (-Side.Direction).GetSafeNormal2D();
+
+		// GatherCoverSides намеренно остаётся совместимым и не раздувает FCoverSide.
+		// Один контрольный луч по уже найденной normal даёт component/plane для id.
+		FHitResult Hit;
+		const ECoverType TracedType = UCoverDetectionComponent::TraceCoverAtLocation(
+			World, FloorBase, Side.Direction, Tuning->CoverTraceDistance,
+			Tuning->HalfCoverHeight, Tuning->FullCoverHeight, Owner, 0.f, &Hit);
+		const FVector HitNormal = Hit.ImpactNormal.GetSafeNormal2D();
+		const bool bHitSameSurface = TracedType == Side.Type && Hit.IsValidBlockingHit()
+			&& !HitNormal.IsNearlyZero()
+			&& FVector::DotProduct(HitNormal, Candidate.WallNormal) > 0.94f;
+
+		const FVector SurfacePoint = bHitSameSurface
+			? Hit.ImpactPoint
+			: FloorBase + Side.Direction * Side.Distance;
+		Candidate.PlaneDistance = FVector::DotProduct(Candidate.WallNormal, SurfacePoint);
+
+		const UObject* Identity = nullptr;
+		if (bHitSameSurface)
+		{
+			Candidate.HitComponent = Hit.GetComponent();
+			Identity = Candidate.HitComponent.IsValid()
+				? static_cast<const UObject*>(Candidate.HitComponent.Get())
+				: static_cast<const UObject*>(Hit.GetActor());
+		}
+		Candidate.WallId = MakeCoverWallId(Identity, Candidate.WallNormal, Candidate.PlaneDistance);
+		return Candidate;
+	}
+
+	bool IsBetterCoverCandidate(const FCoverCandidate& Candidate, const FCoverCandidate* CurrentBest)
+	{
+		if (!CurrentBest)
+		{
+			return true;
+		}
+		if (Candidate.Side->Type != CurrentBest->Side->Type)
+		{
+			return Candidate.Side->Type > CurrentBest->Side->Type;
+		}
+		return Candidate.Side->Distance < CurrentBest->Side->Distance;
+	}
+
+	bool MatchesActiveWall(const FCoverCandidate& Candidate, int64 ActiveWallId,
+		const UPrimitiveComponent* ActiveComponent, const FVector& ActiveNormal,
+		float ActivePlaneDistance)
+	{
+		if (ActiveWallId != 0 && Candidate.WallId == ActiveWallId)
+		{
+			return true;
+		}
+
+		// Fallback для соседних треугольников/малого шума plane bucket: identity
+		// та же, normal отличается не больше ~15°, плоскость — не больше 8 см.
+		// Component обязателен: совпавшие normal/plane у соседней стены не должны
+		// незаметно переключить active cover на другом углу.
+		const bool bIdentityCompatible = ActiveComponent && Candidate.HitComponent.IsValid()
+			&& Candidate.HitComponent.Get() == ActiveComponent;
+		return bIdentityCompatible
+			&& FVector::DotProduct(Candidate.WallNormal, ActiveNormal) > 0.9659f
+			&& FMath::Abs(Candidate.PlaneDistance - ActivePlaneDistance) <= 8.f;
 	}
 }
 
@@ -174,30 +276,145 @@ ECoverType UCoverDetectionComponent::EvaluateSurroundings()
 	// направления невозможно ни отличить фланг от укрытия, ни прижать бойца к
 	// стене в анимации (дыра D2, фаза S1).
 	const FVector FloorBase = Owner->GetActorLocation() - FVector(0.f, 0.f, OwnerCapsuleHalfHeight(Owner));
-	GatherCoverSides(Owner->GetWorld(), FloorBase, GetTuning(), Owner, CoverSides);
+	const UCoverTuningDataAsset* Tuning = GetTuning();
+	GatherCoverSides(Owner->GetWorld(), FloorBase, Tuning, Owner, CoverSides);
 
-	ECoverType Best = ECoverType::None;
-	FVector BestDirection = FVector::ZeroVector;
-	float BestDistance = TNumericLimits<float>::Max();
+	TArray<FCoverCandidate, TInlineAllocator<4>> Candidates;
+	Candidates.Reserve(CoverSides.Num());
 	for (const FCoverSide& Side : CoverSides)
 	{
-		// Лучшая сторона: сначала по типу (Full > Half), при равенстве — ближняя.
-		if (Side.Type > Best || (Side.Type == Best && Side.Distance < BestDistance))
+		Candidates.Add(MakeCoverCandidate(Side, Owner->GetWorld(), FloorBase, Tuning, Owner));
+	}
+
+	const FCoverCandidate* BestCandidate = nullptr;
+	for (const FCoverCandidate& Candidate : Candidates)
+	{
+		// Старый приоритет сохранён: сначала тип (Full > Half), затем расстояние.
+		if (IsBetterCoverCandidate(Candidate, BestCandidate))
 		{
-			Best = Side.Type;
-			BestDirection = Side.Direction;
-			BestDistance = Side.Distance;
+			BestCandidate = &Candidate;
 		}
 	}
 
-	BestCoverDirection = BestDirection;
-	if (Best != BestCoverAround)
+	// Пока root остаётся у той же home anchor, текущая стена выигрывает у другой
+	// стены РАВНОГО типа независимо от сантиметрового шума distance на углу.
+	// Более высокий тип по-прежнему переключает стену немедленно.
+	const bool bMovedOutsideAnchor = ActiveCoverWallId != 0
+		&& ActiveCoverReselectDistance > 0.f
+		&& FVector::DistSquared(Owner->GetActorLocation(), ActiveCoverAnchor)
+			> FMath::Square(ActiveCoverReselectDistance);
+	const bool bMayKeepActiveWall = ActiveCoverWallId != 0 && BestCandidate
+		&& !bActiveCoverReselectionRequested && !bMovedOutsideAnchor;
+
+	const FCoverCandidate* SelectedCandidate = BestCandidate;
+	bool bKeptActiveGeometry = false;
+	if (bMayKeepActiveWall)
 	{
-		BestCoverAround = Best;
+		for (const FCoverCandidate& Candidate : Candidates)
+		{
+			if (Candidate.Side->Type == BestCandidate->Side->Type
+				&& MatchesActiveWall(Candidate, ActiveCoverWallId, ActiveCoverComponent.Get(),
+					ActiveCoverNormal, ActiveCoverPlaneDistance))
+			{
+				SelectedCandidate = &Candidate;
+				bKeptActiveGeometry = true;
+				break;
+			}
+		}
+	}
+	bActiveCoverReselectionRequested = false;
+
+	const ECoverType NewBestCover = SelectedCandidate
+		? SelectedCandidate->Side->Type
+		: ECoverType::None;
+	const bool bCoverTypeChanged = NewBestCover != BestCoverAround;
+	if (bCoverTypeChanged)
+	{
+		BestCoverAround = NewBestCover;
 		ApplyCoverEffect(BestCoverAround);
+	}
+
+	if (!bKeptActiveGeometry)
+	{
+		if (SelectedCandidate)
+		{
+			SetActiveCoverGeometry(Owner->GetActorLocation(), SelectedCandidate->WallNormal,
+				SelectedCandidate->WallId, SelectedCandidate->HitComponent.Get(),
+				SelectedCandidate->PlaneDistance);
+		}
+		else
+		{
+			SetActiveCoverGeometry(FVector::ZeroVector, FVector::ZeroVector, 0, nullptr, 0.f);
+		}
+	}
+
+	// Оба события видят уже согласованные тип, GE и geometry. Старый delegate
+	// сохраняет прежнюю семантику и не стреляет при Full→Full.
+	if (bCoverTypeChanged)
+	{
 		OnCoverStateChanged.Broadcast(BestCoverAround);
 	}
 	return BestCoverAround;
+}
+
+void UCoverDetectionComponent::RequestActiveCoverReselection()
+{
+	bActiveCoverReselectionRequested = true;
+}
+
+bool UCoverDetectionComponent::MatchesActiveCoverHit(const FHitResult& Hit) const
+{
+	if (ActiveCoverWallId == 0 || ActiveCoverNormal.IsNearlyZero()
+		|| !Hit.IsValidBlockingHit())
+	{
+		return false;
+	}
+
+	UPrimitiveComponent* HitComponent = Hit.GetComponent();
+	const FVector HitNormal = Hit.ImpactNormal.GetSafeNormal2D();
+	if (!HitComponent || !ActiveCoverComponent.IsValid() || HitNormal.IsNearlyZero())
+	{
+		return false;
+	}
+
+	const float HitPlaneDistance = FVector::DotProduct(ActiveCoverNormal, Hit.ImpactPoint);
+	const int64 HitWallId = MakeCoverWallId(HitComponent, HitNormal, HitPlaneDistance);
+	if (HitWallId == ActiveCoverWallId)
+	{
+		return true;
+	}
+
+	return HitComponent == ActiveCoverComponent.Get()
+		&& FVector::DotProduct(HitNormal, ActiveCoverNormal) > 0.9659f
+		&& FMath::Abs(HitPlaneDistance - ActiveCoverPlaneDistance) <= 8.f;
+}
+
+void UCoverDetectionComponent::SetActiveCoverGeometry(const FVector& NewAnchor,
+	const FVector& NewNormal, int64 NewWallId, UPrimitiveComponent* NewComponent,
+	float NewPlaneDistance)
+{
+	const FVector StableNormal = NewWallId != 0
+		? NewNormal.GetSafeNormal2D()
+		: FVector::ZeroVector;
+	const FVector NewDirection = -StableNormal;
+	const bool bGeometryChanged = ActiveCoverWallId != NewWallId
+		|| !ActiveCoverAnchor.Equals(NewAnchor, 0.5f)
+		|| !ActiveCoverNormal.Equals(StableNormal, 0.001f);
+
+	ActiveCoverAnchor = NewAnchor;
+	ActiveCoverNormal = StableNormal;
+	ActiveCoverWallId = NewWallId;
+	BestCoverDirection = NewDirection;
+	ActiveCoverComponent = NewComponent;
+	ActiveCoverPlaneDistance = NewWallId != 0 ? NewPlaneDistance : 0.f;
+
+	if (bGeometryChanged)
+	{
+		ActiveCoverRevision = ActiveCoverRevision == MAX_int32
+			? 1
+			: ActiveCoverRevision + 1;
+		OnActiveCoverChanged.Broadcast(ActiveCoverRevision);
+	}
 }
 
 FVector UCoverDetectionComponent::FindPeekEdgeSide(float& OutEdgeDistance) const
@@ -242,10 +459,14 @@ FVector UCoverDetectionComponent::FindPeekEdgeSide(float& OutEdgeDistance) const
 		for (float Offset = Step; Offset <= Tuning->PeekEdgeMaxDistance; Offset += Step)
 		{
 			const FVector Probe = FloorBase + Side * (SideSign * Offset);
-			if (TraceCoverAtLocation(World, Probe, ToWall, Tuning->CoverTraceDistance,
-				Tuning->HalfCoverHeight, Tuning->FullCoverHeight, Owner) != ECoverType::None)
+			FHitResult ProbeHit;
+			const ECoverType ProbeCover = TraceCoverAtLocation(
+				World, Probe, ToWall, Tuning->CoverTraceDistance,
+				Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
+				Owner, 0.f, &ProbeHit);
+			if (ProbeCover != ECoverType::None && MatchesActiveCoverHit(ProbeHit))
 			{
-				continue; // ещё за укрытием — шагаем дальше к краю
+				continue; // ещё вдоль той же active wall — шагаем дальше к краю
 			}
 
 			if (Offset < BestEdgeDistance)

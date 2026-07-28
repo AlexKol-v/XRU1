@@ -8,6 +8,7 @@
 #include "TacticalAbility.h"
 #include "TacticalCameraPawn.h"
 #include "GA_Attack.h"
+#include "GA_Overwatch.h"
 #include "MoveRangeVisualizer.h"
 #include "MissionObjectives.h"
 #include "TacticsCombatStatics.h"
@@ -173,7 +174,7 @@ void ATacticalPlayerController::PlayerTick(float DeltaTime)
 		if (bAutoSelectUnits && IsPlayerPhase() && SelectedUnit &&
 			SelectedUnit->GetActionPoints() && !SelectedUnit->GetActionPoints()->HasActionsLeft())
 		{
-			if (IsCameraFramingShot())
+			if (bReactionPlaying || IsCameraFramingShot() || IsUnitActionInProgress(SelectedUnit))
 			{
 				bPendingAutoAdvance = true;
 				PendingAutoAdvanceFrame = GFrameCounter;
@@ -190,8 +191,9 @@ void ATacticalPlayerController::PlayerTick(float DeltaTime)
 	// Отложенный автопереход дозрел: кадр выстрела кончился, никто не бежит.
 	// Штамп кадра (см. PendingAutoAdvanceFrame): не разрешаем в тот же кадр, где
 	// pending взведён — иначе перехватили бы ход до старта кадра выстрела.
-	if (bPendingAutoAdvance && GFrameCounter != PendingAutoAdvanceFrame &&
-		IsPlayerPhase() && !bMovingNow && !IsCameraFramingShot())
+	if (bPendingAutoAdvance && GFrameCounter != PendingAutoAdvanceFrame && !bReactionPlaying &&
+		IsPlayerPhase() && !bMovingNow && !IsCameraFramingShot() &&
+		!IsUnitActionInProgress(SelectedUnit))
 	{
 		UE_LOG(LogTemp, Log, TEXT("[AutoAdv] pending дозрел (кадр выстрела кончился) → переход"));
 		bPendingAutoAdvance = false;
@@ -449,6 +451,13 @@ void ATacticalPlayerController::UpdatePathPreviewUnderCursor()
 
 void ATacticalPlayerController::SelectUnit(AUnitBase* Unit)
 {
+	// Reaction-window — глобальная модальная транзакция: смена HUD/camera owner не должна
+	// сорвать чужой Overwatch и возобновить остановленного mover уже в другой фазе.
+	if (bReactionPlaying)
+	{
+		return;
+	}
+
 	// Труп/эвакуированного выбрать нельзя (клик по портрету погибшего в HUD).
 	// Downed выбирать можно: посмотреть, где лежит; кнопки погасит RefreshButtons.
 	if (Unit && (Unit->IsDead() || Unit->IsEvacuated()))
@@ -456,6 +465,12 @@ void ATacticalPlayerController::SelectUnit(AUnitBase* Unit)
 		return;
 	}
 	if (SelectedUnit == Unit)
+	{
+		return;
+	}
+	// Нельзя сменить владельца HUD/camera посреди fire transaction: AP уже могли
+	// закончиться, но montage/return ещё обязаны дойти до terminal callback.
+	if (SelectedUnit && IsUnitActionInProgress(SelectedUnit))
 	{
 		return;
 	}
@@ -530,6 +545,15 @@ void ATacticalPlayerController::SelectNextUnit()
 	if (IsTargetingAttack())
 	{
 		CycleAttackTarget(1);
+		return;
+	}
+
+	if (SelectedUnit && IsUnitActionInProgress(SelectedUnit))
+	{
+		if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+		{
+			Camera->AbandonShotFraming();
+		}
 		return;
 	}
 
@@ -738,9 +762,9 @@ bool ATacticalPlayerController::CanIssueCommand(ETacticalPlayerCommand Command) 
 {
 	// Общий инвариант одной тактической активации. Он живёт здесь один раз и
 	// используется как Request*-методами, так и HUD.
-	if (!IsPlayerPhase() || !SelectedUnit || SelectedUnit->IsDead() ||
+	if (bReactionPlaying || !IsPlayerPhase() || !SelectedUnit || SelectedUnit->IsDead() ||
 		SelectedUnit->IsDowned() || SelectedUnit->IsEvacuated() ||
-		IsSelectedUnitMoving())
+		IsSelectedUnitMoving() || IsUnitActionInProgress(SelectedUnit))
 	{
 		return false;
 	}
@@ -905,6 +929,13 @@ void ATacticalPlayerController::TryMoveSelectedUnit(const FVector& Goal)
 	}
 }
 
+bool ATacticalPlayerController::PlanMoveForUnit(AUnitBase* Unit, const FVector& Goal,
+	int32 MaxActionPoints, FMoveOrderPlan& OutPlan)
+{
+	return MoveRangeVisualizer &&
+		MoveRangeVisualizer->PlanMoveForUnit(Unit, Goal, MaxActionPoints, OutPlan);
+}
+
 void ATacticalPlayerController::TryAttackTarget(AActor* Target)
 {
 	if (!Target || !CanIssueCommand(ETacticalPlayerCommand::Attack) ||
@@ -955,6 +986,11 @@ void ATacticalPlayerController::HandleAbilityTargetClick(AActor* ClickedActor)
 
 void ATacticalPlayerController::RequestEndTurn()
 {
+	if (bReactionPlaying)
+	{
+		return;
+	}
+
 	// Enter завершает ход и НЕ подтверждает выстрел (по просьбе: подтверждение —
 	// только тем же пробелом «Огонь» или кликом по цели). В режиме прицеливания
 	// Enter сперва выходит из него — иначе завершил бы ход мимо намерения.
@@ -964,7 +1000,7 @@ void ATacticalPlayerController::RequestEndTurn()
 		return;
 	}
 
-	if (IsPlayerPhase())
+	if (IsPlayerPhase() && !IsAnySquadActionInProgress())
 	{
 		if (UTurnManagerSubsystem* TurnManager = GetWorld()->GetSubsystem<UTurnManagerSubsystem>())
 		{
@@ -1120,14 +1156,12 @@ void ATacticalPlayerController::SetAttackTarget(AUnitBase* Target)
 	{
 		Target->SetHoverHighlight(true);
 
-		// Стрелок разворачивается лицом к взятой цели (XCOM: читаемость наводки —
-		// видно, в кого целится). ПЛАВНО: доворот на месте виден игроку и играется
-		// анимацией (`VisualState.PendingTurnYaw`), а к моменту выстрела угол уже
-		// сведён — мгновенный `FaceActorTowards` внутри `ResolveShot` остаётся
-		// страховкой и ничего не дёргает.
+		// В открытом поле превью плавно доворачивает стрелка. В укрытии actor
+		// сохраняет единую cover-позу: cycling меняет цель/camera, но не запускает
+		// конкурирующий turn поверх прижимания и peek-анимации.
 		if (SelectedUnit)
 		{
-			SelectedUnit->FaceTowardsSmooth(Target->GetActorLocation());
+			SelectedUnit->PreviewAimAtTarget(Target);
 		}
 
 		if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
@@ -1195,18 +1229,16 @@ void ATacticalPlayerController::ConfirmAttack()
 		return;
 	}
 
-	// Gameplay Event отправляется ДО броадкаста выхода из режима. Реальный
-	// GA_Attack синхронно вызовет NotifyShotFired и сам превратит удерживаемый
-	// кадр прицела в таймерный кадр выстрела. Если GA отклонит активацию,
-	// ExitTargetingMode просто снимет старый aim-frame без ложной задержки.
-	TryAttackTarget(Target);
+	// Сначала закрываем aim-mode, затем запускаем GA: иначе новый action-frame
+	// выстрела стирается выходом из прицеливания в тот же input callback.
 	SetTargetingMode(EPlayerTargetingMode::None);
+	TryAttackTarget(Target);
 }
 
 void ATacticalPlayerController::NotifyShotFired(AActor* Shooter, AActor* Target)
 {
-	// Кадр самого выстрела — на время полёта пули/реакции, и для игрока, и для
-	// врага. Держим ограниченное время: по выходу камера вернёт ракурс сама.
+	// Кадр обычного выстрела живёт до terminal callback fire-action: montage и
+	// ReturnToAnchor, а не произвольный fixed timer, владеют его длительностью.
 	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
 	{
 		Camera->FrameShotForDuration(Shooter, Target, /*Duration=*/-1.f);
@@ -1226,58 +1258,61 @@ bool ATacticalPlayerController::TryBeginReactionShot(AActor* Shooter, AActor* Ta
 	}
 
 	bReactionPlaying = true;
+	TimeDilationBeforeReaction = UGameplayStatics::GetGlobalTimeDilation(World);
 
-	// (1) ПРЕРЫВАЕМ ДВИЖЕНИЕ ЦЕЛИ. Именно `PauseMove`, а не `StopMovement`:
-	// приказ и маршрут сохраняются, по окончании реакции боец побежит дальше с
-	// того же места. `StopMovement` отменил бы его ход целиком.
-	PausedReactionMover = nullptr;
-	if (const APawn* TargetPawn = Cast<APawn>(Target))
+	// Пауза mover принадлежит UGA_Overwatch reaction subaction. Контроллер
+	// владеет только camera/slow-mo presentation и держит кадр БЕЗ таймера до
+	// terminal callback фактически запущенного montage.
+	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
 	{
-		if (AUnitAIController* TargetAI = Cast<AUnitAIController>(TargetPawn->GetController()))
-		{
-			if (TargetAI->SetMovementPaused(true))
-			{
-				PausedReactionMover = Target;
-			}
-		}
+		Camera->FrameShot(Shooter, Target);
 	}
 
-	// (2) Кадр выстрела. Цель уже стоит — камере есть что показывать.
-	NotifyShotFired(Shooter, Target);
-
-	// (3) Замедление мира на время кадра.
-	const ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn());
-	const float Duration = Camera ? Camera->ShotFrameDuration : 1.6f;
+	// Замедление мира снимает только Complete/Abort/End reaction-action.
 	if (ReactionFireSloMoRate < 1.f)
 	{
 		UGameplayStatics::SetGlobalTimeDilation(World, ReactionFireSloMoRate);
 	}
-
-	World->GetTimerManager().SetTimer(SloMoRestoreTimer,
-		FTimerDelegate::CreateWeakLambda(this, [this]() { EndReactionWindow(); }),
-		FMath::Max(0.1f, Duration), /*bLoop=*/false);
 	return true;
 }
 
 void ATacticalPlayerController::EndReactionWindow()
 {
+	if (!bReactionPlaying)
+	{
+		return;
+	}
 	bReactionPlaying = false;
 
 	if (UWorld* World = GetWorld())
 	{
-		UGameplayStatics::SetGlobalTimeDilation(World, 1.f);
+		UGameplayStatics::SetGlobalTimeDilation(World, TimeDilationBeforeReaction);
+	}
+	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+	{
+		Camera->ClearShotFraming();
 	}
 
-	// Отпускаем бегущего. Если он погиб от реакции — контроллера/пешки уже нет,
-	// и отпускать нечего: слабая ссылка это сама проверит.
-	if (const APawn* MoverPawn = Cast<APawn>(PausedReactionMover.Get()))
+	// Lethal Overwatch мог синхронно вызвать HandleSelectedUnitStateChanged, пока
+	// barrier ещё был поднят. После закрытия окна повторяем только reconciliation
+	// состояния (пользовательские клики, отклонённые во время реакции, не очередим).
+	if (SelectedUnit && (SelectedUnit->IsDead() || SelectedUnit->IsEvacuated()))
 	{
-		if (AUnitAIController* MoverAI = Cast<AUnitAIController>(MoverPawn->GetController()))
-		{
-			MoverAI->SetMovementPaused(false);
-		}
+		HandleSelectedUnitStateChanged();
 	}
-	PausedReactionMover = nullptr;
+}
+
+void ATacticalPlayerController::EndShotPresentation()
+{
+	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+	{
+		Camera->ClearShotFraming();
+	}
+}
+
+void ATacticalPlayerController::EndReactionShotPresentation()
+{
+	EndReactionWindow();
 }
 
 
@@ -1694,18 +1729,40 @@ void ATacticalPlayerController::HandleSelectedUnitAPChanged(int32 NewCurrent, in
 	if (NewCurrent == 0 && bAutoSelectUnits && IsPlayerPhase() && !IsSelectedUnitMoving())
 	{
 		// ВСЕГДА откладываем на PlayerTick (со штампом кадра), а не переходим тут
-		// же. Причина — ГОНКА с кадром выстрела: AP списываются в CommitAbility
-		// (ApplyCost), а камера начинает кадр «из-за плеча» позже в том же вызове
-		// (ResolveShot → NotifyShotFired). В момент этого делегата кадр ещё НЕ
-		// начался, поэтому немедленный SelectNextUnit оборвал бы кинематограф и
-		// перескочил на след. юнита прямо посреди выстрела. Штамп кадра не даёт
-		// отложенному переходу сработать в тот же кадр — он дождётся, пока кадр
-		// выстрела начнётся и доиграет (или, если выстрела нет — дозреет на след.
-		// кадре). Ходьба на 2 AP идёт другим путём (по остановке в PlayerTick).
+		// же. Причина — AP резервируются до начала montage, а fire-action ещё обязан
+		// пройти StepOut → notify commit → ReturnToAnchor → terminal. Немедленный
+		// SelectNextUnit сменил бы HUD/camera owner посреди этой транзакции. Штамп
+		// кадра плюс action/reaction barriers разрешают переход только после terminal.
+		// Ходьба на 2 AP идёт другим путём (по остановке в PlayerTick).
 		UE_LOG(LogTemp, Log, TEXT("[AutoAdv] AP=0 → откладываем переход (ждём возможный кадр выстрела)"));
 		bPendingAutoAdvance = true;
 		PendingAutoAdvanceFrame = GFrameCounter;
 	}
+}
+
+bool ATacticalPlayerController::IsUnitActionInProgress(const AUnitBase* Unit,
+	FGuid* OutActionId) const
+{
+	FGuid ActionId;
+	const bool bInProgress = UGA_Attack::GetAttackActionInProgressFor(Unit, ActionId) ||
+		UGA_Overwatch::GetReactionActionInProgressFor(Unit, ActionId);
+	if (OutActionId)
+	{
+		*OutActionId = bInProgress ? ActionId : FGuid();
+	}
+	return bInProgress;
+}
+
+bool ATacticalPlayerController::IsAnySquadActionInProgress() const
+{
+	for (const AUnitBase* Unit : GetSquad())
+	{
+		if (IsUnitActionInProgress(Unit))
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 bool ATacticalPlayerController::IsCameraFramingShot() const
@@ -1719,7 +1776,7 @@ bool ATacticalPlayerController::IsCameraFramingShot() const
 
 void ATacticalPlayerController::TryAutoEndTurn()
 {
-	if (!bAutoEndTurnWhenExhausted || !IsPlayerPhase())
+	if (bReactionPlaying || !bAutoEndTurnWhenExhausted || !IsPlayerPhase())
 	{
 		return;
 	}
@@ -1732,6 +1789,10 @@ void ATacticalPlayerController::TryAutoEndTurn()
 
 	for (AUnitBase* Unit : GetSquad())
 	{
+		if (IsUnitActionInProgress(Unit))
+		{
+			return; // AP уже могли закончиться, но fire/reaction ещё не terminal.
+		}
 		if (Unit && UTacticsCombatStatics::IsUnitAlive(Unit) &&
 			Unit->GetActionPoints() && Unit->GetActionPoints()->HasActionsLeft())
 		{

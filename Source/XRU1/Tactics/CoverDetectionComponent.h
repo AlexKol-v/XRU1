@@ -9,8 +9,10 @@
 
 class UGameplayEffect;
 class UCoverTuningDataAsset;
+class UPrimitiveComponent;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCoverStateChanged, ECoverType, NewBestCover);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnActiveCoverChanged, int32, NewRevision);
 
 /**
  * Детекция укрытий вокруг юнита. Трейсит окружение по кардинальным направлениям
@@ -49,6 +51,16 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Cover")
 	TSubclassOf<UGameplayEffect> FullCoverEffect;
 
+	/**
+	 * Сколько юнит может сместиться от активной cover-anchor без перевыбора
+	 * стены (см). Это гистерезис от микросдвигов/повторных evaluate на углу;
+	 * обычный tactical move или подшаг к стене превышает порог и создаёт новую
+	 * anchor. 0 — перевыбор только по RequestActiveCoverReselection/потере стены.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Cover|Stability",
+		meta = (ClampMin = "0", Units = "cm"))
+	float ActiveCoverReselectDistance = 5.f;
+
 	/** Лучшее укрытие из всех направлений (кэш последнего EvaluateSurroundings). */
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Tactics|Cover")
 	ECoverType BestCoverAround = ECoverType::None;
@@ -67,13 +79,43 @@ public:
 
 	/**
 	 * Направление на ЛУЧШУЮ стену (от юнита к стене, XY). Zero — укрытия нет.
+	 * Совместимый старый API: для активной стены равно `-ActiveCoverNormal`.
 	 * Нужно анимации (прижаться к стене нужной стороной, Ф10) и превью peek.
 	 */
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Tactics|Cover")
 	FVector BestCoverDirection = FVector::ZeroVector;
 
+	/**
+	 * Стабильная мировая позиция root/capsule, в которой выбрана активная стена.
+	 * Это home anchor для будущего action context, а не точка глаза/поверхности.
+	 */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Tactics|Cover")
+	FVector ActiveCoverAnchor = FVector::ZeroVector;
+
+	/** Нормаль активной стены ОТ стены к юниту (XY, нормализована). */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Tactics|Cover")
+	FVector ActiveCoverNormal = FVector::ZeroVector;
+
+	/**
+	 * Runtime-id активной поверхности. Стабилен, пока живёт компонент стены;
+	 * это ключ action context, но не идентификатор для SaveGame.
+	 */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Tactics|Cover")
+	int64 ActiveCoverWallId = 0;
+
+	/**
+	 * Ревизия anchor/normal/WallId. Меняется и при Full→Full, когда тип укрытия
+	 * прежний, но старая стена потеряна и выбрана другая.
+	 */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Tactics|Cover")
+	int32 ActiveCoverRevision = 0;
+
 	UPROPERTY(BlueprintAssignable, Category = "Tactics|Cover")
 	FOnCoverStateChanged OnCoverStateChanged;
+
+	/** Отдельный сигнал смены геометрии укрытия; тип может остаться прежним. */
+	UPROPERTY(BlueprintAssignable, Category = "Tactics|Cover")
+	FOnActiveCoverChanged OnActiveCoverChanged;
 
 	/**
 	 * Пересчитывает укрытие по 4 кардинальным направлениям вокруг юнита, обновляет
@@ -82,6 +124,21 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Cover")
 	ECoverType EvaluateSurroundings();
+
+	/**
+	 * Снимает latch выбора стены перед tactical move. Публичные значения не
+	 * обнуляются посреди движения: новая anchor публикуется атомарно при следующем
+	 * EvaluateSurroundings, когда уже известна валидная конечная позиция.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Cover")
+	void RequestActiveCoverReselection();
+
+	/**
+	 * Совпадает ли blocking hit именно с зафиксированной активной стеной.
+	 * C++-контракт для target-aware fire/peek; соседняя стена того же типа не
+	 * считается продолжением текущей поверхности.
+	 */
+	bool MatchesActiveCoverHit(const FHitResult& Hit) const;
 
 	/** Тип укрытия, эффективный против конкретной угрозы (стена должна быть между юнитом и врагом). */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Cover")
@@ -177,6 +234,20 @@ protected:
 	/** Снимает старый GE укрытия и навешивает соответствующий новому состоянию. */
 	void ApplyCoverEffect(ECoverType CoverType);
 
+	/** Атомарно обновляет публичную геометрию и публикует её отдельную ревизию. */
+	void SetActiveCoverGeometry(const FVector& NewAnchor, const FVector& NewNormal,
+		int64 NewWallId, UPrimitiveComponent* NewComponent, float NewPlaneDistance);
+
 	/** Хэндл активного GE укрытия на ASC владельца (для снятия при смене состояния). */
 	FActiveGameplayEffectHandle ActiveCoverEffectHandle;
+
+private:
+	/** Слабая identity поверхности нужна только для runtime hysteresis. */
+	TWeakObjectPtr<UPrimitiveComponent> ActiveCoverComponent;
+
+	/** Плоскость стены: dot(ActiveCoverNormal, SurfacePoint). */
+	float ActiveCoverPlaneDistance = 0.f;
+
+	/** Явный unlock от владельца tactical move; обрабатывается следующим evaluate. */
+	bool bActiveCoverReselectionRequested = false;
 };

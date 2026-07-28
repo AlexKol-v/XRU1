@@ -195,16 +195,27 @@ public:
 	/**
 	 * Какой МОНТАЖ выстрела играть по цели прямо сейчас: стойка берётся из
 	 * `UTacticsCombatStatics::GetFiringStance`, а конкретный ассет — из
-	 * `FireMontage*` этого юнита. BP-хук `OnShotFired` зовёт это и играет
-	 * результат, вместо того чтобы разбирать стойку у себя.
+	 * `FireMontage*` этого юнита. Action coordinator вызывает это один раз до
+	 * списания AP и замораживает результат; BP только исполняет snapshot.
 	 *
-	 * OutFiringEyeLocation — точка, ОТКУДА реально идёт выстрел (для VFX дула и
-	 * для визуального сдвига при `StepOut`). ⚠️ Сдвиг только визуальный, с
-	 * возвратом: позиция юнита, его укрытие и диск занятости не меняются.
+	 * OutFiringEyeLocation — точка, ОТКУДА реально идёт выстрел. Для StepOut
+	 * отдельно возвращается root/capsule position: eye point нельзя передавать в
+	 * AI Move To. Точка root уже спроецирована как nav-foot + half-height и
+	 * проверена capsule sweep; при невалидном выходе стойка безопасно становится Open.
 	 */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Visual")
 	UAnimMontage* GetFireMontageFor(const AActor* Target, EFiringStance& OutStance,
-		FVector& OutFiringEyeLocation) const;
+		FVector& OutFiringEyeLocation, FVector& OutPresentationRootLocation) const;
+
+
+	/**
+	 * Только косметика подтверждённого выстрела:
+	 * muzzle flash, звук, гильза, камера, трассер.
+	 * Не наносит урон и не завершает FireAction.
+	 */
+	UFUNCTION(BlueprintCallable, BlueprintImplementableEvent,
+		Category = "Tactics|Visual")
+	void OnFireCosmetics(AActor* Target, bool bHit);
 
 	/**
 	 * ПРИЖАТЬСЯ К УКРЫТИЮ: развернуться лицом к стене по её нормали и подшагнуть
@@ -245,6 +256,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Visual")
 	void FaceTowardsSmooth(const FVector& TargetLocation, bool bPlayTurnAnimation = true,
 		float TurnRateOverride = 0.f);
+
+	/**
+	 * Превью наведения на выбранную цель. В открытом поле запускает обычный
+	 * плавный доворот. В активном укрытии направление корпуса принадлежит
+	 * cover-pose: текущий turn атомарно отменяется, rotation актора не меняется.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Visual")
+	void PreviewAimAtTarget(const AActor* Target);
 
 	/** Идёт ли сейчас плавный доворот на месте (для BP-логики и отладки). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Visual")
@@ -324,9 +343,9 @@ public:
 	float CoverPeekDuration = 2.5f;
 
 	/**
-	 * РАГДОЛЛ: тело переходит в физику через столько секунд после смерти
-	 * (обычно — длительность монтажа смерти). Если `DeathMontage` назначен,
-	 * берётся его длина, а это значение работает запасным.
+	 * РАГДОЛЛ: аварийная задержка, если montage callback не пришёл. Штатно BP
+	 * обязан вызвать `NotifyDeathMontageFinished` из Completed/Interrupted
+	 * фактически запущенного montage instance.
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Visual", meta = (ClampMin = "0"))
 	float RagdollDelay = 1.2f;
@@ -338,6 +357,14 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Visual")
 	void StartRagdoll();
+
+	/**
+	 * Завершение фактически проигранного Death Montage. Подключается к выходам
+	 * Completed/Interrupted узла Play Montage; запускает terminal ragdoll ровно
+	 * один раз. Таймер в `Die` остаётся только страховкой от потерянного callback.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Visual")
+	void NotifyDeathMontageFinished(bool bInterrupted = false);
 
 	/**
 	 * Остаток применений способности за миссию (для серости кнопки HUD).
@@ -371,6 +398,10 @@ protected:
 
 	/** Реакция на Health: обновляет HUD; 0 → смерть или тяжёлое ранение. */
 	void HandleHealthChanged(const struct FOnAttributeChangeData& Data);
+
+	/** Геометрия активной стены сменилась даже при том же типе Full/Half. */
+	UFUNCTION()
+	void HandleActiveCoverChanged(int32 NewRevision);
 
 	/** Переход в смерть: коллизия/AI выключаются, BP играет анимацию. */
 	void Die();
@@ -462,13 +493,16 @@ protected:
 	void UpdateTurnInPlace(float DeltaSeconds);
 
 	/** Завершить подшаг: вернуть скорость, пересчитать укрытие, обновить позу. */
-	void FinishCoverHugStep();
+	void FinishCoverHugStep(bool bApplyCoverFacing = true);
 
 	/** Идёт подшаг к стене (в это время `bMoving` = true). */
 	bool bCoverHugStepping = false;
 
 	/** Куда подшагиваем (мировая точка центра капсулы). */
 	FVector CoverHugStepTarget = FVector::ZeroVector;
+
+	/** Направление поворота после подшага; step и turn не пишут transform одновременно. */
+	FVector CoverHugFacingDirection = FVector::ZeroVector;
 
 	/** `MaxWalkSpeed` до подшага — на время подшага он занижается до шага. */
 	float CoverHugSavedMaxSpeed = 0.f;
@@ -527,6 +561,15 @@ protected:
 	 * переключил бы клип на противоположный прямо посреди движения.
 	 */
 	float FrozenPeekSide = 0.f;
+
+	/**
+	 * Постоянное владение death-pose. Если montage назначен при смерти, Dead
+	 * state не включается ни во время montage, ни после перехода в ragdoll.
+	 */
+	bool bDeathMontageOwnsPose = false;
+
+	/** Пока true, terminal callback Death Montage ещё может запустить ragdoll. */
+	bool bDeathPresentationActive = false;
 
 	/** Таймер перехода тела в рагдолл после смерти. */
 	FTimerHandle RagdollTimerHandle;

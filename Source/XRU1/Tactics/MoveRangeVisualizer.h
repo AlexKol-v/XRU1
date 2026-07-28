@@ -143,6 +143,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|MoveRange")
 	bool ShowForUnit(AUnitBase* Unit);
 
+	/**
+	 * Строит тот же occupancy-aware план, что и зона игрока, но без отрисовки.
+	 * Нужен AI: игрок и враги обязаны одинаково обходить стоящих бойцов.
+	 */
+	bool PlanMoveForUnit(AUnitBase* Unit, const FVector& Goal, int32 MaxActionPoints,
+		FMoveOrderPlan& OutPlan);
+
 	/** Прячет зону и путь (юнит снят с выбора / чужая фаза). */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|MoveRange")
 	void Hide();
