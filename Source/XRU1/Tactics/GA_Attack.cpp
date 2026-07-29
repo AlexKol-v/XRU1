@@ -9,6 +9,7 @@
 #include "ActionPointsComponent.h"
 #include "UnitAIController.h"
 #include "TacticalPlayerController.h"
+#include "TacticalQuestEvents.h"
 #include "AbilitySystemComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
@@ -366,6 +367,17 @@ bool UGA_Attack::FireCommit(const FGuid& ActionId, bool& bOutHit)
 	{
 		FireAction.SetCommitResult(bOutHit);
 		OnShotFired(Target, bOutHit);
+		// Пока STQuestSystem отбрасывает payload/Source, публикуем автоматически
+		// только действия стороны игрока. Scripted enemy shot подтверждает его
+		// orchestration-task, иначе любой обычный выстрел врага закрыл бы tutorial.
+		if (UTacticalQuestEvents::IsPlayerSideUnit(Shooter, Shooter))
+		{
+			UTacticalQuestEvents::BroadcastQuestEvent(Shooter,
+				FireAction.bUsedSquadsight
+					? TacticalQuestTags::Event_Tactical_Combat_Attack_Squadsight
+					: TacticalQuestTags::Event_Tactical_Combat_Attack_Normal,
+				Shooter);
+		}
 	}
 
 	UE_LOG(LogTacticsAttackAction, Log,

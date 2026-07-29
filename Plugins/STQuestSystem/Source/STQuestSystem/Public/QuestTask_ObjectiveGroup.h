@@ -21,6 +21,13 @@ struct FQuestObjectiveSpec
     UPROPERTY(EditAnywhere, Category = "Quest")
     FGameplayTag EventChannel;
 
+    /**
+     * Tactical-сценарии включают для каждого spec: parent-match может засчитать
+     * соседний leaf той же доменной ветки. False сохраняет donor-совместимость.
+     */
+    UPROPERTY(EditAnywhere, Category = "Quest")
+    bool bRequireExactChannel = false;
+
     /** Требуемое число событий для выполнения этой цели. */
     UPROPERTY(EditAnywhere, Category = "Quest", meta = (ClampMin = "1"))
     int32 RequiredCount = 1;

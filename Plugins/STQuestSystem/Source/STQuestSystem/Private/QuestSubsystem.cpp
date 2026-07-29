@@ -81,6 +81,13 @@ UQuestInstance* UQuestSubsystem::StartQuest(UQuestDefinition* Definition)
         return Instance;
     }
 
+    if (Definition->QuestLogic.GetStateTree() == nullptr)
+    {
+        UE_LOG(LogTemp, Error, TEXT("[Quest] У %s не назначен QuestLogic; "
+            "квест оставлен в прежнем состоянии"), *GetNameSafe(Definition));
+        return Instance;
+    }
+
     const UGameInstance* GameInstance = GetGameInstance();
     UWorld* World = GameInstance ? GameInstance->GetWorld() : nullptr;
     if (!World)
@@ -88,17 +95,29 @@ UQuestInstance* UQuestSubsystem::StartQuest(UQuestDefinition* Definition)
         return Instance;
     }
 
-    AQuestRunnerActor* Runner = World->SpawnActor<AQuestRunnerActor>();
-    Instance->Runner = Runner;
+	AQuestRunnerActor* Runner = World->SpawnActor<AQuestRunnerActor>();
+	if (!Runner)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[Quest] Не удалось создать QuestRunner для %s; "
+			"квест оставлен в прежнем состоянии"), *GetNameSafe(Definition));
+		return Instance;
+	}
 
-    // Переводим квест в Active и запускаем исполнение его State Tree.
-    SetQuestState(Instance, EQuestState::Active);
-    if (Runner)
-    {
-        Runner->StartQuest(Instance);
-    }
+	Instance->Runner = Runner;
 
-    return Instance;
+	// Active выставляется только после успешного запуска StateTree: иначе
+	// instance навсегда завис бы с actor-носителем, который ничего не исполняет.
+	if (!Runner->StartQuest(Instance))
+	{
+		Runner->Destroy();
+		Instance->Runner = nullptr;
+		UE_LOG(LogTemp, Error, TEXT("[Quest] StateTree квеста %s не запустился; "
+			"состояние не изменено"), *GetNameSafe(Definition));
+		return Instance;
+	}
+	SetQuestState(Instance, EQuestState::Active);
+
+	return Instance;
 }
 
 UQuestInstance* UQuestSubsystem::StartQuestById(FGameplayTag QuestId)
@@ -280,6 +299,14 @@ bool UQuestSubsystem::AreRequirementsMet(const TArray<FQuestRequirement>& Requir
 void UQuestSubsystem::NotifyQuestFinished(UQuestInstance* Instance, bool bSuccess)
 {
     if (!Instance)
+    {
+        return;
+    }
+
+    // Terminal state неизменяем: повторный callback/диалог не должен второй
+    // раз выдать rewards или перевести Completed в Failed (и наоборот).
+    if (Instance->Progress.State == EQuestState::Completed ||
+        Instance->Progress.State == EQuestState::Failed)
     {
         return;
     }
@@ -517,12 +544,45 @@ void UQuestSubsystem::AbandonQuest(FGameplayTag QuestId)
     // Сбрасываем прогресс и возвращаем квест в доступные — его можно взять заново.
     Instance->Progress.Objectives.Reset();
     Instance->Progress.CompletionPercent = 0.f;
+    Instance->DynamicObjectives.Reset();
+    Instance->DynamicRewards.Reset();
+    Instance->DynamicRequirements.Reset();
     SetQuestState(Instance, EQuestState::Available);
 
     if (TrackedQuestId == QuestId)
     {
         SetTrackedQuest(FGameplayTag());
     }
+}
+
+bool UQuestSubsystem::ResetQuestRuntime(FGameplayTag QuestId)
+{
+    UQuestInstance* Instance = GetQuestInstance(QuestId);
+    if (!Instance)
+    {
+        return GetQuestDefinition(QuestId) != nullptr;
+    }
+
+    if (Instance->Runner)
+    {
+        Instance->Runner->StopQuest();
+        Instance->Runner->Destroy();
+        Instance->Runner = nullptr;
+    }
+
+    Instance->Progress.Objectives.Reset();
+    Instance->Progress.CompletionPercent = 0.f;
+    Instance->Owner.Reset();
+    Instance->DynamicObjectives.Reset();
+    Instance->DynamicRewards.Reset();
+    Instance->DynamicRequirements.Reset();
+    SetQuestState(Instance, EQuestState::Inactive);
+
+    if (TrackedQuestId == QuestId)
+    {
+        SetTrackedQuest(FGameplayTag());
+    }
+    return true;
 }
 
 FQuestDisplayData UQuestSubsystem::GetQuestDisplayData(FGameplayTag QuestId) const
@@ -632,15 +692,27 @@ void UQuestSubsystem::RestoreProgress(const TArray<FQuestProgress>& Snapshots)
         if (Snapshot.State == EQuestState::Active && World)
         {
             AQuestRunnerActor* Runner = World->SpawnActor<AQuestRunnerActor>();
-            Instance->Runner = Runner;
-            if (Runner)
+            if (Runner && Runner->StartQuestRestoring(Instance, Snapshot))
             {
-                Runner->StartQuestRestoring(Instance, Snapshot);
+                Instance->Runner = Runner;
+            }
+            else
+            {
+                if (Runner)
+                {
+                    Runner->Destroy();
+                }
+                Instance->Runner = nullptr;
+                Instance->Progress.State = EQuestState::Available;
+                Instance->Progress.Objectives.Reset();
+                Instance->Progress.CompletionPercent = 0.f;
+                UE_LOG(LogTemp, Error, TEXT("[Quest] Не удалось восстановить runner %s; "
+                    "квест возвращён в Available"), *Snapshot.QuestId.ToString());
             }
         }
 
         // Обновляем UI без тостов: журнал/трекер перечитывают состояние.
-        OnQuestStateChanged.Broadcast(Snapshot.QuestId, Snapshot.State);
+        OnQuestStateChanged.Broadcast(Snapshot.QuestId, Instance->Progress.State);
         OnObjectiveProgressChanged.Broadcast(Snapshot.QuestId);
     }
 }

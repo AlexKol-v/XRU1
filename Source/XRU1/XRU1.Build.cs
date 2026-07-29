@@ -26,6 +26,9 @@ public class XRU1 : ModuleRules
 			"GameplayAbilities",
 			"GameplayTags",
 			"GameplayTasks",
+			// Tutorial/mission objectives: StateTree quest runner + event bus.
+			"STQuestSystem",
+			"GameplayMessageRuntime",
 			// CommonUI (migrated PrimaryGameLayout / GameUIManagerSubsystem + menu skeletons)
 			"CommonUI",
 			"CommonInput",

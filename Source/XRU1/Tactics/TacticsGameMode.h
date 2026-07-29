@@ -8,6 +8,7 @@
 class AUnitBase;
 class ABombObjective;
 class AEvacZone;
+class ATacticalScenarioDirector;
 class UMissionResultWidget;
 class UCommonActivatableWidget;
 
@@ -93,6 +94,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Mission")
 	void ActivateEvacuation();
 
+	/**
+	 * Запускает бой после того, как ScenarioDirector подтвердил загрузку
+	 * scenario sublevel. Идемпотентно: повторный callback стриминга не создаёт
+	 * второй бой, HUD или подписки на objectives.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Scenario")
+	bool StartScenarioCombat();
+
 	/** Проиграна ли миссия по таймеру (для текста экрана поражения). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Mission")
 	bool WasDefeatByTimeout() const { return bDefeatByTimeout; }
@@ -112,11 +121,20 @@ protected:
 	UFUNCTION()
 	void HandleUnitEvacuated(AUnitBase* Unit);
 
+	/** Разносит последний Evac.Unit и Evac.Squad по разным StateTree ticks. */
+	void CompleteSquadEvacuation();
+
 	UFUNCTION()
 	void HandleTurnLimitExpired();
 
 	UFUNCTION()
 	void HandleCombatEnded(bool bPlayerWon);
+
+	/** Ждёт next-tick обработки terminal quest event перед save/result. */
+	void PollScenarioFinalization();
+
+	/** Единственное место записи campaign result и открытия result screen. */
+	void CompleteCombatResult(bool bPlayerWon);
 
 	/** Все живые юниты отряда эвакуированы? (Downed не блокируют победу — GDD §5.7.) */
 	bool AreAllLivingPlayersEvacuated() const;
@@ -125,7 +143,15 @@ protected:
 	EDifficultyLevel ResolveDifficulty() const;
 
 	FTimerHandle StartCombatTimerHandle;
+	FTimerHandle SquadEvacuationTimerHandle;
+	FTimerHandle ScenarioFinalizationTimerHandle;
+	TWeakObjectPtr<ATacticalScenarioDirector> PendingScenarioDirector;
+	double ScenarioFinalizationDeadline = 0.0;
+	bool bCombatStarted = false;
 	bool bDefeatByTimeout = false;
+	bool bSquadEvacuationPending = false;
+	bool bCombatResultPending = false;
+	bool bPendingPlayerWon = false;
 
 	/** Отряд игрока на карте (кэш для проверки эвакуации). */
 	UPROPERTY(Transient)

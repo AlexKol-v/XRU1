@@ -37,28 +37,37 @@ AQuestRunnerActor* AQuestRunnerActor::GetFromContext(FStateTreeExecutionContext&
     return nullptr;
 }
 
-void AQuestRunnerActor::StartQuest(UQuestInstance* InInstance)
+bool AQuestRunnerActor::StartQuest(UQuestInstance* InInstance)
 {
     OwningInstance = InInstance;
     if (!OwningInstance || !OwningInstance->Definition || !QuestStateTree)
     {
-        return;
+        return false;
     }
 
     // Назначаем ассет State Tree логики квеста и подписываемся на квест-события.
     QuestStateTree->SetStateTreeReference(OwningInstance->Definition->QuestLogic);
     RefreshEventSubscription();
     QuestStateTree->StartLogic();
+
+    const EStateTreeRunStatus Status = QuestStateTree->GetStateTreeRunStatus();
+    if (Status == EStateTreeRunStatus::Unset || Status == EStateTreeRunStatus::Stopped)
+    {
+        StopQuest();
+        OwningInstance = nullptr;
+        return false;
+    }
+    return true;
 }
 
-void AQuestRunnerActor::StartQuestRestoring(UQuestInstance* InInstance, const FQuestProgress& InProgress)
+bool AQuestRunnerActor::StartQuestRestoring(UQuestInstance* InInstance, const FQuestProgress& InProgress)
 {
     // Включаем восстановление ДО запуска дерева — EnterState задач сразу
     // запросит стартовые счётчики через GetRestoredObjectiveCount.
     RestoredProgress = InProgress;
     bRestoring = true;
     bSeedRequestedSinceTick = true;
-    StartQuest(InInstance);
+    return StartQuest(InInstance);
 }
 
 int32 AQuestRunnerActor::GetRestoredObjectiveCount(FGameplayTag ObjectiveId)

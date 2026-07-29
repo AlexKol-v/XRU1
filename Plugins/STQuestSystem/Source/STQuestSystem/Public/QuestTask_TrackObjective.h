@@ -21,6 +21,14 @@ struct FQuestTask_TrackObjectiveInstanceData
     UPROPERTY(EditAnywhere, Category = "Quest")
     FGameplayTag EventChannel;
 
+    /**
+     * Tactical-сценарии включают: Attack + Kill или Evac.Unit + Evac.Squad
+     * являются разными фактами и parent-match не должен засчитать оба.
+     * False сохраняет совместимость со старыми donor objectives на parent tag.
+     */
+    UPROPERTY(EditAnywhere, Category = "Quest")
+    bool bRequireExactChannel = false;
+
     /** Требуемое число событий для завершения цели. */
     UPROPERTY(EditAnywhere, Category = "Quest", meta = (ClampMin = "1"))
     int32 RequiredCount = 1;

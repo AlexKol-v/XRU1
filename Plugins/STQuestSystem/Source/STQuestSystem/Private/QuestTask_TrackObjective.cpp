@@ -58,10 +58,14 @@ EStateTreeRunStatus FQuestTask_TrackObjective::Tick(FStateTreeExecutionContext& 
 {
     FInstanceDataType& Inst = Context.GetInstanceData(*this);
 
-    // Считаем каждое событие, чей тег совпадает с каналом цели или вложен в него.
+    // Tactical objectives обычно требуют exact leaf: один shot может послать
+    // Attack.* и Enemy.Eliminated, а финальная эвакуация — Unit и Squad.
     Context.ForEachEvent([&Inst](const FStateTreeEvent& Event)
     {
-        if (Event.Tag.MatchesTag(Inst.EventChannel))
+		const bool bMatches = Inst.bRequireExactChannel
+			? Event.Tag == Inst.EventChannel
+			: Event.Tag.MatchesTag(Inst.EventChannel);
+		if (bMatches)
         {
             ++Inst.CurrentCount;
         }

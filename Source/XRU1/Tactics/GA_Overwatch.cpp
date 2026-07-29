@@ -8,6 +8,7 @@
 #include "CoverDetectionComponent.h"
 #include "UnitAIController.h"
 #include "TacticalPlayerController.h"
+#include "TacticalQuestEvents.h"
 #include "AbilitySystemComponent.h"
 #include "Perception/AIPerceptionComponent.h"
 #include "GameFramework/Actor.h"
@@ -119,6 +120,11 @@ void UGA_Overwatch::ActivateAbility(
 	if (AUnitBase* Unit = Cast<AUnitBase>(GetAvatarActorFromActorInfo()))
 	{
 		Unit->NotifyUnitStateChanged();
+		if (UTacticalQuestEvents::IsPlayerSideUnit(Unit, Unit))
+		{
+			UTacticalQuestEvents::BroadcastQuestEvent(Unit,
+				TacticalQuestTags::Event_Tactical_Ability_Overwatch_Activated, Unit);
+		}
 	}
 }
 
@@ -494,6 +500,11 @@ bool UGA_Overwatch::FireCommit(const FGuid& ActionId, bool& bOutHit)
 	{
 		ReactionAction.SetCommitResult(bOutHit);
 		OnReactionShot(Target, bOutHit);
+		if (UTacticalQuestEvents::IsPlayerSideUnit(Shooter, Shooter))
+		{
+			UTacticalQuestEvents::BroadcastQuestEvent(Shooter,
+				TacticalQuestTags::Event_Tactical_Combat_Attack_Overwatch, Shooter);
+		}
 	}
 
 	UE_LOG(LogTacticsOverwatchAction, Log,

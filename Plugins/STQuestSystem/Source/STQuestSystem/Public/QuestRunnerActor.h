@@ -28,14 +28,14 @@ public:
     AQuestRunnerActor();
 
     /** Назначает инстанс, запускает State Tree и подписку на GMS. */
-    void StartQuest(UQuestInstance* InInstance);
+    bool StartQuest(UQuestInstance* InInstance);
 
     /**
      * Запускает инстанс в режиме восстановления: задачи-цели берут стартовые
      * счётчики из снимка InProgress (через GetRestoredObjectiveCount), и дерево
      * «проматывается» к сохранённой позиции вместо старта с нуля.
      */
-    void StartQuestRestoring(UQuestInstance* InInstance, const FQuestProgress& InProgress);
+    bool StartQuestRestoring(UQuestInstance* InInstance, const FQuestProgress& InProgress);
 
     /**
      * Стартовый счётчик цели для восстановления: 0, если восстановление не идёт.

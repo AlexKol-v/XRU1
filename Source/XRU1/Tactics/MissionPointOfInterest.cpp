@@ -1,4 +1,5 @@
 #include "MissionPointOfInterest.h"
+#include "TacticalScenarioDataAsset.h"
 #include "TacticsGameInstance.h"
 #include "TacticsSaveGame.h"
 #include "Components/StaticMeshComponent.h"
@@ -90,19 +91,40 @@ void AMissionPointOfInterest::SelectPointOfInterest()
 		return;
 	}
 
-	if (LevelToLoad.IsNull())
+	UTacticsGameInstance* GI = GetGameInstance<UTacticsGameInstance>();
+	if (Scenario)
 	{
+		if (!GI || Scenario->ScenarioId.IsNone() || GI->SharedCombatLevel.IsNull())
+		{
+			OnSelectionDenied();
+			return;
+		}
+
+		if (!GI->StartCombatScenario(Scenario))
+		{
+			OnSelectionDenied();
+			return;
+		}
+		// OpenLevel уже принят, но GameInstance/Save ещё доступны в этом callstack.
+		if (GI->CurrentSave)
+		{
+			GI->CurrentSave->LastHubPointOfInterest = Scenario->ScenarioId;
+			GI->SaveCampaign();
+		}
 		return;
 	}
 
-	// Запоминаем в кампании, из какой точки хаба ушли (для «Продолжить»).
-	if (UTacticsGameInstance* GI = GetGameInstance<UTacticsGameInstance>())
+	if (LevelToLoad.IsNull())
 	{
-		if (GI->CurrentSave)
-		{
-			GI->CurrentSave->LastHubPointOfInterest = MissionId;
-			GI->SaveCampaign();
-		}
+		OnSelectionDenied();
+		return;
+	}
+
+	// Legacy-путь для старых карт, ещё не переведённых на общую Scenario-схему.
+	if (GI && GI->CurrentSave)
+	{
+		GI->CurrentSave->LastHubPointOfInterest = MissionId;
+		GI->SaveCampaign();
 	}
 
 	UGameplayStatics::OpenLevelBySoftObjectPtr(this, LevelToLoad);

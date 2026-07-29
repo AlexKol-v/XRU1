@@ -4,6 +4,7 @@
 #include "TacticsGameplayTags.h"
 #include "TacticsGameplayEffects.h"
 #include "TacticsCombatStatics.h"
+#include "TacticalQuestEvents.h"
 #include "TurnManagerSubsystem.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemGlobals.h"
@@ -137,6 +138,16 @@ bool UGA_HunkerDown::CanActivateAbility(const FGameplayAbilitySpecHandle Handle,
 		ASC->HasMatchingGameplayTag(TacticsGameplayTags::Cover_Full));
 }
 
+void UGA_HunkerDown::OnBuffActivated()
+{
+	AUnitBase* Unit = Cast<AUnitBase>(GetAvatarActorFromActorInfo());
+	if (UTacticalQuestEvents::IsPlayerSideUnit(Unit, Unit))
+	{
+		UTacticalQuestEvents::BroadcastQuestEvent(
+			Unit, TacticalQuestTags::Event_Tactical_Ability_Hunker_Activated, Unit);
+	}
+}
+
 // --- UGA_Taunt ----------------------------------------------------------------
 
 UGA_Taunt::UGA_Taunt()
@@ -147,6 +158,16 @@ UGA_Taunt::UGA_Taunt()
 	BuffEffect = UGE_TauntShield::StaticClass();
 
 	ActivationBlockedTags.AddTag(TacticsGameplayTags::State_Taunting);
+}
+
+void UGA_Taunt::OnBuffActivated()
+{
+	AUnitBase* Unit = Cast<AUnitBase>(GetAvatarActorFromActorInfo());
+	if (UTacticalQuestEvents::IsPlayerSideUnit(Unit, Unit))
+	{
+		UTacticalQuestEvents::BroadcastQuestEvent(
+			Unit, TacticalQuestTags::Event_Tactical_Ability_Taunt_Activated, Unit);
+	}
 }
 
 // --- UGA_Heal -----------------------------------------------------------------
@@ -190,6 +211,12 @@ bool UGA_Heal::CanHealTarget(const AUnitBase* Healer, const AActor* Target, floa
 	{
 		return false;
 	}
+	const AUnitBase* TargetUnit = Cast<AUnitBase>(Target);
+	if (!TargetUnit || (!TargetUnit->IsDowned() &&
+		TargetUnit->GetHealth() >= TargetUnit->GetMaxHealth() - KINDA_SMALL_NUMBER))
+	{
+		return false;
+	}
 	return FVector::Dist(Healer->GetActorLocation(), Target->GetActorLocation()) <= Range;
 }
 
@@ -209,42 +236,71 @@ void UGA_Heal::ActivateAbility(
 		return;
 	}
 
+	AUnitBase* TargetUnit = CastChecked<AUnitBase>(Target);
+	const bool bRevive = TargetUnit->IsDowned();
+	UAbilitySystemComponent* SourceASC = GetAbilitySystemComponentFromActorInfo();
+	UAbilitySystemComponent* TargetASC =
+		UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(Target);
+	FGameplayEffectSpecHandle HealSpec;
+	if (!bRevive)
+	{
+		if (!HealEffect || !SourceASC || !TargetASC)
+		{
+			EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
+			return;
+		}
+
+		FGameplayEffectContextHandle Context = SourceASC->MakeEffectContext();
+		Context.AddInstigator(Healer, Healer);
+		HealSpec = SourceASC->MakeOutgoingSpec(HealEffect, 1.f, Context);
+		if (!HealSpec.IsValid())
+		{
+			EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
+			return;
+		}
+		HealSpec.Data->SetSetByCallerMagnitude(TacticsGameplayTags::Data_Heal, HealAmount);
+	}
+
 	if (!CommitAbility(Handle, ActorInfo, ActivationInfo))
 	{
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
 		return;
 	}
 
-	AUnitBase* TargetUnit = Cast<AUnitBase>(Target);
-	const bool bRevive = TargetUnit && TargetUnit->IsDowned();
+	const float HealthBefore = TargetUnit->GetHealth();
+	bool bMechanicsApplied = false;
 
 	if (bRevive)
 	{
 		// Подъём тяжело раненого.
 		TargetUnit->ReviveFromDowned(ReviveHealth);
+		bMechanicsApplied = !TargetUnit->IsDowned() && TargetUnit->GetHealth() > 0.f;
 	}
-	else if (HealEffect)
+	else
 	{
 		// Обычное лечение через GE (кламп по MaxHealth — в атрибут-сете).
-		if (UAbilitySystemComponent* SourceASC = GetAbilitySystemComponentFromActorInfo())
-		{
-			FGameplayEffectContextHandle Context = SourceASC->MakeEffectContext();
-			Context.AddInstigator(Healer, Healer);
-			const FGameplayEffectSpecHandle Spec = SourceASC->MakeOutgoingSpec(HealEffect, 1.f, Context);
-			if (Spec.IsValid())
-			{
-				Spec.Data->SetSetByCallerMagnitude(TacticsGameplayTags::Data_Heal, HealAmount);
-				if (UAbilitySystemComponent* TargetASC =
-					UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(Target))
-				{
-					TargetASC->ApplyGameplayEffectSpecToSelf(*Spec.Data);
-				}
-			}
-		}
+		TargetASC->ApplyGameplayEffectSpecToSelf(*HealSpec.Data);
+		bMechanicsApplied = TargetUnit->GetHealth() > HealthBefore + KINDA_SMALL_NUMBER;
 	}
 
-	OnHealApplied(Target, bRevive);
-	EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
+	if (bMechanicsApplied)
+	{
+		OnHealApplied(Target, bRevive);
+		if (UTacticalQuestEvents::IsPlayerSideUnit(Healer, Healer))
+		{
+			UTacticalQuestEvents::BroadcastQuestEvent(Healer,
+				bRevive
+					? TacticalQuestTags::Event_Tactical_Ability_Heal_Revive
+					: TacticalQuestTags::Event_Tactical_Ability_Heal_Normal,
+				Healer);
+		}
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("[Heal] %s: Commit прошёл, но механика не изменила цель %s"),
+			*GetNameSafe(Healer), *GetNameSafe(Target));
+	}
+	EndAbility(Handle, ActorInfo, ActivationInfo, true, !bMechanicsApplied);
 }
 
 // --- UGA_RunAndGun --------------------------------------------------------------
@@ -261,20 +317,26 @@ void UGA_RunAndGun::ActivateAbility(
 	const FGameplayAbilityActivationInfo ActivationInfo,
 	const FGameplayEventData* TriggerData)
 {
+	AUnitBase* Unit = Cast<AUnitBase>(GetAvatarActorFromActorInfo());
+	UActionPointsComponent* ActionPoints = Unit ? Unit->GetActionPoints() : nullptr;
+	if (!Unit || !ActionPoints || ExtraActionPoints <= 0)
+	{
+		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
+		return;
+	}
+
 	if (!CommitAbility(Handle, ActorInfo, ActivationInfo))
 	{
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
 		return;
 	}
 
-	if (const AUnitBase* Unit = Cast<AUnitBase>(GetAvatarActorFromActorInfo()))
-	{
-		if (UActionPointsComponent* ActionPoints = Unit->GetActionPoints())
-		{
-			ActionPoints->GrantExtraPoints(ExtraActionPoints);
-		}
-	}
-
+	ActionPoints->GrantExtraPoints(ExtraActionPoints);
 	OnRunAndGun();
+	if (UTacticalQuestEvents::IsPlayerSideUnit(Unit, Unit))
+	{
+		UTacticalQuestEvents::BroadcastQuestEvent(Unit,
+			TacticalQuestTags::Event_Tactical_Ability_RunAndGun_Activated, Unit);
+	}
 	EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
 }

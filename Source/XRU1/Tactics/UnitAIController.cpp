@@ -1,5 +1,6 @@
 #include "UnitAIController.h"
 #include "AIActionEvaluators.h"
+#include "AIBehaviorProfileDataAsset.h"
 #include "UnitBase.h"
 #include "TacticalPlayerController.h"
 #include "ActionPointsComponent.h"
@@ -25,7 +26,8 @@
 #include "Engine/World.h"
 #include "TimerManager.h"
 #include "HAL/IConsoleManager.h"
-#include "CoreGlobals.h"        // GFrameCounter — зерно детерминированных розыгрышей
+#include "Kismet/GameplayStatics.h"
+#include "Misc/Crc.h"
 #include "Math/RandomStream.h"
 
 /**
@@ -92,6 +94,27 @@ void AUnitAIController::BeginPlay()
 {
 	Super::BeginPlay();
 
+	// Профиль применяется после сериализации BP/DataAsset, но до настройки Perception и Crowd.
+	// Так значения в ассете действительно становятся runtime-источником истины.
+	ApplyBehaviorProfile();
+	SightRadius = FMath::Max(0.f, SightRadius);
+	LoseSightRadius = FMath::Max(SightRadius, LoseSightRadius);
+	PeripheralVisionHalfAngle = FMath::Clamp(PeripheralVisionHalfAngle, 1.f, 180.f);
+	CrowdSeparationWeight = FMath::Max(0.f, CrowdSeparationWeight);
+	RouteCornerAcceptance = FMath::Clamp(RouteCornerAcceptance, 5.f, 25.f);
+	ManeuverArrivalTolerance = FMath::Max(10.f, ManeuverArrivalTolerance);
+	InvestigateOverwatchChance = FMath::Clamp(InvestigateOverwatchChance, 0.f, 1.f);
+	MaxScoredThreats = FMath::Clamp(MaxScoredThreats, 1, 8);
+	ActionInterval = FMath::Max(0.01f, ActionInterval);
+	TargetHitChanceLowThreshold = FMath::Clamp(TargetHitChanceLowThreshold, 0.f, 100.f);
+	TargetHitChanceHighThreshold = FMath::Clamp(TargetHitChanceHighThreshold, 0.f, 100.f);
+	if (TargetHitChanceHighThreshold < TargetHitChanceLowThreshold)
+	{
+		Swap(TargetHitChanceHighThreshold, TargetHitChanceLowThreshold);
+		UE_LOG(LogTemp, Warning, TEXT("[AI] %s: пороги hit chance были инвертированы и переставлены"),
+			*GetNameSafe(this));
+	}
+
 	// Качество объезда повыше: юнитов мало, стоимость незаметна, а обход
 	// стоящих капсул становится заметно плавнее.
 	if (UCrowdFollowingComponent* Crowd = Cast<UCrowdFollowingComponent>(GetPathFollowingComponent()))
@@ -131,6 +154,78 @@ void AUnitAIController::BeginPlay()
 	if (Perception)
 	{
 		Perception->OnTargetPerceptionUpdated.AddDynamic(this, &AUnitAIController::HandlePerceptionUpdated);
+	}
+}
+
+void AUnitAIController::ApplyBehaviorProfile()
+{
+	if (!BehaviorProfile)
+	{
+		return;
+	}
+
+	const FAIPerceptionTuning& PerceptionTuning = BehaviorProfile->Perception;
+	SightRadius = PerceptionTuning.SightRadius;
+	LoseSightRadius = FMath::Max(PerceptionTuning.LoseSightRadius, SightRadius);
+	PeripheralVisionHalfAngle = PerceptionTuning.PeripheralVisionHalfAngle;
+
+	const FAINavigationTuning& NavigationTuning = BehaviorProfile->Navigation;
+	CrowdSeparationWeight = NavigationTuning.CrowdSeparationWeight;
+	RouteCornerAcceptance = NavigationTuning.RouteCornerAcceptance;
+	ManeuverArrivalTolerance = NavigationTuning.ManeuverArrivalTolerance;
+
+	const FAIAlertTuning& AlertTuning = BehaviorProfile->Alert;
+	InvestigateAcceptanceRadius = AlertTuning.InvestigateAcceptanceRadius;
+	InvestigateOverwatchChance = AlertTuning.InvestigateOverwatchChance;
+	ActionInterval = AlertTuning.ActionInterval;
+	TauntPriorityRadius = AlertTuning.TauntPriorityRadius;
+
+	const FAIPositionScoringTuning& PositionTuning = BehaviorProfile->Position;
+	CoverDefenseWeight = PositionTuning.CoverDefenseWeight;
+	OpenCoverFactor = PositionTuning.OpenCoverFactor;
+	HalfCoverFactor = PositionTuning.HalfCoverFactor;
+	FullCoverFactor = PositionTuning.FullCoverFactor;
+	FlankPositionBonus = PositionTuning.FlankPositionBonus;
+	HeightPositionBonus = PositionTuning.HeightPositionBonus;
+	MinSpreadDistance = PositionTuning.MinSpreadDistance;
+	SpreadPenaltyMultiplier = PositionTuning.SpreadPenaltyMultiplier;
+	AllyVisibilityWeight = PositionTuning.AllyVisibilityWeight;
+	OverwatchExposurePenalty = PositionTuning.OverwatchExposurePenalty;
+	LineOfFireBonus = PositionTuning.LineOfFireBonus;
+	LoseLineOfFirePenalty = PositionTuning.LoseLineOfFirePenalty;
+	TravelCostPerCm = PositionTuning.TravelCostPerCm;
+	IdealRangeWeight = PositionTuning.IdealRangeWeight;
+	IdealRangeFalloff = PositionTuning.IdealRangeFalloff;
+	RelocateBias = PositionTuning.RelocateBias;
+	RetreatHealthFraction = PositionTuning.RetreatHealthFraction;
+	RetreatRewardPerCm = PositionTuning.RetreatRewardPerCm;
+	CoverSnapDistance = PositionTuning.CoverSnapDistance;
+	MaxScoredThreats = PositionTuning.MaxScoredThreats;
+	EnemyVisibilityWeight = PositionTuning.EnemyVisibilityWeight;
+
+	const FAITargetScoringTuning& TargetTuning = BehaviorProfile->Target;
+	TargetHitChanceHighThreshold = TargetTuning.HitChanceHighThreshold;
+	TargetHitChanceLowThreshold = TargetTuning.HitChanceLowThreshold;
+	TargetScoreHitChanceHigh = TargetTuning.HitChanceHighScore;
+	TargetScoreHitChanceMedium = TargetTuning.HitChanceMediumScore;
+	TargetScoreHitChanceLow = TargetTuning.HitChanceLowScore;
+	TargetScoreTaunting = TargetTuning.TauntingScore;
+	TargetScoreFlanked = TargetTuning.FlankedScore;
+	TargetScoreKillShot = TargetTuning.KillShotScore;
+	TargetScoreWounded = TargetTuning.WoundedScore;
+	TargetScoreDowned = TargetTuning.DownedScore;
+	TargetScoreNoLineOfFire = TargetTuning.NoLineOfFireScore;
+
+	if (BehaviorProfile->bOverrideActionEvaluators)
+	{
+		ActionEvaluators.Reset(BehaviorProfile->ActionEvaluators.Num());
+		for (const TObjectPtr<UAIActionEvaluator>& Template : BehaviorProfile->ActionEvaluators)
+		{
+			if (Template)
+			{
+				ActionEvaluators.Add(DuplicateObject<UAIActionEvaluator>(Template, this));
+			}
+		}
 	}
 }
 
@@ -195,6 +290,7 @@ void AUnitAIController::ExecuteUnitTurn(FSimpleDelegate OnFinished)
 	bTurnMoveInProgress = false;
 	bCoverMoveDoneThisTurn = false;
 	bManeuverInProgress = false;
+	DecisionOrdinalThisTurn = 0;
 	AdvanceTurnStep();
 }
 
@@ -234,6 +330,10 @@ void AUnitAIController::AdvanceTurnStep()
 			return;
 		}
 	}
+
+	// Увеличиваем только перед реальным выбором действия. Ожидание montage,
+	// отсутствие AP и завершившийся бой не меняют воспроизводимую последовательность.
+	++DecisionOrdinalThisTurn;
 
 	// Видимая цель мгновенно поднимает red alert (перцепция могла отстать на кадр).
 	if (FindVisibleTarget())
@@ -313,6 +413,7 @@ FAIDecisionContext AUnitAIController::BuildDecisionContext(AUnitBase* Unit, AAct
 	Context.bCanShootNow = UGA_Attack::CanTargetActor(Unit, PrimaryThreat);
 	Context.bLowHealth = Unit && Unit->GetHealth() <= Unit->GetMaxHealth() * RetreatHealthFraction;
 	Context.bCoverMoveDoneThisTurn = bCoverMoveDoneThisTurn;
+	Context.DecisionSeed = BuildDecisionSeed(Unit);
 
 	// A8: лимит одновременно атакующих. Счётчик общий на сторону и живёт в
 	// TurnManager — контроллер знает только про своего юнита.
@@ -326,9 +427,36 @@ FAIDecisionContext AUnitAIController::BuildDecisionContext(AUnitBase* Unit, AAct
 	return Context;
 }
 
+uint32 AUnitAIController::BuildDecisionSeed(const AUnitBase* Unit, FName Salt) const
+{
+	// GetTypeHash(FName) зависит от process-local name index и не годится для
+	// воспроизведения между запусками. CRC считается по стабильным строкам.
+	uint32 Seed = FCrc::StrCrc32(Unit ? *Unit->GetName() : TEXT("None"));
+
+	if (const UWorld* World = GetWorld())
+	{
+		const FString MapName = UGameplayStatics::GetCurrentLevelName(World, true);
+		Seed = HashCombine(Seed, FCrc::StrCrc32(*MapName));
+		if (const UTurnManagerSubsystem* TurnManager = World->GetSubsystem<UTurnManagerSubsystem>())
+		{
+			Seed = HashCombine(Seed, GetTypeHash(TurnManager->GetTurnNumber()));
+		}
+	}
+
+	Seed = HashCombine(Seed, GetTypeHash(DecisionOrdinalThisTurn));
+	return Salt.IsNone() ? Seed : HashCombine(Seed, FCrc::StrCrc32(*Salt.ToString()));
+}
+
 FAIDecision AUnitAIController::DecideAction(const FAIDecisionContext& Context)
 {
 	const bool bLogAI = CVarLogAICombat.GetValueOnGameThread() != 0;
+	if (bLogAI)
+	{
+		UE_LOG(LogTemp, Log,
+			TEXT("[AI] %s: контекст Alert=%d AP=%d Threat=%s Seed=%u"),
+			*GetNameSafe(Context.Unit), static_cast<int32>(AlertState),
+			Context.ActionPointsLeft, *GetNameSafe(Context.PrimaryThreat), Context.DecisionSeed);
+	}
 
 	// Перебираем по УБЫВАНИЮ верхней границы скора. Это не косметика: как только
 	// текущий лучший результат достиг потолка следующего кандидата, остальные
@@ -339,10 +467,25 @@ FAIDecision AUnitAIController::DecideAction(const FAIDecisionContext& Context)
 	Ordered.Reserve(ActionEvaluators.Num());
 	for (const TObjectPtr<UAIActionEvaluator>& Evaluator : ActionEvaluators)
 	{
-		if (Evaluator)
+		if (!Evaluator)
 		{
-			Ordered.Add(Evaluator);
+			continue;
 		}
+
+		// Weight=0 — явный дизайнерский выключатель. Не полагаемся на то, что
+		// нулевой потолок когда-нибудь отсечётся после сортировки: дорогой
+		// ScoreAction такого evaluator вообще не должен попасть в перебор.
+		if (Evaluator->Weight <= 0.f || Evaluator->GetMaxPossibleScore() <= 0.f)
+		{
+			if (bLogAI)
+			{
+				UE_LOG(LogTemp, Log, TEXT("[AI]   %s: выключен весом/потолком"),
+					*Evaluator->GetDebugName().ToString());
+			}
+			continue;
+		}
+
+		Ordered.Add(Evaluator);
 	}
 	Ordered.Sort([](const UAIActionEvaluator& A, const UAIActionEvaluator& B)
 	{
@@ -1007,7 +1150,7 @@ bool AUnitAIController::StepInvestigate(AUnitBase* Unit)
 		// обязано быть воспроизводимым, иначе лог решений врёт.
 		if (Unit->OverwatchAbilityClass && InvestigateOverwatchChance > 0.f)
 		{
-			const uint32 Seed = HashCombine(GetTypeHash(Unit), static_cast<uint32>(GFrameCounter));
+			const uint32 Seed = BuildDecisionSeed(Unit, FName(TEXT("InvestigateOverwatch")));
 			if (FRandomStream(static_cast<int32>(Seed)).GetFraction() < InvestigateOverwatchChance)
 			{
 				UTacticsCombatStatics::FaceActorTowards(Unit, LastKnownThreatLocation);
@@ -1144,12 +1287,22 @@ bool AUnitAIController::IsMoving() const
 	{
 		return false;
 	}
-	return bFollowingRoute || GetMoveStatus() != EPathFollowingStatus::Idle;
+	const AUnitBase* Unit = Cast<AUnitBase>(ControlledPawn);
+	return bFollowingRoute || PendingSettlementUnit.IsValid() ||
+		(Unit && Unit->IsMoveSettlementInProgress()) ||
+		GetMoveStatus() != EPathFollowingStatus::Idle;
 }
 
 EPathFollowingRequestResult::Type AUnitAIController::MoveAlongRoute(const TArray<FVector>& RoutePoints,
 	float AcceptanceRadius)
 {
+	const AUnitBase* UnitAtStart = Cast<AUnitBase>(GetPawn());
+	if (PendingSettlementUnit.IsValid() ||
+		(UnitAtStart && UnitAtStart->IsMoveSettlementInProgress()))
+	{
+		return EPathFollowingRequestResult::Failed;
+	}
+
 	StopRoute();
 	if (RoutePoints.Num() < 2 || !GetPawn())
 	{
@@ -1273,49 +1426,93 @@ void AUnitAIController::OnMoveCompleted(FAIRequestID RequestID, const FPathFollo
 		return;
 	}
 
-	// Юнит встал на новую позицию — пересчитать укрытие (и для приказов игрока тоже).
-	if (AUnitBase* Unit = Cast<AUnitBase>(GetPawn()))
+	// PathFollowing завершён, но само тактическое перемещение ещё может быть не
+	// закончено: HugCover запускает latent-подшаг, а затем latent-доворот.
+	// Следующий AP и HUD нельзя будить до окончания всей этой последовательности.
+	AUnitBase* Unit = Cast<AUnitBase>(GetPawn());
+	if (!Unit)
 	{
-		UCoverDetectionComponent* Cover = Unit->GetCoverDetection();
-		if (Cover)
+		if (bTurnMoveInProgress)
 		{
-			Cover->EvaluateSurroundings();
-			// Встал на позицию — прижаться к стене и развернуться по её нормали.
-			// Делается ПОСЛЕ первой оценки (нужно знать, к чему прижиматься) и
-			// сам пересчитывает укрытие от новой точки.
-			Unit->HugCover();
+			bTurnMoveInProgress = false;
+			ScheduleNextStep();
 		}
+		return;
+	}
 
-		// КОНТРОЛЬ «ВСТАЛ ТУДА, КУДА РЕШИЛ». Укрытие оценивалось в конкретной
-		// точке; если боец оказался в другой, оценка к его позиции больше не
-		// относится. Молчать об этом нельзя — иначе «бот выбрал укрытие» и «бот
-		// в укрытии» расходятся, а по логу этого не видно.
-		// ⚠️ Флаг сбрасывается ВСЕГДА, а не только при включённом логе: иначе он
-		// повисал бы до конца боя и следующая проверка сравнивала бы позицию со
-		// старой точкой. Под CVar — только сам вывод.
-		if (bHasChosenManeuverPoint && !bManeuverInProgress)
-		{
-			const float Drift = FVector::Dist2D(Unit->GetActorLocation(), ChosenManeuverPoint);
-			bHasChosenManeuverPoint = false;
-			if (Drift > ManeuverArrivalTolerance && CVarLogAICombat.GetValueOnGameThread() != 0)
-			{
-				UE_LOG(LogTemp, Warning, TEXT("[AI] %s: встал НЕ в выбранную точку — расхождение %.0f см ")
-					TEXT("(решил (%.0f, %.0f), стоит (%.0f, %.0f)). Укрытие на месте: %d"),
-					*GetNameSafe(Unit), Drift, ChosenManeuverPoint.X, ChosenManeuverPoint.Y,
-					Unit->GetActorLocation().X, Unit->GetActorLocation().Y,
-					Cover ? static_cast<int32>(Cover->BestCoverAround) : -1);
-			}
-		}
-		// Один атомарный refresh: HUD видит уже и остановку, и итоговое укрытие.
-		Unit->NotifyUnitStateChanged();
+	if (UCoverDetectionComponent* Cover = Unit->GetCoverDetection())
+	{
+		Cover->EvaluateSurroundings();
+		Unit->HugCover();
+	}
+	BeginMoveSettlement(Unit);
+}
 
-		// Диск занятости юнита встал на новую позицию — контроллер игрока
-		// пересчитает зону хода выбранного бойца (синхронно, без задержек).
-		if (ATacticalPlayerController* PlayerController =
-			Cast<ATacticalPlayerController>(GetWorld()->GetFirstPlayerController()))
+void AUnitAIController::BeginMoveSettlement(AUnitBase* Unit)
+{
+	GetWorldTimerManager().ClearTimer(MoveSettlementTimerHandle);
+	PendingSettlementUnit = Unit;
+
+	if (Unit && Unit->IsMoveSettlementInProgress())
+	{
+		GetWorldTimerManager().SetTimer(MoveSettlementTimerHandle, this,
+			&AUnitAIController::TryFinalizeMoveSettlement, 0.02f, true);
+		return;
+	}
+
+	TryFinalizeMoveSettlement();
+}
+
+void AUnitAIController::TryFinalizeMoveSettlement()
+{
+	AUnitBase* Unit = PendingSettlementUnit.Get();
+	if (Unit && Unit->IsMoveSettlementInProgress())
+	{
+		return;
+	}
+
+	GetWorldTimerManager().ClearTimer(MoveSettlementTimerHandle);
+	PendingSettlementUnit.Reset();
+
+	if (!Unit || Unit != GetPawn())
+	{
+		if (bTurnMoveInProgress)
 		{
-			PlayerController->NotifyUnitMoveFinished(Unit);
+			bTurnMoveInProgress = false;
+			ScheduleNextStep();
 		}
+		return;
+	}
+
+	// Финальный пересчёт делается после микро-сдвига, а не от старой точки
+	// PathFollowing. Теперь cover, occupancy, HUD и следующий AI-шаг видят один
+	// и тот же завершённый transform.
+	UCoverDetectionComponent* Cover = Unit->GetCoverDetection();
+	if (Cover)
+	{
+		Cover->EvaluateSurroundings();
+	}
+
+	// КОНТРОЛЬ «ВСТАЛ ТУДА, КУДА РЕШИЛ» — только после полного settlement.
+	if (bHasChosenManeuverPoint && !bManeuverInProgress)
+	{
+		const float Drift = FVector::Dist2D(Unit->GetActorLocation(), ChosenManeuverPoint);
+		bHasChosenManeuverPoint = false;
+		if (Drift > ManeuverArrivalTolerance && CVarLogAICombat.GetValueOnGameThread() != 0)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[AI] %s: встал НЕ в выбранную точку — расхождение %.0f см ")
+				TEXT("(решил (%.0f, %.0f), стоит (%.0f, %.0f)). Укрытие на месте: %d"),
+				*GetNameSafe(Unit), Drift, ChosenManeuverPoint.X, ChosenManeuverPoint.Y,
+				Unit->GetActorLocation().X, Unit->GetActorLocation().Y,
+				Cover ? static_cast<int32>(Cover->BestCoverAround) : -1);
+		}
+	}
+
+	Unit->NotifyUnitStateChanged();
+	if (ATacticalPlayerController* PlayerController =
+		Cast<ATacticalPlayerController>(GetWorld()->GetFirstPlayerController()))
+	{
+		PlayerController->NotifyUnitMoveFinished(Unit);
 	}
 
 	if (!bTurnMoveInProgress)
@@ -1324,19 +1521,21 @@ void AUnitAIController::OnMoveCompleted(FAIRequestID RequestID, const FPathFollo
 	}
 	bTurnMoveInProgress = false;
 
-	if (AUnitBase* Unit = Cast<AUnitBase>(GetPawn()))
+	if (UActionPointsComponent* ActionPoints = Unit->GetActionPoints())
 	{
-		if (UActionPointsComponent* ActionPoints = Unit->GetActionPoints())
-		{
-			ActionPoints->TrySpendActionPoint();
-		}
+		ActionPoints->TrySpendActionPoint();
 	}
-
 	ScheduleNextStep();
 }
 
 void AUnitAIController::ScheduleNextStep()
 {
+	if (ActionInterval <= 0.f)
+	{
+		TurnStepTimerHandle = GetWorldTimerManager().SetTimerForNextTick(
+			this, &AUnitAIController::AdvanceTurnStep);
+		return;
+	}
 	GetWorldTimerManager().SetTimer(TurnStepTimerHandle, this,
 		&AUnitAIController::AdvanceTurnStep, ActionInterval, false);
 }
@@ -1344,6 +1543,8 @@ void AUnitAIController::ScheduleNextStep()
 void AUnitAIController::FinishUnitTurn()
 {
 	GetWorldTimerManager().ClearTimer(TurnStepTimerHandle);
+	GetWorldTimerManager().ClearTimer(MoveSettlementTimerHandle);
+	PendingSettlementUnit.Reset();
 	bTurnMoveInProgress = false;
 
 	// Сначала сбрасываем делегат, потом зовём: колбэк может тут же начать новый ход.

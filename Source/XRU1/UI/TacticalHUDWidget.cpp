@@ -1,4 +1,5 @@
 #include "TacticalHUDWidget.h"
+#include "FogOfWarSubsystem.h"
 #include "TacticalHUDStyleData.h"
 #include "TacticsGameInstance.h"
 #include "TacticalPlayerController.h"
@@ -117,6 +118,13 @@ int32 UTacticalHUDWidget::GetAliveEnemyCount() const
 	// Критерий «жив» живёт в TurnManager (общий с условием конца боя).
 	const UTurnManagerSubsystem* TurnManager = GetTurnManager();
 	return TurnManager ? TurnManager->GetAliveEnemyCount() : 0;
+}
+
+int32 UTacticalHUDWidget::GetVisibleEnemyCount() const
+{
+	const UWorld* World = GetWorld();
+	const UFogOfWarSubsystem* Fog = World ? World->GetSubsystem<UFogOfWarSubsystem>() : nullptr;
+	return Fog ? Fog->GetCurrentlyVisibleEnemyCount() : 0;
 }
 
 UTacticalHUDStyleData* UTacticalHUDWidget::GetUITheme() const

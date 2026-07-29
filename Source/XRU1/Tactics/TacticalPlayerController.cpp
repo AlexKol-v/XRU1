@@ -14,6 +14,7 @@
 #include "TacticsCombatStatics.h"
 #include "TacticsGameplayTags.h"
 #include "TurnManagerSubsystem.h"
+#include "FogOfWarSubsystem.h"
 #include "GameUIManagerSubsystem.h"
 #include "PrimaryGameLayout.h"
 #include "MenuWidgets.h"
@@ -717,7 +718,7 @@ bool ATacticalPlayerController::HandleAttackTargetClick(AActor* ClickedActor)
 {
 	AUnitBase* ClickedEnemy = Cast<AUnitBase>(ClickedActor);
 	if (!ClickedEnemy ||
-		ClickedEnemy->GetGenericTeamId().GetId() == TacticsTeamIds::Player)
+		ClickedEnemy->GetGenericTeamId().GetId() != TacticsTeamIds::Enemy)
 	{
 		return false;
 	}
@@ -1593,23 +1594,9 @@ void ATacticalPlayerController::HandleTurnStarted(ETurnPhase Phase)
 
 bool ATacticalPlayerController::IsVisibleToSquad(const AActor* Unit) const
 {
-	if (!Unit)
-	{
-		return false;
-	}
-	// Проверяем КАЖДОГО живого бойца (SquadHasLineOfSight не годится: она
-	// проверяет союзников юнита, исключая его самого).
-	for (const AUnitBase* Member : GetSquad())
-	{
-		if (Member && UTacticsCombatStatics::IsUnitAlive(Member) &&
-			FVector::Dist(Member->GetActorLocation(), Unit->GetActorLocation())
-				<= UTacticsCombatStatics::SquadVisionRange &&
-			UTacticsCombatStatics::HasLineOfSight(Member, Unit))
-		{
-			return true;
-		}
-	}
-	return false;
+	const UWorld* World = GetWorld();
+	const UFogOfWarSubsystem* Fog = World ? World->GetSubsystem<UFogOfWarSubsystem>() : nullptr;
+	return Fog && Fog->IsActorCurrentlyVisible(Unit);
 }
 
 FTacticalMovePreview ATacticalPlayerController::GetMovePreviewAt(const FVector& Location) const
@@ -1618,7 +1605,8 @@ FTacticalMovePreview ATacticalPlayerController::GetMovePreviewAt(const FVector& 
 	const UWorld* World = GetWorld();
 	UCoverDetectionComponent* Cover = SelectedUnit ? SelectedUnit->GetCoverDetection() : nullptr;
 	const UTurnManagerSubsystem* TurnManager = World ? World->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
-	if (!Cover || !TurnManager)
+	const UFogOfWarSubsystem* Fog = World ? World->GetSubsystem<UFogOfWarSubsystem>() : nullptr;
+	if (!Cover || !TurnManager || !Fog)
 	{
 		return Preview;
 	}
@@ -1632,7 +1620,10 @@ FTacticalMovePreview ATacticalPlayerController::GetMovePreviewAt(const FVector& 
 
 	for (AActor* Enemy : TurnManager->GetOpposingUnits(SelectedUnit))
 	{
-		if (!Enemy || !UTacticsCombatStatics::IsUnitAlive(Enemy))
+		// Preview не имеет права раскрывать засаду: считаем угрозу только от тех,
+		// кого отряд уже видит по тем же правилам, что камера и будущий fog-render.
+		if (!Enemy || !UTacticsCombatStatics::IsUnitAlive(Enemy) ||
+			!Fog->IsActorCurrentlyVisible(Enemy))
 		{
 			continue;
 		}

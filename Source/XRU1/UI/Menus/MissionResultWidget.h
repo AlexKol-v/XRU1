@@ -26,7 +26,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Menu")
 	bool IsDefeatByTimeout() const { return bDefeatByTimeout; }
 
-	/** Кнопка «Повторить»: перезапускает текущий уровень. */
+	/** Кнопка «Повторить»: перезапускает текущий Scenario через чистый bootstrap. */
 	UFUNCTION(BlueprintCallable, Category = "Menu")
 	void RetryMission();
 

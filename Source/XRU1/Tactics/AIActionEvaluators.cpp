@@ -3,7 +3,7 @@
 #include "UnitBase.h"
 #include "GA_Attack.h"
 #include "CoverDetectionComponent.h" // BestCoverAround — предусловие глухой обороны
-#include "CoreGlobals.h"        // GFrameCounter — зерно розыгрыша овервотча
+#include "Misc/Crc.h"
 #include "Math/RandomStream.h"
 
 // --- UAIEval_Retreat ----------------------------------------------------------
@@ -278,14 +278,12 @@ float UAIEval_Overwatch::ScoreAction(const FAIDecisionContext& Context, FAIDecis
 		return -1.f;
 	}
 
-	// РОЗЫГРЫШ (аналог RandSelector XCOM). Зерно — юнит + номер кадра: внутри
-	// одной активации оно постоянно (значит ScoreAction воспроизводима и лог не
-	// врёт), а между активациями меняется. Обычный FMath::FRand дал бы разный
-	// ответ при повторном вызове того же оценщика и сделал бы лог бесполезным.
+	// РОЗЫГРЫШ (аналог RandSelector XCOM). Контекст несёт стабильное зерно шага:
+	// повторная оценка того же решения даёт тот же ответ независимо от FPS.
 	if (ActivationChance < 1.f)
 	{
-		const uint32 Seed = HashCombine(GetTypeHash(Context.Unit),
-			static_cast<uint32>(GFrameCounter));
+		const uint32 Seed = HashCombine(Context.DecisionSeed,
+			FCrc::StrCrc32(*GetClass()->GetPathName()));
 		if (FRandomStream(static_cast<int32>(Seed)).GetFraction() >= ActivationChance)
 		{
 			OutDecision.Reason = TEXT("наблюдение — розыгрыш не выпал");

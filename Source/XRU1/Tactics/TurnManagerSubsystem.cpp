@@ -1,6 +1,7 @@
 #include "TurnManagerSubsystem.h"
 #include "ActionPointsComponent.h"
 #include "TacticsCombatStatics.h"
+#include "TacticalQuestEvents.h"
 #include "UnitAIController.h"
 #include "UnitBase.h"
 #include "GameFramework/Actor.h"
@@ -131,6 +132,26 @@ void UTurnManagerSubsystem::BeginPhase(ETurnPhase Phase)
 	CurrentPhase = Phase;
 	ResetActionPointsForSide(Phase == ETurnPhase::Player ? PlayerSide : EnemySide);
 	OnTurnStarted.Broadcast(Phase);
+	if (!bInCombat || CurrentPhase != Phase)
+	{
+		return; // listener мог синхронно завершить бой или сменить фазу
+	}
+
+	if (Phase == ETurnPhase::Player)
+	{
+		UTacticalQuestEvents::BroadcastQuestEvent(
+			this, TacticalQuestTags::Event_Tactical_Turn_Player_Started, this);
+	}
+	else if (Phase == ETurnPhase::Enemy)
+	{
+		// Это подтверждённый конец player phase, а не raw Enter/request.
+		UTacticalQuestEvents::BroadcastQuestEvent(
+			this, TacticalQuestTags::Event_Tactical_Turn_Ended, this);
+	}
+	if (!bInCombat || CurrentPhase != Phase)
+	{
+		return; // message listener тоже может синхронно завершить/сменить фазу
+	}
 
 	// Ход врага исполняет сам менеджер: юниты действуют по одному.
 	if (Phase == ETurnPhase::Enemy)
@@ -202,6 +223,12 @@ void UTurnManagerSubsystem::ProcessNextEnemyUnit()
 	{
 		AActor* Unit = EnemySide[EnemyTurnIndex];
 		APawn* Pawn = Cast<APawn>(Unit);
+		if (Pawn && !Pawn->GetController())
+		{
+			// Страховка для streamed/spawned-врагов со старым instance-значением
+			// Auto Possess AI. Настроенный BP-класс контроллера при этом сохраняется.
+			Pawn->SpawnDefaultController();
+		}
 		AUnitAIController* AI = Pawn ? Cast<AUnitAIController>(Pawn->GetController()) : nullptr;
 
 		if (Unit && AI && UTacticsCombatStatics::IsUnitAlive(Unit))
@@ -212,6 +239,14 @@ void UTurnManagerSubsystem::ProcessNextEnemyUnit()
 			GetWorld()->GetTimerManager().SetTimer(EnemyStepTimerHandle, this,
 				&UTurnManagerSubsystem::ActivateCurrentEnemyUnit, EnemyActivationDelay, false);
 			return;
+		}
+
+		if (Unit && UTacticsCombatStatics::IsUnitAlive(Unit))
+		{
+			UE_LOG(LogTemp, Error,
+				TEXT("[TurnManager] Skipping living enemy %s: Pawn=%s Controller=%s (UnitAIController required)."),
+				*GetNameSafe(Unit), *GetNameSafe(Pawn),
+				*GetNameSafe(Pawn ? Pawn->GetController() : nullptr));
 		}
 		++EnemyTurnIndex;
 	}

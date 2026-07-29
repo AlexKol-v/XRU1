@@ -75,6 +75,9 @@ public:
 		const FGameplayTagContainer* SourceTags,
 		const FGameplayTagContainer* TargetTags,
 		FGameplayTagContainer* OptionalRelevantTags) const override;
+
+protected:
+	virtual void OnBuffActivated() override;
 };
 
 /**
@@ -90,6 +93,9 @@ class XRU1_API UGA_Taunt : public UGA_SelfBuffUntilNextTurn
 
 public:
 	UGA_Taunt();
+
+protected:
+	virtual void OnBuffActivated() override;
 };
 
 /**

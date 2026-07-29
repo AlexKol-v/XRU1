@@ -9,16 +9,15 @@ class UStaticMeshComponent;
 class USphereComponent;
 class UWidgetComponent;
 class UUserWidget;
+class UTacticalScenarioDataAsset;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnPOIHoverChanged, bool, bHovered);
 
 /**
  * Точка интереса на 3D-карте хаба (обучение / боевая миссия). При наведении
- * курсора показывает попап с информацией о миссии; по клику — грузит связанный
- * уровень. Упрощённая mission-select точка на замену AQuestWaypoint из донора.
- *
- * Каркас: визуал + hover-попап + метаданные миссии заложены; фактическая загрузка
- * уровня и интеграция с прогрессом кампании (UTacticsSaveGame) — точки расширения.
+ * курсора показывает попап с информацией о миссии; по клику запускает Scenario
+ * общей боевой карты (либо legacy level fallback) и сохраняет выбор в кампании.
+ * Упрощённая mission-select точка на замену AQuestWaypoint из донора.
  */
 UCLASS(Blueprintable)
 class XRU1_API AMissionPointOfInterest : public AActor
@@ -47,7 +46,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|POI", meta = (MultiLine = true))
 	FText Description;
 
-	/** Уровень, загружаемый по выбору точки (soft-ссылка). */
+	/**
+	 * Сценарий общей карты. Если назначен, POI вызывает
+	 * UTacticsGameInstance::StartCombatScenario и не открывает LevelToLoad напрямую.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|POI")
+	TObjectPtr<UTacticalScenarioDataAsset> Scenario;
+
+	/** Legacy fallback для старых POI без Scenario Data Asset. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|POI", meta = (AllowedTypes = "World"))
 	TSoftObjectPtr<UWorld> LevelToLoad;
 

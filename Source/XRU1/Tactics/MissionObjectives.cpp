@@ -1,8 +1,34 @@
 #include "MissionObjectives.h"
 #include "UnitBase.h"
 #include "ActionPointsComponent.h"
+#include "TacticalQuestEvents.h"
 #include "TacticsCombatStatics.h"
+#include "TurnManagerSubsystem.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/World.h"
+
+namespace
+{
+	bool IsRegisteredPlayerUnit(const AUnitBase* Unit)
+	{
+		const UWorld* World = Unit ? Unit->GetWorld() : nullptr;
+		const UTurnManagerSubsystem* TurnManager = World
+			? World->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
+		if (!TurnManager || TurnManager->GetCurrentPhase() != ETurnPhase::Player)
+		{
+			return false;
+		}
+
+		for (const AActor* PlayerUnit : TurnManager->GetPlayerSideUnits())
+		{
+			if (PlayerUnit == Unit)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+}
 
 // --- ABombObjective -----------------------------------------------------------
 
@@ -19,7 +45,8 @@ ABombObjective::ABombObjective()
 
 bool ABombObjective::CanDefuse(const AUnitBase* Unit) const
 {
-	if (bDisarmed || !Unit || !UTacticsCombatStatics::IsUnitAlive(Unit))
+	if (bDisarmed || !Unit || !UTacticsCombatStatics::IsUnitAlive(Unit) ||
+		!IsRegisteredPlayerUnit(Unit))
 	{
 		return false;
 	}
@@ -41,16 +68,24 @@ bool ABombObjective::TryDefuse(AUnitBase* Unit)
 		return false;
 	}
 
-	Unit->GetActionPoints()->TrySpendActionPoint();
+	if (!Unit->GetActionPoints()->TrySpendActionPoint())
+	{
+		return false;
+	}
 	++DefuseProgress;
 
 	const bool bComplete = DefuseProgress >= RequiredActions;
+	bDisarmed = bComplete;
 	OnDefuseProgress.Broadcast(DefuseProgress, RequiredActions);
 	OnDefuseStep(Unit, bComplete);
+	UTacticalQuestEvents::BroadcastQuestEvent(this,
+		bComplete
+			? TacticalQuestTags::Event_Tactical_Objective_Defuse_Completed
+			: TacticalQuestTags::Event_Tactical_Objective_Defuse_Progressed,
+		Unit);
 
 	if (bComplete)
 	{
-		bDisarmed = true;
 		OnDisarmed.Broadcast();
 	}
 	return true;
@@ -92,7 +127,8 @@ bool AEvacZone::IsUnitInside(const AUnitBase* Unit) const
 
 bool AEvacZone::CanEvacuate(const AUnitBase* Unit) const
 {
-	if (!bActive || !Unit || !UTacticsCombatStatics::IsUnitAlive(Unit) || !IsUnitInside(Unit))
+	if (!bActive || !Unit || !UTacticsCombatStatics::IsUnitAlive(Unit) ||
+		!IsRegisteredPlayerUnit(Unit) || !IsUnitInside(Unit))
 	{
 		return false;
 	}
@@ -107,8 +143,17 @@ bool AEvacZone::TryEvacuate(AUnitBase* Unit)
 		return false;
 	}
 
-	Unit->GetActionPoints()->TrySpendActionPoint();
+	if (!Unit->GetActionPoints()->TrySpendActionPoint())
+	{
+		return false;
+	}
 	Unit->Evacuate();
+	if (!Unit->IsEvacuated())
+	{
+		return false;
+	}
+	UTacticalQuestEvents::BroadcastQuestEvent(
+		this, TacticalQuestTags::Event_Tactical_Objective_Evac_Unit, Unit);
 	OnUnitEvacuated.Broadcast(Unit);
 	return true;
 }

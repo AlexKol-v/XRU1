@@ -21,9 +21,10 @@
 
 Язык имён ассетов — английский. Тексты игрока — русские, в виджетах/DataAsset.
 
-## 2. Структура Content/ 
+## 2. Структура Content/
 
-Весь новый контент — ТОЛЬКО в `Content/XRU1Game/<Core|UI|Units|Maps|Input|Data|Audio|FX>`
+Весь новый контент — ТОЛЬКО в
+`Content/XRU1Game/<Core|UI|Units|Maps|Input|Data|Tactics|AI|Quests|Audio|FX>`
 (см. 05_EDITOR_GUIDE §1). Сторонние паки — в `Content/ThirdParty/<PackName>/`,
 внутри пака ничего не переименовывать (проще обновлять). Перенесённые из донора
 папки (`Characters/`, `MWLandscapeAutoMaterial/`, `TopDown/`) не трогаем.
@@ -38,8 +39,16 @@
 - Боевые способности — наследники `UTacticalAbility`; урон — только через
   `UTacticsCombatStatics::ResolveShot`; теги — из `TacticsGameplayTags`
   (native), новые теги добавлять туда же.
+- Quest ID и `Quest.Event.*`, используемые C++, — native gameplay tags.
+  Content-only `Quest.Objective.*` хранятся в `DefaultGameplayTags.ini`, а их
+  полный буквальный список дублируется в scenario-документе для Editor-сборки.
 - GE-компоненты в конструкторе CDO — только `CreateDefaultSubobject` +
   `GEComponents.Add` (НЕ `FindOrAddComponent` — фатал на старте редактора).
+- У `EditInlineNew`/`Instanced`-элемента категории его редактируемых полей
+  **не должны совпадать или быть родителем категории содержащего свойства**.
+  Например, массив `Tactics|AI|Actions`, а поля элемента — отдельная плоская
+  категория `Evaluator`; иначе `PropertyEditor` может уйти в рекурсивный
+  Details layout и упасть с `EXCEPTION_STACK_OVERFLOW`.
 - Никакой репликации/сетевого кода — проект одиночный.
 
 ## 4. Стиль Blueprints

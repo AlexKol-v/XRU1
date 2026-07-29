@@ -8,6 +8,7 @@
 class UTacticsSaveGame;
 class UTacticalHUDStyleData;
 class UCoverTuningDataAsset;
+class UTacticalScenarioDataAsset;
 
 /**
  * GameInstance проекта: владеет текущим слотом кампании (UTacticsSaveGame) и
@@ -52,6 +53,21 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Levels", meta = (AllowedTypes = "World"))
 	TSoftObjectPtr<UWorld> MainMenuLevel;
 
+	/**
+	 * Единственная физическая карта для Tutorial и Mission01. Различия запуска
+	 * находятся в UTacticalScenarioDataAsset, а не в дубликатах уровня.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Levels", meta = (AllowedTypes = "World"))
+	TSoftObjectPtr<UWorld> SharedCombatLevel;
+
+	/** Конфигурация текущего запуска общей боевой карты; живёт между OpenLevel. */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Tactics|Scenario")
+	TObjectPtr<UTacticalScenarioDataAsset> ActiveScenario;
+
+	/** Монотонное поколение запуска: late callback старого World не относится к новому run. */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Tactics|Scenario")
+	int32 ActiveScenarioRunId = 0;
+
 	/** Текущий загруженный/активный слот кампании (в памяти). */
 	UPROPERTY(BlueprintReadOnly, Category = "Tactics|Save")
 	TObjectPtr<UTacticsSaveGame> CurrentSave;
@@ -79,4 +95,18 @@ public:
 	/** Возвращает игрока на уровень главного меню (из паузы / после миссии). */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Levels")
 	void TravelToMainMenu();
+
+	/** Выбирает Tutorial/Mission01 и открывает одну SharedCombatLevel. */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Scenario")
+	bool StartCombatScenario(UTacticalScenarioDataAsset* Scenario);
+
+	/** Чистый retry текущего Scenario через тот же bootstrap и новый RunId. */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Scenario")
+	bool RestartActiveScenario();
+
+	UFUNCTION(BlueprintPure, Category = "Tactics|Scenario")
+	UTacticalScenarioDataAsset* GetActiveScenario() const { return ActiveScenario; }
+
+	UFUNCTION(BlueprintPure, Category = "Tactics|Scenario")
+	int32 GetActiveScenarioRunId() const { return ActiveScenarioRunId; }
 };

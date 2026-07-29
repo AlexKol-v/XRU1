@@ -140,6 +140,14 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Quest")
     void AbandonQuest(FGameplayTag QuestId);
 
+    /**
+     * Полностью очищает runtime-прогресс и возвращает квест в Inactive.
+     * Используется новым запуском scenario/retry; уже выданные campaign rewards
+     * не откатывает — их идемпотентность остаётся обязанностью кампании.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Quest")
+    bool ResetQuestRuntime(FGameplayTag QuestId);
+
     /** Собирает сводку данных квеста для отображения в UI. */
     UFUNCTION(BlueprintPure, Category = "Quest")
     FQuestDisplayData GetQuestDisplayData(FGameplayTag QuestId) const;

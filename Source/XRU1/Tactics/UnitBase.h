@@ -78,7 +78,7 @@ public:
 	 * только на точность у part оружия (что мы сознательно не моделируем, см.
 	 * GDD §5.4). Поэтому значение здесь — щедрый technical cap, заведомо больше
 	 * всех радиусов зрения/тревоги в бою (SquadVisionRange=2500,
-	 * AI SightRadius=1400..1600, TauntPriorityRadius=1200), чтобы реальным
+	 * AI SightRadius=1400..1600, TauntPriorityRadius=2500), чтобы реальным
 	 * ограничителем почти всегда была линия видимости, а не число дальности.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactics|Stats", meta = (ClampMin = "0"))
@@ -268,6 +268,13 @@ public:
 	/** Идёт ли сейчас плавный доворот на месте (для BP-логики и отладки). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Visual")
 	bool IsTurningInPlace() const { return bTurningInPlace; }
+
+	/**
+	 * PathFollowing уже завершился, но финальная поза после движения ещё нет:
+	 * юнит делает короткий подшаг к укрытию и/или доворачивается к стене.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Visual")
+	bool IsMoveSettlementInProgress() const { return bCoverHugStepping || bTurningInPlace; }
 
 	/** Максимальный подтяг к стене при `HugCover` (см). 0 — только разворот. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Visual", meta = (ClampMin = "0"))

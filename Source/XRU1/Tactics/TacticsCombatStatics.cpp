@@ -7,6 +7,7 @@
 #include "UnitBase.h"
 #include "UnitAIController.h"
 #include "TacticalPlayerController.h"
+#include "TacticalQuestEvents.h"
 #include "TDCombatant.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemGlobals.h"
@@ -219,6 +220,17 @@ bool UTacticsCombatStatics::ResolveShotMechanics(AActor* Shooter, AActor* Target
 
 	// Выстрел слышно: враги стрелка поблизости поднимают тревогу (XCOM yellow alert).
 	NotifyCombatNoise(Shooter, ShotOrigin);
+
+	// Общий shot pipeline — единственное место, где любой normal/squadsight/
+	// overwatch outcome может превратить живого врага в устранённого. Сам тип
+	// атаки публикует transaction owner; здесь шлём только отдельный факт kill.
+	if (bHit && AreHostile(Shooter, Target) && !IsUnitAlive(Target) &&
+		!IsUnitDowned(Target) &&
+		UTacticalQuestEvents::IsPlayerSideUnit(Shooter, Shooter))
+	{
+		UTacticalQuestEvents::BroadcastQuestEvent(Shooter,
+			TacticalQuestTags::Event_Tactical_Combat_Enemy_Eliminated, Shooter);
+	}
 
 	return bHit;
 }

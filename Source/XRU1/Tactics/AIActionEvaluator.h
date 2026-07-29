@@ -9,7 +9,7 @@
 /**
  * ОДИН ВАРИАНТ ДЕЙСТВИЯ AI: оценивает сам себя и сам заполняет решение.
  *
- * Почему объект, а не ветка в StepCombat (ADR-1 в docs/13_AI_STATE_MACHINE_PLAN.md):
+ * Почему объект, а не ветка в StepCombat (см. docs/08_AI.md):
  * новое поведение (граната, перезарядка, подавление) добавляется НАСЛЕДНИКОМ и
  * записью в набор — существующие оценщики при этом не правятся вообще. В
  * стейт-машине то же изменение потребовало бы переходов из каждого состояния и
@@ -23,6 +23,10 @@
  * дизайнеру понадобится свой оценщик в BP — достаточно пометить два метода
  * BlueprintNativeEvent, вызовы не меняются.
  */
+// ВАЖНО: категории редактируемых полей этого EditInlineNew-объекта не должны
+// совпадать с категорией содержащего Instanced-массива (Tactics|AI|Actions).
+// Иначе PropertyEditor рекурсивно вкладывает один layout в другой и падает со
+// stack overflow при открытии Class Defaults BP-контроллера.
 UCLASS(Abstract, EditInlineNew, DefaultToInstanced, BlueprintType)
 class XRU1_API UAIActionEvaluator : public UObject
 {
@@ -34,18 +38,18 @@ public:
 	 * вариант, не удаляя его из набора (удобно для отладки: «а если он не будет
 	 * отступать?»).
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|AI", meta = (ClampMin = "0"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Evaluator", meta = (ClampMin = "0"))
 	float Weight = 1.f;
 
 	/**
 	 * Базовый приоритет варианта. Здесь он же — ВЕРХНЯЯ ГРАНИЦА скора (см.
 	 * GetMaxPossibleScore): по ней работает отсечение перебора.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|AI")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Evaluator")
 	float BasePriority = 0.f;
 
 	/** Имя для лога `xru1.AI.LogCombat`. Пусто — берётся имя класса. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|AI")
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Evaluator")
 	FName DebugName;
 
 	/**
@@ -58,8 +62,9 @@ public:
 	 * Оценка варианта и заполнение решения. Возвращает скор ДО умножения на
 	 * Weight (умножает вызывающий) либо отрицательное число — «нельзя».
 	 *
-	 * ⚠️ КОНТРАКТ: возвращаемое значение не должно превышать BasePriority,
-	 * иначе отсечение по верхней границе начнёт терять лучшие варианты.
+	 * ⚠️ КОНТРАКТ: возвращаемое значение не должно превышать
+	 * GetMaxPossibleScore()/Weight. Оценщик с отдельным настраиваемым потолком
+	 * обязан переопределить GetMaxPossibleScore().
 	 */
 	virtual float ScoreAction(const FAIDecisionContext& Context, FAIDecision& OutDecision) const
 	{

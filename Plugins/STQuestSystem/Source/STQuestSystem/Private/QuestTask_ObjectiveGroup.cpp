@@ -92,7 +92,11 @@ EStateTreeRunStatus FQuestTask_ObjectiveGroup::Tick(FStateTreeExecutionContext& 
     {
         for (int32 Index = 0; Index < Inst.Objectives.Num(); ++Index)
         {
-            if (Event.Tag.MatchesTag(Inst.Objectives[Index].EventChannel))
+            const FQuestObjectiveSpec& Spec = Inst.Objectives[Index];
+            const bool bMatches = Spec.bRequireExactChannel
+                ? Event.Tag == Spec.EventChannel
+                : Event.Tag.MatchesTag(Spec.EventChannel);
+            if (bMatches)
             {
                 ++Inst.Counts[Index];
             }

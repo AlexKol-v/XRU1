@@ -2,10 +2,14 @@
 #include "UnitBase.h"
 #include "MissionObjectives.h"
 #include "TacticalPlayerController.h"
+#include "TacticalQuestEvents.h"
+#include "TacticalScenarioDataAsset.h"
+#include "TacticalScenarioDirector.h"
 #include "TurnManagerSubsystem.h"
 #include "TacticsGameInstance.h"
 #include "TacticsSaveGame.h"
 #include "TacticsCombatStatics.h"
+#include "UnitAIController.h"
 #include "TDAttributeSet.h"
 #include "GameUIManagerSubsystem.h"
 #include "PrimaryGameLayout.h"
@@ -13,6 +17,7 @@
 #include "AbilitySystemComponent.h"
 #include "EngineUtils.h"
 #include "Engine/World.h"
+#include "GameFramework/Pawn.h"
 #include "TimerManager.h"
 
 ATacticsGameMode::ATacticsGameMode()
@@ -29,26 +34,36 @@ void ATacticsGameMode::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// Цели миссии: бомбы и зоны эвакуации подписываем до старта боя.
-	for (TActorIterator<ABombObjective> It(GetWorld()); It; ++It)
-	{
-		It->OnDisarmed.AddDynamic(this, &ATacticsGameMode::HandleBombDisarmed);
-	}
-	for (TActorIterator<AEvacZone> It(GetWorld()); It; ++It)
-	{
-		It->OnUnitEvacuated.AddDynamic(this, &ATacticsGameMode::HandleUnitEvacuated);
-	}
-
 	if (UTurnManagerSubsystem* TurnManager = GetWorld()->GetSubsystem<UTurnManagerSubsystem>())
 	{
-		TurnManager->OnCombatEnded.AddDynamic(this, &ATacticsGameMode::HandleCombatEnded);
-		TurnManager->OnTurnLimitExpired.AddDynamic(this, &ATacticsGameMode::HandleTurnLimitExpired);
+		TurnManager->OnCombatEnded.AddUniqueDynamic(this, &ATacticsGameMode::HandleCombatEnded);
+		TurnManager->OnTurnLimitExpired.AddUniqueDynamic(this, &ATacticsGameMode::HandleTurnLimitExpired);
 	}
 
-	// Боевой HUD — на слой Game корневого лейаута (лейаут создаёт контроллер).
-	// Отложенный старт: даём юнитам/навмешу закончить BeginPlay.
+	// Scenario-run стартует только из Director после OnLevelShown: в BeginPlay
+	// scenario actors ещё могут отсутствовать. Прямой PIE старых карт сохраняет
+	// прежний delayed-start без обязательного Scenario Data Asset.
+	const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>();
+	if (GameInstance && GameInstance->GetActiveScenario())
+	{
+		UE_LOG(LogTemp, Log, TEXT("[GameMode] Ожидаю готовности scenario sublevel"));
+		return;
+	}
+
 	GetWorld()->GetTimerManager().SetTimer(StartCombatTimerHandle, this,
 		&ATacticsGameMode::StartMissionCombat, FMath::Max(0.05f, CombatStartDelay), false);
+}
+
+bool ATacticsGameMode::StartScenarioCombat()
+{
+	if (bCombatStarted)
+	{
+		return true;
+	}
+
+	GetWorldTimerManager().ClearTimer(StartCombatTimerHandle);
+	StartMissionCombat();
+	return bCombatStarted;
 }
 
 EDifficultyLevel ATacticsGameMode::ResolveDifficulty() const
@@ -87,14 +102,40 @@ void ATacticsGameMode::ApplyDifficultyToEnemy(AUnitBase* Enemy, const FTacticsDi
 
 void ATacticsGameMode::StartMissionCombat()
 {
+	if (bCombatStarted)
+	{
+		return;
+	}
+
 	UTurnManagerSubsystem* TurnManager = GetWorld()->GetSubsystem<UTurnManagerSubsystem>();
 	if (!TurnManager)
 	{
 		return;
 	}
 
+	// Эти actors могут жить в streamed sublevel, поэтому подписываемся только
+	// на подтверждённой границе готовности сценария, а не в BeginPlay persistent.
+	for (TActorIterator<ABombObjective> It(GetWorld()); It; ++It)
+	{
+		It->OnDisarmed.AddUniqueDynamic(this, &ATacticsGameMode::HandleBombDisarmed);
+	}
+	for (TActorIterator<AEvacZone> It(GetWorld()); It; ++It)
+	{
+		It->OnUnitEvacuated.AddUniqueDynamic(this, &ATacticsGameMode::HandleUnitEvacuated);
+	}
+
 	const EDifficultyLevel Difficulty = ResolveDifficulty();
 	const FTacticsDifficultyParams* Params = DifficultyParams.Find(Difficulty);
+	const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>();
+	const UTacticalScenarioDataAsset* Scenario = GameInstance
+		? GameInstance->GetActiveScenario() : nullptr;
+	const bool bApplyMissionDifficulty = !Scenario ||
+		Scenario->Kind == ETacticalScenarioKind::Mission;
+	const FTacticsDifficultyParams* AppliedParams = bApplyMissionDifficulty ? Params : nullptr;
+	if (Scenario)
+	{
+		MissionId = Scenario->ScenarioId;
+	}
 	if (!Params)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[GameMode] У %s нет FTacticsDifficultyParams для сложности %d — ")
@@ -117,13 +158,40 @@ void ATacticsGameMode::StartMissionCombat()
 		}
 		else if (TeamId == TacticsTeamIds::Enemy)
 		{
-			if (Params)
+			// Размещённый экземпляр врага может сохранить старое значение Auto Possess AI
+			// после смены класса контроллера в BP. Не кладём такого юнита в очередь молча:
+			// SpawnDefaultController использует настроенный на юните класс, в том числе
+			// BP_AIController_Marauder.
+			APawn* EnemyPawn = Cast<APawn>(Unit);
+			if (EnemyPawn && !EnemyPawn->GetController())
 			{
-				ApplyDifficultyToEnemy(Unit, *Params);
+				EnemyPawn->SpawnDefaultController();
+			}
+
+			const AUnitAIController* EnemyAI = EnemyPawn
+				? Cast<AUnitAIController>(EnemyPawn->GetController()) : nullptr;
+			if (!EnemyAI)
+			{
+				UE_LOG(LogTemp, Error,
+					TEXT("[CombatStart] Enemy %s has no UnitAIController (Controller=%s). Its turn will be skipped."),
+					*GetNameSafe(Unit), *GetNameSafe(EnemyPawn ? EnemyPawn->GetController() : nullptr));
+			}
+
+			if (AppliedParams)
+			{
+				ApplyDifficultyToEnemy(Unit, *AppliedParams);
 			}
 			Enemies.Add(Unit);
 		}
+		else
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[CombatStart] Tactical unit %s ignored: TeamId=%u (expected Player=%u or Enemy=%u)."),
+				*GetNameSafe(Unit), TeamId, TacticsTeamIds::Player, TacticsTeamIds::Enemy);
+		}
 	}
+	UE_LOG(LogTemp, Log, TEXT("[CombatStart] Registered players=%d enemies=%d"),
+		Players.Num(), Enemies.Num());
 
 	// Таймер бомбы включаем только там, где есть заряд.
 	bool bHasBomb = false;
@@ -132,11 +200,17 @@ void ATacticsGameMode::StartMissionCombat()
 		bHasBomb = true;
 		break;
 	}
-	TurnManager->SetTurnLimit(bHasBomb && Params ? Params->TurnLimit : 0);
+	int32 ResolvedTurnLimit = bHasBomb && AppliedParams ? AppliedParams->TurnLimit : 0;
+	if (Scenario && Scenario->TurnLimit >= 0)
+	{
+		ResolvedTurnLimit = Scenario->TurnLimit;
+	}
+	TurnManager->SetTurnLimit(ResolvedTurnLimit);
 	// A8: лимит одновременно атакующих врагов — из того же пресета сложности.
-	TurnManager->SetMaxAttackersPerTurn(Params ? Params->MaxAttackersPerTurn : -1);
+	TurnManager->SetMaxAttackersPerTurn(AppliedParams ? AppliedParams->MaxAttackersPerTurn : -1);
 	TurnManager->bAutoWinWhenEnemiesDead = bWinWhenAllEnemiesDead && !bHasBomb;
 
+	bCombatStarted = true;
 	TurnManager->StartCombat(Players, Enemies);
 
 	// HUD пушим после старта (лейаут игрока уже создан его контроллером).
@@ -180,12 +254,27 @@ void ATacticsGameMode::HandleBombDisarmed()
 
 void ATacticsGameMode::HandleUnitEvacuated(AUnitBase* /*Unit*/)
 {
-	if (AreAllLivingPlayersEvacuated())
+	if (AreAllLivingPlayersEvacuated() && !bSquadEvacuationPending)
 	{
-		if (UTurnManagerSubsystem* TurnManager = GetWorld()->GetSubsystem<UTurnManagerSubsystem>())
-		{
-			TurnManager->EndCombat(true);
-		}
+		bSquadEvacuationPending = true;
+		SquadEvacuationTimerHandle = GetWorldTimerManager().SetTimerForNextTick(
+			this, &ATacticsGameMode::CompleteSquadEvacuation);
+	}
+}
+
+void ATacticsGameMode::CompleteSquadEvacuation()
+{
+	bSquadEvacuationPending = false;
+	if (!AreAllLivingPlayersEvacuated())
+	{
+		return;
+	}
+
+	UTacticalQuestEvents::BroadcastQuestEvent(
+		this, TacticalQuestTags::Event_Tactical_Objective_Evac_Squad, this);
+	if (UTurnManagerSubsystem* TurnManager = GetWorld()->GetSubsystem<UTurnManagerSubsystem>())
+	{
+		TurnManager->EndCombat(true);
 	}
 }
 
@@ -220,6 +309,86 @@ void ATacticsGameMode::HandleTurnLimitExpired()
 
 void ATacticsGameMode::HandleCombatEnded(bool bPlayerWon)
 {
+	// Scenario run обязан иметь ровно один Director текущего поколения. Legacy
+	// direct PIE без ActiveScenario сохраняет прежний синхронный result path.
+	const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>();
+	if (GameInstance && GameInstance->GetActiveScenario())
+	{
+		ATacticalScenarioDirector* CurrentDirector = nullptr;
+		int32 DirectorCount = 0;
+		for (TActorIterator<ATacticalScenarioDirector> It(GetWorld()); It; ++It)
+		{
+			if (It->IsCurrentScenarioRun())
+			{
+				CurrentDirector = *It;
+				++DirectorCount;
+			}
+		}
+
+		if (DirectorCount != 1 || !CurrentDirector)
+		{
+			UE_LOG(LogTemp, Error, TEXT("[GameMode] Для run %d найдено ScenarioDirector: %d; "
+				"save/result остановлены"), GameInstance->GetActiveScenarioRunId(), DirectorCount);
+			return;
+		}
+		if (!CurrentDirector->FinalizeConfiguredScenario(bPlayerWon))
+		{
+			UE_LOG(LogTemp, Error, TEXT("[GameMode] ScenarioDirector отклонил terminal request; "
+				"save/result остановлены"));
+			return;
+		}
+
+		bCombatResultPending = true;
+		bPendingPlayerWon = bPlayerWon;
+		PendingScenarioDirector = CurrentDirector;
+		ScenarioFinalizationDeadline = GetWorld()->GetTimeSeconds() + 3.0;
+		ScenarioFinalizationTimerHandle = GetWorldTimerManager().SetTimerForNextTick(
+			this, &ATacticsGameMode::PollScenarioFinalization);
+		return;
+	}
+
+	CompleteCombatResult(bPlayerWon);
+}
+
+void ATacticsGameMode::PollScenarioFinalization()
+{
+	if (!bCombatResultPending)
+	{
+		return;
+	}
+
+	ATacticalScenarioDirector* Director = PendingScenarioDirector.Get();
+	if (!Director || !Director->IsCurrentScenarioRun())
+	{
+		UE_LOG(LogTemp, Error, TEXT("[GameMode] ScenarioDirector потерян до terminal confirmation"));
+		bCombatResultPending = false;
+		return;
+	}
+
+	if (Director->IsScenarioFinalized())
+	{
+		const bool bPlayerWon = bPendingPlayerWon;
+		bCombatResultPending = false;
+		PendingScenarioDirector.Reset();
+		CompleteCombatResult(bPlayerWon);
+		return;
+	}
+
+	if (GetWorld()->GetTimeSeconds() >= ScenarioFinalizationDeadline)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[GameMode] Quest не подтвердил terminal state за 3 секунды; "
+			"save/result остановлены"));
+		bCombatResultPending = false;
+		return;
+	}
+
+	ScenarioFinalizationTimerHandle = GetWorldTimerManager().SetTimerForNextTick(
+		this, &ATacticsGameMode::PollScenarioFinalization);
+}
+
+void ATacticsGameMode::CompleteCombatResult(bool bPlayerWon)
+{
+
 	// Прогресс кампании: победа записывает миссию в сейв.
 	if (bPlayerWon && MissionId != NAME_None)
 	{

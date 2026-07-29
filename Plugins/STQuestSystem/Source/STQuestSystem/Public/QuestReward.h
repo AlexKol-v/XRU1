@@ -16,6 +16,9 @@ class UGameplayEffect;
  * определение квеста хранит собственные экземпляры наград. Выдача награды —
  * через GrantTo; реализация переопределяется в C++ или в Blueprints.
  */
+// Поля inline-награды используют отдельную категорию Reward. Категория Quest
+// уже принадлежит содержащему массиву UQuestDefinition::Rewards; совпадение
+// категорий создаёт рекурсивный Details layout в PropertyEditor.
 UCLASS(Abstract, Blueprintable, EditInlineNew, DefaultToInstanced)
 class STQUESTSYSTEM_API UQuestReward : public UObject
 {
@@ -36,11 +39,11 @@ class STQUESTSYSTEM_API UQuestReward_Item : public UQuestReward
 
 public:
     /** Класс актора-предмета, выдаваемого получателю. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Quest")
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reward")
     TSubclassOf<AActor> ItemActorClass;
 
     /** Количество выдаваемых экземпляров. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Quest", meta = (ClampMin = "1"))
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reward", meta = (ClampMin = "1"))
     int32 Quantity = 1;
 
     virtual void GrantTo_Implementation(AActor* Recipient) override;
@@ -54,11 +57,11 @@ class STQUESTSYSTEM_API UQuestReward_GameplayEffect : public UQuestReward
 
 public:
     /** Эффект, применяемый к ASC получателя. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Quest")
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reward")
     TSubclassOf<UGameplayEffect> EffectClass;
 
     /** Уровень применяемого эффекта. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Quest")
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reward")
     float EffectLevel = 1.f;
 
     virtual void GrantTo_Implementation(AActor* Recipient) override;
@@ -72,7 +75,7 @@ class STQUESTSYSTEM_API UQuestReward_UnlockQuest : public UQuestReward
 
 public:
     /** Квест, открываемый этой наградой. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Quest")
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reward")
     FGameplayTag QuestToUnlock;
 
     virtual void GrantTo_Implementation(AActor* Recipient) override;
@@ -86,7 +89,7 @@ class STQUESTSYSTEM_API UQuestReward_GameplayTag : public UQuestReward
 
 public:
     /** Теги, добавляемые получателю как loose-теги. */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Quest")
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reward")
     FGameplayTagContainer TagsToGrant;
 
     virtual void GrantTo_Implementation(AActor* Recipient) override;

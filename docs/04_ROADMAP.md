@@ -1,349 +1,167 @@
-# Роадмап реализации (этапы 0–9)
+# Актуальный roadmap XRU1
 
-Порядок: **сначала добить C++ (этап 1), потом контент в редакторе** — как
-договорились. Каждый этап самодостаточен: цель, задачи, критерий готовности
-(DoD). Отмечай чекбоксы. Агенту достаточно сказать: «делаем этап N».
+Обновлено 2026-07-29. Здесь только открытая работа. Закрытые этапы не хранятся
+как многосотстрочные чек-листы: их результат зафиксирован кратко в разделе 1 и
+в тематических документах.
 
-Оценки грубые, в рабочих сессиях (1 сессия ≈ вечер работы с агентом).
+## 1. Готовая база
 
----
+Считаются завершёнными:
 
-## Этап 0 — Гигиена проекта ✅
+- C++ тактическое ядро, GAS-способности, AP и ход сторон;
+- player/enemy movement на общей маршрутизации;
+- Half/Full cover, LOS, flanking, firing positions и occupancy;
+- анимации locomotion/cover/peek/StepOut/fire/HitReact/death;
+- синхронизация выстрела через montage `FireCommit`;
+- разные модели оружия для четырёх классов;
+- функциональное ядро HUD и базовая камера;
+- AI-профиль DataAsset и воспроизводимый seed, не зависящий от FPS;
+- F0 тумана: единый gameplay visibility, безопасные preview/enemy-count API;
+- C++-каркас общей карты: scenario DataAsset, GameInstance routing,
+  ScenarioDirector, quest-event bridge и tactical quest zone.
 
-- [x] Git + LFS настроены, донор read-only, сборка `.\Build-XRU1.ps1`
-- [x] Боевое ядро C++ (AP, укрытия, overwatch, ход AI, меню-каркас) — см. 03_CODE_OVERVIEW
-- [x] Пакет документации docs/
-- [x] В `DefaultEngine.ini` прописаны `BP_TacticsGameInstance` и
-  `CommonGameViewportClient`; настройки уже подхвачены после build/restart
-  Editor (2026-07-22)
-- [ ] **Чистка шаблона — ОТЛОЖЕНА до этапа 3** (когда будет L_MainMenu+GM_MainMenu):
-  `XRU1Character/GameMode/PlayerController` завязаны на конфиги
-  (`DefaultEngine.ini` ActiveClassRedirects, `DefaultGame.ini`) и служат
-  fallback-GameMode текущей дефолт-карты `Lvl_TopDown`. Мой тактический код на
-  них НЕ ссылается. Удалять только ПОСЛЕ переключения Default Map на L_MainMenu
-  (иначе проект не запустится), вместе с чисткой их секций в Config/.
+Старые PIE-матрицы закрыты. Если проявится регрессия, она становится отдельным
+багом с воспроизводимым сценарием, а не возвращает весь этап в работу.
 
-## Этап 1 — Достройка C++ ядра (P0+P1) ✅ (2026-07-14)
+## 2. Текущий этап — два сценария одной карты
 
-Реализовано и собрано (`Result: Succeeded`, CDO не крашат редактор):
+Целевая карта: `/Game/US_Military/Levels/Showreel_Scene`.
 
-- [x] `ATacticalCameraPawn` (панорама/поворот 45°/зум с интерполяцией)
-- [x] `ATacticalPlayerController` (выбор ЛКМ/1–4/Tab, движение ПКМ, атака по
-  клику, контекст F, хоткеи, режим цели медика, пауза, блокировка чужой фазы)
-- [x] **Зона хода по навмешу** (`AMoveRangeVisualizer`): заливка полигонов
-  Recast по стоимости пути (`FindPolysAroundCircle`+cost-фильтр), 1 AP + 2 AP;
-  валидация приказа по `GetNavPathLength`
-- [x] `UGA_Attack` (+Squadsight −10) + `bConsumesAllRemainingAP`/`MaxUsesPerMission`
-  в `UTacticalAbility`
-- [x] Способности классов: `UGA_HunkerDown`/`UGA_Heal`/`UGA_RunAndGun`/`UGA_Taunt`
-  (P1 подтянут в этот этап)
-- [x] Смерть/Downed/эвакуация в `AUnitBase` + `SetDowned`/`ReviveFromDowned`/`Evacuate`
-- [x] `ATacticsGameMode` (сбор сторон по TeamId, сложность, бомба→эвакуация→
-  победа, результат→сейв)
-- [x] `ABombObjective` + `AEvacZone` + таймер ходов в TurnManager
-- [x] AI-тревога XCOM: Patrol/Investigate/Combat (`AUnitAIController`)
-- [x] C++ базы `UTacticalHUDWidget`, `UMissionResultWidget`; POI-гейт по обучению
-- [x] 03_CODE_OVERVIEW актуализирован
+Фактическая база карты:
 
-**Основной программный каркас этапа готов**, но это не означает, что осталась
-только редакторская сборка или P2. Помимо BP/уровней обязательны C++-исправления
-укрытий, firing positions/peek и AI из `09_GAMEPLAY_STATUS.md` §B.2–B.3 /
-`11_COVER_AND_ENEMY_PLAN.md`; остальной общий беклог — `03_CODE_OVERVIEW.md` §3.
+- `WorldSettings.DefaultGameMode = GM_Tactics`;
+- есть `NavMeshBoundsVolume` и `RecastNavMesh`;
+- добавлен `PlayerStart_Tutorial` рядом с текущим отрядом;
+- стоят `BP_Unit_Marauder` и `BP_Unit_Sniper`; это пока тестовый состав, не
+  финальная постановка секций A–D.
 
-## Этап 2 — Ассеты: Fab + GASP + генерация — ~1–2 сессии (ручная)
+Архитектура и полный Editor-план —
+[11_SHARED_MAP_TUTORIAL.md](11_SHARED_MAP_TUTORIAL.md).
 
-### 2A. Fab (бесплатное; проверено поиском 2026-07)
+- [x] Нативный bootstrap: Scenario Data Asset, shared travel, Director,
+      stream-ready `StartScenarioCombat`, POI routing, quest reset/retry и
+      единая terminal-финализация до save/result.
+- [x] Quest registry, native `Quest.Event.Tactical.*` и confirmed hooks для
+      turn/player combat/class abilities/objectives/scenario result.
+- [x] Exact-match для одиночных/group objectives, terminal
+      `Quest Wait Outcome` и config-теги `Quest.Objective.*`.
+- [ ] Оставить общий арт/NavMesh/light/camera bounds в persistent
+      `Showreel_Scene`; создать `SL_Showreel_Tutorial` и
+      `SL_Showreel_Mission01`.
+- [ ] Создать `DA_Scenario_Tutorial` и `DA_Scenario_Mission01`; оба открывают
+      `SharedCombatLevel`, но выбирают разные sublevel/quest/fog profile.
+- [ ] Создать `BP_TacticalScenarioDirector`, загрузить ровно один sublevel и
+      после `On Level Loaded` вызвать `StartConfiguredQuest`.
+- [ ] Создать `ST_Quest_Tutorial` и `DA_Quest_Tutorial`;
+      собрать A1–A9, B1–B5, C1–C2, D1–D3 без Level Blueprint.
+- [ ] Подключить события только в authoritative completion hooks и сделать
+      отдельный action gate текущего шага.
+- [ ] Расставить squad, staged holograms, tactical quest zones, bomb/evac и
+      mission spawners по соответствующим sublevels.
+- [ ] Исправить `NavData RegistrationFailed_AgentNotValid` и пересобрать Paths.
+- [ ] Найти и убрать `SpawnActor` с пустым Class; исправить/заменить `MM_Sky` SM6.
+- [ ] Сделать два сквозных PIE-прогона как два чистых запуска одного persistent
+      map package `Showreel_Scene`, включая retry/abort и отсутствие состояния
+      предыдущего runtime World.
 
-Конкретные кандидаты (проверить кнопку Free/цену на странице):
-- [ ] **Military Base Megapack (+ULAT)** — fab.com/listings/fd638d23-5a42-4734-833e-817f5bb5fd7c
-  (модульная военная база: стены/интерьеры/техника — закрывает обе карты)
-- [ ] Запасной вариант: **Military Base Assets** — fab.com/listings/ca5bfd56-…
-  или «Modular Container Houses — Survival Base Pack» (контейнерная база)
-- [ ] **Винтовка**: «M416/M4 Assault Rifle — Modular» — fab.com/listings/39d0bfca-…
-  (без реальных лого, game-ready) — нужен только static/skeletal mesh
-- [ ] **Megascans** — fab.com/megascans-free: 800+ бесплатных сканов (ящики,
-  бетонные блоки, мешки, камни для хаба) + Megaplants (трава на ландшафт)
-- [ ] Пропсы-укрытия: «Realistic Weapons Arsenal & Tactical Combat Gear Props»
-  (ящики патронов, стойки) — проверить цену
+DoD: оба POI открывают один persistent World; одновременно существует только
+контент выбранного сценария; tutorial проходит A1–D3, Mission01 — бомбу и
+эвакуацию, без Level BP и межсценарных утечек состояния.
 
-**Как искать на Fab:** фильтр слева Price=Free + Format=Unreal Engine; запросы
-«military base modular», «sandbag», «industrial props», «radio tower»,
-«sci-fi hologram material»; страница официальных раздач —
-unrealengine.com/fabfreecontent (**лимитированные бесплатные дропы раз в
-2 недели** — заглядывать каждую сессию и клеймить всё милитари/индастриал
-впрок: добавленное в библиотеку остаётся навсегда).
+## 3. AI — текущий системный прогон
 
-### 2B. Анимации (GASP)
-- [ ] Персонаж/анимации из `D:/UE5/UnrealProjects/GameAnimationSample`:
-  путь 1 — взять UEFN-персонажа целиком, путь 2 — ретаргет секвенций через
-  `RTG_UEFN_to_UE5_Mannequin` (инструкция 05_EDITOR_GUIDE §4.0; выбор — GDD §12.1)
+Архитектурная база уже есть; задача теперь — настроить решения на реальных
+укрытиях tutorial/mission layout. Полная программа — [08_AI.md](08_AI.md).
 
-### 2C. Генерация (по 07_CONTENT_PROMPTS, подписка на месяц)
-- [ ] Выбрать сервис: **Kling 3.0 Standard (~$10)** или Veo 3.1 (Google AI Pro)
-- [x] Интро-видео добавлено → `Content/Movies/TU_Intro.mp4` +
-  `FMS_TU_Intro` (2026-07-22; сценарий: 07 §2.2)
-- [x] Портреты (5), иконки и фоны/брифинги (7) добавлены в UI (2026-07-22)
-- [x] `DA_TacticalHUDStyle` расширен до единой UI-темы: все изображения,
-  палитра, размеры/padding блоков, soft refs крупного арта; гайд заполнения —
-  `10_UI_THEME_GUIDE.md` (2026-07-22)
-- [x] Сам `DA_TacticalHUDStyle` перенесён в `/Game/XRU1Game/Data`, заполнен
-  всеми текущими 35 UI-текстурами и `FMS_TU_Intro`; ещё не созданы только
-  `M_IntroVideo` и CommonUI styles (аудит UnrealClaude MCP, 2026-07-22)
-- [ ] Озвучка «Купол» + реплики бойцов (07 §6, тексты из 02_LORE_SCRIPT §5–6)
-- [ ] Музыка: меню/бой/хаб (07 §7)
-- [ ] Зафиксировать использованные ассеты/сервисы в «Об авторе» и GDD §12
+- [x] Зафиксировать архитектуру `Alert FSM + Utility + AP-aware executor`;
+      donor real-time StateTree/BT не переносить.
+- [x] Убрать зависимость розыгрышей от `GFrameCounter`.
+- [x] Добавить `UAIBehaviorProfileDataAsset` для общего тюнинга.
+- [ ] После C++ сборки создать `DA_AI_Marauder_Default`, назначить его enemy controller.
+- [ ] Прогнать фиксированную матрицу из [08_AI.md](08_AI.md) §6 на
+      Tutorial/Mission01 layout и сохранить baseline-логи.
+- [ ] Ввести `FAIContactMemory`: источник/тип/достоверность/возраст контакта.
+- [ ] Разделить монолитный `FindCoverPoint` на generation → filters → features
+      → scoring → stable tie-break, не меняя baseline.
+- [ ] Перейти к полным proposals `(Action, Target, Destination, APCost)`.
+- [ ] Добавить group reservations, shared contacts, focus/attack budgets.
+- [ ] Настроить fairness/сложность без omniscient targeting и скрытых бонусов.
 
-**DoD:** паки в `Content/ThirdParty/<PackName>/`, анимации в
-`Content/XRU1Game/Units/Anims/`, арт в `UI/Art|Icons`, видео в `Movies/`;
-проект открывается, `git lfs status` показывает новые бинарники в LFS.
+DoD: три последовательных боя на каждой сложности проходят без зависаний;
+враги используют укрытия, не кучкуются, не читают скрытые позиции и принимают
+объяснимые решения.
 
-## Этап 3 — Каркас UI и меню в редакторе — ~1 сессия
+## 4. Туман войны
 
-По [05_EDITOR_GUIDE.md](05_EDITOR_GUIDE.md) §2–3:
+Архитектура и Editor-checklist — [10_FOG_OF_WAR.md](10_FOG_OF_WAR.md).
 
-> Арт этапа 2C, C++-поля темы и ссылки текущего `DA_TacticalHUDStyle` уже
-> готовы. Подключение каждого WBP и создание недостающих style/media assets
-> выполнять по `10_UI_THEME_GUIDE.md`.
+- [x] Централизовать текущую видимость в `UFogOfWarSubsystem`.
+- [x] Убрать скрытых врагов из move preview; дать HUD безопасный visible count.
+- [ ] Перевести targeting/hover/outline/overhead/camera/VFX на actor gating.
+- [ ] Реализовать событийный CPU-grid `Unknown/Explored/Visible` с этажами.
+- [ ] Создать `FogVision` trace channel и authored bounds/profiles/reveal volumes.
+- [ ] Создать один RT + post-process renderer на tactical camera.
+- [ ] Проверить независимый reset Tutorial/Mission01 по `ScenarioId`.
 
-- [x] `BP_TacticsGameInstance` создан от `UTacticsGameInstance`, `UITheme` уже
-  указывает на `DA_TacticalHUDStyle` (проверено MCP, 2026-07-22)
-- [x] `BP_TacticsGameInstance` прописан как `GameInstanceClass`, а
-  `CommonGameViewportClient` — как `GameViewportClientClassName`
-  (`Config/DefaultEngine.ini`, 2026-07-22)
-- [ ] После создания карт задать в `BP_TacticsGameInstance` только `HubLevel`
-  и `MainMenuLevel`
-- [x] `WBP_PrimaryGameLayout` создан от `UPrimaryGameLayout`
-- [ ] В `WBP_PrimaryGameLayout` вручную сверить 4 стека с точными BindWidget-
-  именами: `GameStack`, `GameMenuStack`, `MenuStack`, `ModalStack`
-- [x] Созданы правильные наследники: `WBP_MainMenu`, `WBP_DifficultySelect`,
-  `WBP_Settings`, `WBP_AboutMenuWidget`, `WBP_PauseMenuWidget`
-- [ ] Перевести эти пять меню на арт/layout/CommonUI styles из темы; сейчас
-  MainMenu/Difficulty ещё держат прямые background references
-- [x] `WBP_UnitPortrait` пересобран в горизонтальный `Unit Flag`; portrait,
-  class, status, selection frame, card size, padding и item spacing подключены
-  к теме; исправлены четыре пропущенных провода `Texture`, удалён старый
-  status-блок, Blueprint `UpToDate` без ошибок; созданные карточки теперь
-  действительно добавляются в массив `WBP_TacticalHUD.Portraits`, а
-  Hunker/Taunt/Overwatch/Moving посылают своевременный state refresh
-  (MCP + C++, 2026-07-22)
-- [x] `PortraitStatusIconSize → StatusSizeBox` применяет C++ после создания и
-  возможной пересборки вложенных карточек; ручные Blueprint-узлы не нужны
-- [x] Build/restart выполнен; скопированные Assault-defaults у
-  Sniper/Medic/Tank исправлены и сохранены как `Sniper / Оса`,
-  `Healer / Шприц`, `Tank / Молот`; PIE подтверждает карточку Assault и общий
-  runtime-путь темы (2026-07-22)
-- [x] Вручную проверены в PIE портреты/иконки четырёх классов и матрица
-  статусов карточки (подтверждено пользователем 2026-07-23)
-- [ ] WBP_IntroPlayer от `UIntroPlayerWidget`: `FMS_TU_Intro`, skip/end →
-  `FinishIntro`; назначить в `WBP_DifficultySelect.IntroScreenClass`
-- [ ] BP_MenuPlayerController + GM_MainMenu + уровень L_MainMenu
-- [ ] Прогон: меню → сложность → (пока пустой) хаб; Продолжить активна после сейва
+DoD: неизвестный враг не раскрывается ни геометрией тумана, ни HUD, preview,
+камерой или эффектами; одна карта стартует с чистым состоянием каждого scenario.
 
-**DoD:** из главного меню доступны все экраны, «Новая игра» создаёт сейв и
-уводит на L_Hub (пусть пока пустой), Esc-пауза работает в игровом уровне.
+## 5. Точная настройка способностей классов
 
-## Этап 4 — Юниты: BP-классы и анимации — ~2 сессии
+- [ ] Assault: проверить стоимость/одноразовость Run & Gun и понятность окна
+      дополнительного AP.
+- [ ] Sniper: настроить Squadsight, штраф без собственной LOS и дальностную
+      кривую снайперского оружия.
+- [ ] Medic: радиус, лечение себя/союзника, подъём Downed, 2 заряда и tutorial
+      override без лимита.
+- [ ] Tank: радиус Taunt 2500, обязательный target override и −50% входящего
+      урона до следующего хода танка.
+- [ ] Для каждой ability добавить/проверить HUD state, montage/VFX/SFX и ясный
+      feedback причины недоступности.
+- [ ] Согласовать итоговые числа с [01_GDD.md](01_GDD.md).
+- [ ] Устранить текущие missing dependencies у optional attachments Sniper/SMG/
+      LMG (grip/laser/silencer/front sight и `MI_Attachments_02`) либо удалить
+      эти ссылки, если детали намеренно не используются.
 
-> **Решение по анимациям (уточнено аудитом 2026-07-28):**
-> `ABP_Solider` построен как **дубликат стокового ABP_Manny, расширенный state
-> machine**, а НЕ на GASP-риге с motion matching: MM заточен под траектории
-> ввода игрока — с `AIController::MoveTo` даёт футслайдинг и неверные
-> направления (подтверждено форумом Epic), и для пошаговой тактики с
-> дискретными стойками избыточен. Нужный rifle/crouch/cover/death/hit-react
-> набор уже лежит в `/Game/XRU1Game/Units/Anim`. Граф и монтажи физически
-> собраны, но PIE-приёмка выявила блокирующие гонки; план исправления —
-> `16_UNREAL_MCP_TECH_AUDIT.md` §6.
+DoD: каждая способность используется в туториале, имеет один источник расхода
+AP/зарядов и не конкурирует с другим `Ability.TacticalAction`.
 
-- [x] **Базовая локомоция юнитов работает** (2026-07-16): стоковый ABP на
-  SK_Mannequin играет idle/бег при AI-движении. Потребовался C++-фикс:
-  `bUseAccelerationForPaths` в конструкторе `AUnitBase` — иначе path following
-  задаёт скорость напрямую без Acceleration, и условие Should Move стокового
-  ABP (`Speed>0 AND Acceleration≠0`) никогда не срабатывает
-- [x] `ABP_Solider` создан, назначен всем пяти юнитам; AnimGraph содержит
-  state machines, Inertialization, Default Slot и Control Rig; MCP validate
-  `UpToDate`, без compile errors/warnings (2026-07-28)
-- [x] Rifle/crouch/cover/downed/death/hit-react набор перенесён и читается
-  Asset Registry; пять montage-ассетов созданы
-- [~] **Стойки укрытий исправлены в C++/ABP, но не приняты PIE**: Full Look
-  standing, active wall/side стабилизированы; ручная матрица — документ 17
-- [x] Созданы `BP_Unit_Assault/Sniper/Medic/Tank` с правильными родителями;
-  **на момент создания** у BP были Manny, `ABP_Unarmed`, selection ring и HUD;
-  нативные `BaseMaxHealth`/Aim/Range, Squadsight и классовые способности
-  исправлены (HP 100/80/90/150 переносится в GAS до старта HUD); на
-  `Lvl_TopDown` стоит ровно по одному бойцу каждого класса (MCP, 2026-07-22)
-- [x] У всех пяти `BP_Unit_*` назначены `ABP_Solider`, weapon BP и ability BP;
-  Marauder использует Quinn, остальные Manny (MCP, 2026-07-28)
-- [x] `BP_Unit_Marauder` (враг, `AUnitBase`) создан; Asset Registry видит четыре
-  external actor instances в `Lvl_TopDown` (точный runtime spawn/count проверить
-  после открытия уровня): TeamId=2, BaseAim=65, ShotDamage=20;
-  стартовые HP/Aim затем переопределяет `ATacticsGameMode` по сложности
-- [!] C++ fire/death lifecycle собран, но сохранённые `BP_GA_Attack`,
-  `BP_GA_Overwatch` и пять `OnDied` не мигрированы: текущий выстрел watchdog-
-  отменяется с возвратом AP. Выполнить `17_MANUAL_EDITOR_CHECKLIST.md`.
-- [~] Cover/rotation context и enemy route реализованы в C++; принять только
-  после BP migration и матрицы аудита 16 §7 / документа 17 §6
-- [x] HUD юнита: пипсы AP + иконка укрытия в WBP над головой — 4
-  WBP-наследника + `DA_UnitHUD_Squad/Enemy` + назначение в BP юнитов,
-  проверено чтением через MCP 2026-07-20
-- [x] Код независимого status badge над головой и cover badge в карточке:
-  `UUnitStatusIconWidget`, автослот/настройки `UUnitHUDLayoutData`, общие
-  резолверы темы и подписки на state/cover (2026-07-23)
-- [x] Полный build/restart выполнен; пользователь вручную подтвердил, что
-  status + cover одновременно видны в карточке и над головой (2026-07-23)
-- [ ] Собрать добавленную контрастную подложку overhead status и принять её
-  на светлом, сером и синем фоне уровня; Blueprint/WBP для неё не нужен
+## 6. HUD и экраны
 
-**DoD (не достигнут):** на тестовой карте 4 бойца и враги стреляют с синхронной
-анимацией и звуком,
-у half-cover юнит приседает, у full — стоит у стены, смерть/Downed
-проигрываются, HP/AP видны над головами.
+Подробности — [09_UI_HUD.md](09_UI_HUD.md).
 
-## Этап 5 — Способности классов (C++ P1 + BP-обвязка) — ~1–2 сессии
+- [ ] Добавить боевую обратную связь: урон, промах, Overwatch, недоступность.
+- [ ] Доделать карточку/информацию активного врага в его ход.
+- [ ] Привести все блоки HUD к `DA_TacticalHUDStyle` и проверить 16:9/16:10.
+- [ ] Завершить Main Menu, difficulty, intro, briefing, result и DemoComplete.
+- [ ] Подключить Main Menu → Hub → `StartCombatScenario(Tutorial/Mission01)`.
 
-- [x] C++-механики `UGA_HunkerDown`, `UGA_Heal`, `UGA_RunAndGun`, `UGA_Taunt`,
-  Squadsight и штраф Overwatch реализованы по GDD
-- [ ] BP-презентация GA: монтажи/VFX/SFX в BP-наследниках способностей
-- [x] Функциональные кнопки способностей в боевом HUD: доступность учитывает
-  реальный AP-cost и заряды; у Sniper пассивная Squadsight не показывает
-  активную кнопку, Run & Gun доступен при 0 AP (C++, аудит 2026-07-22)
-- [x] `CanIssueCommand` стал единым арбитром Request*/HUD, а все tactical GA
-  получили общий GAS-block tag: Overwatch/Hunker/ClassAbility больше не
-  запускаются внутри Attack/Ability-targeting (код 2026-07-23)
-- [x] GAS-block проверяется для Move/Interact/Skip; базовый
-  `UTacticalAbility::EndAbility` обновляет HUD после снятия блокировки, поэтому
-  мгновенные и длительные GA не оставляют кнопки или зону хода ошибочно disabled
-- [x] Targeted-GA сама объявляет Gameplay Event и предикат цели; контроллер
-  фиксирует действующего юнита и отправляет событие до UI-broadcast выхода из
-  режима. Хардкод `Event.Heal` и окно смены состояния устранены (2026-07-23)
+DoD: весь обязательный бой управляется мышью через HUD; состояния не требуют
+чтения Output Log, а экраны образуют непрерывный пользовательский цикл.
 
-**DoD:** каждая способность демонстрируема в PIE и соответствует числам GDD §7.
+## 7. Остальные уровни и контент
 
-## Этап 6 — Боевой HUD: функциональное ядро ✅, полировка B.9 открыта
+- [ ] `L_MainMenu` и интро.
+- [ ] `L_Hub` с двумя POI.
+- [ ] Звук, музыка и голос «Купола» по GDD/сценарию.
+- [ ] Финальные тексты, титры и сведения об использованных ассетах.
 
-Сборка в редакторе закрыта (историю см. `docs/archive/`); часть логики
-позже ушла из WBP-графа в C++. Итог:
+## 8. Полировка и сдача
 
-- [x] WBP_TacticalHUD на C++ базе: портреты 1–4 (HP/AP/статус, клик-выбор),
-  панель действий, шанс попадания у курсора/цели, индикатор фазы и хода,
-  кнопка «Завершить ход», счётчик врагов, `DA_TacticalHUDStyle`
-- [x] Зона хода и превью пути: `AMoveRangeVisualizer` (волновое поле по сетке
-  + marching squares) вместо декали радиуса — детали алгоритма и почему
-  занятость решается на уровне запросов, а не вырезов навмеша —
-  `03_CODE_OVERVIEW.md §2.5`
-- [x] Подсветка юнитов (ховер-обводка + кольцо выбора) — `05_EDITOR_GUIDE.md §4.5`
-- [x] Камера XCOM: плавный полёт/следование за бегущим бойцом и действующим
-  врагом (LOS-гейт), edge scroll мышью у края
-- [x] Пользовательский yaw/zoom отделён от временного action-camera ракурса:
-  смена бойца/фазы не наследует поворот прицела; aim-frame не блокирует
-  автопереход бесконечно (код 2026-07-23)
-- [x] `EnemyCountIcon` и его размер теперь применяются из общей темы в C++;
-  WBP использует стабильное имя и прямой `BindWidgetOptional`
-- [x] В тему и C++ добавлена отдельная `EnemyCounterBackground`:
-  texture/color/internal padding не дублируются в WBP; validation проверяет
-  padding и контраст alpha (код 2026-07-23)
-- [x] Карточка выбранного бойца и overhead HUD используют независимые
-  cover/status badge из одного `DA_TacticalHUDStyle` (код 2026-07-23)
-- [x] После полного build/restart визуально приняты overhead status + card
-  cover в Half/Full cover и Overwatch/Hunker (пользователь, 2026-07-23)
-- [x] Тёмная подложка прозрачного overhead status PNG принята после полного
-  build/restart (пользователь, 2026-07-23)
-- [x] После полного build/restart принята регрессия 2026-07-23:
-  enemy-count glyph + подложку, сохранение Q/E при смене бойца, блокировку
-  Overwatch внутри aim-mode и обычный Overwatch после отмены
-- [ ] Всплывающие «−25 / ПРОМАХ / НАБЛЮДЕНИЕ!» (P2, см. `09_GAMEPLAY_STATUS.md §B.7`)
+- [ ] Эталонное прохождение не менее 10 минут.
+- [ ] Победа, поражение по таймеру и поражение отряда корректно завершаются.
+- [ ] Настройки громкости/Scalability реально применяются.
+- [ ] Очистить временные логи и debug draw; оставить cvar-диагностику.
+- [ ] Packaging maps: MainMenu, Hub, Showreel_Scene и оба scenario sublevel.
+- [ ] Development build → проверка → Shipping build → чистая машина/папка.
+- [ ] Финальная сверка с учебным заданием и тег `v1.0-demo`.
 
-**DoD достигнут:** весь бой играется мышью по HUD, без клавиатуры (хоткеи —
-бонус). Дальнейшая полировка HUD/боя — `09_GAMEPLAY_STATUS.md`, известные
-мелочи (диагностические логи и т.п.) — там же §D.
+## 9. Отложенный backlog
 
-## Этап 7 — Уровни — ~3–4 сессии
+Не брать до завершения tutorial vertical slice, если задача не блокирует игру:
 
-- [ ] **L_Tutorial** «Полигон “Купол”» (~60×40 м, кит из этапа 2): секции A–D
-  по сценарию 02_LORE_SCRIPT §4 (пустырь → укрытия → дальняя позиция →
-  финал+эвакуация), 3 врага-голограммы под контролем скрипта, NavMesh
-- [ ] Скрипт туториала: шаги-objectives (STQuestSystem) + level BP: форс-выстрелы
-  (`ResolveShot` 100/0), заскриптованный Downed-Клин (`SetDowned`), поэтапная
-  активация врагов, подсветка целевых точек, зона эвакуации в финале;
-  результат → сейв «Tutorial» → хаб
-- [ ] **L_Hub**: ландшафт-миниатюра (MWLandscape MountainRange), голо-материал,
-  орбитальная камера, 2 × `AMissionPointOfInterest` (тексты 02_LORE_SCRIPT §3),
-  попап-виджет POI
-- [ ] **L_Mission01** «Станция “Узел-7”» (~60×60 м): зоны A/B/C по сценарию §5,
-  `ABombObjective` у аппаратной, `AEvacZone` у ворот, таймер ходов по сложности,
-  спавн врагов по сложности (GM), реплики-нотификации; победа → WBP_DemoComplete
-  → меню; поражение (таймер/отряд) → ретрай
-- [ ] (стретч) PCG-раскладка укрытий для L_Mission01
-
-**DoD:** полный цикл из GDD §3 проходится в PIE от меню до финального экрана;
-оба исхода поражения (таймер, гибель отряда) корректно обрабатываются.
-
-## Этап 8а — AI врагов по XCOM-правилам (ОТДЕЛЬНАЯ ЗАДАЧА, решено 2026-07-20)
-
-**Проблема:** враг и игрок ходят по РАЗНЫМ правилам. Игрок получил единый план
-поля (`PlanMoveTo`) и движение по ломаной; враг остался на funnel-пути с
-усечением по просвету (`GetPointAlongPathBudget` → `MoveToLocation`). Значит
-враг не умеет обходить занятые клетки — он лишь останавливается перед ними.
-Просвет с раздуванием на радиус агента у них уже общий, маршрут — нет.
-
-**Что сделать:**
-- строить поле достижимости и для врага (перенести `BuildDistanceField` в
-  модель, отделив от визуализатора — см. беклог P2 §3a в `03_CODE_OVERVIEW`);
-- вести врага через `AUnitAIController::MoveAlongRoute`, как игрока;
-- поверх — собственно XCOM-поведение: выбор точки С УКРЫТИЕМ от цели
-  (сэмплинг зоны + `GetCoverAgainst`), scamper-рывок при первом обнаружении,
-  Overwatch по остатку AP (беклог §3 п.1).
-
-**Почему отдельно:** поле на каждого врага в каждый шаг хода — заметная
-стоимость (замерить `xru1.MoveRange.LogBuildTime 1`), и это уже не багфикс
-перемещения, а работа над поведением AI. **PIE 2026-07-28 подтвердил, что текущее
-поведение не является рабочим критерием:** в узком месте враг упирается в
-союзника и останавливается; задача повышена до блокера A16-P3.
-
-> **✅ Прогресс 2026-07-21 — утилити-скоринг с весами** (`03_CODE_OVERVIEW.md
-> §2.6`): отступление при низком HP, манёвр в укрытие с линией огня, рывок к
-> дальнему укрытию (оба AP, вторая нога следующим шагом), веса — UPROPERTY
-> `Tactics|AI|Weights`, лог решений `xru1.AI.LogCombat`. Осталось: движение
-> врага по ломаной поля (см. «Что сделать» выше) + scamper при первом обнаружении.
-
-## Этап 8 — Полишинг и баланс — ~1–2 сессии
-
-> **✅ Механика атаки доведена до XCOM 2 (2026-07-20/21).** Сначала
-> исправлены 2 бага прицеливания (ЛКМ стрелял мимо кнопки «Огонь»; «слишком
-> далеко» путалось с «нет линии огня») и перекалибрована дальность оружия
-> (LOS вместо жёсткого технического предела), затем добавлена обратная связь
-> вооружённого режима: баннер прицеливания, Tab/Q/E по целям, кадр камеры
-> «из-за плеча», двухтактное подтверждение (ЛКМ выбирает цель — «Огонь»/Enter
-> стреляет). Точные константы и имена функций — `03_CODE_OVERVIEW.md §2.6`.
-> Принято ручным PIE-прогоном (`08_HANDOFF.md`).
-
-- [ ] Прогон эталонного прохождения: суммарно **не менее 10 минут** (ожидаемо
-  12–18), при недоборе — усилить миссию (враги/таймер), а не растягивать паузы
-- [ ] Поражение → ретрай работает; «Продолжить» после каждого этапа корректно
-- [ ] Звук по списку GDD §14, музыка меню
-- [ ] Настройки: громкость + Scalability реально применяются
-- [ ] «Об авторе»/титры заполнены (ассеты, курс)
-- [ ] Вычистить логи/дебаг-отрисовку, иконка и название проекта
-
-**DoD:** три полных прохождения подряд (лёгкий/средний/сложный) без блокеров.
-
-## Этап 9 — Билд и сдача — ~1 сессия
-
-- [ ] Project Settings → Packaging: список карт (L_MainMenu, L_Hub, L_Tutorial,
-  L_Mission01), default map = L_MainMenu
-- [ ] Package Windows (Development → проверка, потом Shipping)
-- [ ] Прогон билда на чистой машине/папке: цикл от меню до финала
-- [ ] Тег в git (`v1.0-demo`), пуш; архив билда для формы сдачи
-- [ ] Финальная сверка с чек-листом задания (GDD §16)
-
-**DoD:** архив билда + ссылка на репозиторий отправлены на проверку.
-
----
-
-## Порядок и зависимости
-
-```
-0 → 1 → (2 параллельно с 1) → 3 → 4 → 5 → 6 → 7 → 8 → 9
-```
-Этап 2 (ассеты) не блокирует 1 и 3 — можно качать параллельно.
-Стретч-цели (PCG-генерация, интеракт-цель миссии, цифры урона) берём только
-после DoD этапа 7.
+- переработка ракурсов и поведения камеры;
+- IK/Control Rig второй руки на оружии;
+- кинематографическая полировка Overwatch/slow motion;
+- PCG-раскладка укрытий;
+- дополнительные косметические анимации и VFX.

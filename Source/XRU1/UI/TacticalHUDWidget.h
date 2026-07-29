@@ -72,6 +72,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "HUD")
 	int32 GetAliveEnemyCount() const;
 
+	/** Видимые сейчас враги. Для боевого HUD с туманом использовать вместо полного AliveEnemyCount. */
+	UFUNCTION(BlueprintPure, Category = "HUD")
+	int32 GetVisibleEnemyCount() const;
+
 	/**
 	 * Единая UI-тема: в runtime сначала UITheme из UTacticsGameInstance,
 	 * локальный Style WBP — только fallback для Designer/ошибочной конфигурации.

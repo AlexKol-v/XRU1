@@ -9,6 +9,7 @@
 class UAIPerceptionComponent;
 class UAISenseConfig_Sight;
 class UAIActionEvaluator;
+class UAIBehaviorProfileDataAsset;
 class AUnitBase;
 
 /** Уровень тревоги AI-юнита (упрощённая модель XCOM: green/yellow/red alert). */
@@ -50,6 +51,13 @@ public:
 	 * юнитах не знает; см. занятость в UTacticsCombatStatics).
 	 */
 	explicit AUnitAIController(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+
+	/**
+	 * Единый профиль настройки. Если назначен, в BeginPlay он имеет приоритет над локальными
+	 * значениями BP-контроллера, включая необязательную замену набора utility-оценщиков.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|AI|Tuning")
+	TObjectPtr<UAIBehaviorProfileDataAsset> BehaviorProfile;
 
 	UAIPerceptionComponent* GetUnitPerception() const { return Perception; }
 
@@ -171,7 +179,7 @@ public:
 	float RouteCornerAcceptance = 25.f;
 
 	/** Пауза между последовательными действиями юнита в его ход (читабельность). */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Combat", meta = (ClampMin = "0"))
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Combat", meta = (ClampMin = "0.01"))
 	float ActionInterval = 0.4f;
 
 	/**
@@ -339,7 +347,7 @@ public:
 	// --- Веса выбора ЦЕЛИ (A3) ------------------------------------------------
 	//
 	// Аддитивный скоринг вместо прежнего «ближайший видимый». Числа
-	// пропорциональны XCOM 2 (docs/12_AI_REFERENCE.md §III): там шанс попадания
+	// пропорциональны XCOM 2 (docs/08_AI.md): там шанс попадания
 	// доминирует над всем остальным — AI в первую очередь НЕ МАЖЕТ, и уже потом
 	// умничает. Дистанция отдельным слагаемым НЕ входит: она уже учтена в шансе
 	// попадания через AimByDistanceCurve, второй раз считать нельзя.
@@ -495,6 +503,9 @@ protected:
 	virtual void OnPossess(APawn* InPawn) override;
 	virtual void OnMoveCompleted(FAIRequestID RequestID, const FPathFollowingResult& Result) override;
 
+	/** Копирует профиль в runtime-поля и создаёт личные экземпляры оценщиков для контроллера. */
+	void ApplyBehaviorProfile();
+
 	/** Колбэк перцепции: увидел/потерял враждебного актора → смена тревоги. */
 	UFUNCTION()
 	void HandlePerceptionUpdated(AActor* Actor, struct FAIStimulus Stimulus);
@@ -511,6 +522,9 @@ protected:
 	 * иначе каждый пересобирал бы списки (инвариант 1b).
 	 */
 	FAIDecisionContext BuildDecisionContext(AUnitBase* Unit, AActor* PrimaryThreat);
+
+	/** Строит воспроизводимое зерно: карта + номер хода + имя юнита + шаг решения. */
+	uint32 BuildDecisionSeed(const AUnitBase* Unit, FName Salt = NAME_None) const;
 
 	/**
 	 * Выбор лучшего действия перебором оценщиков. Перебор идёт по УБЫВАНИЮ
@@ -579,9 +593,15 @@ protected:
 	/** Планирует следующий шаг хода через ActionInterval. */
 	void ScheduleNextStep();
 
+	/** Ждёт полного финиша route + cover-hug + turn-in-place. */
+	void BeginMoveSettlement(AUnitBase* Unit);
+
+	/** Таймерная проверка и единая финализация тактического перемещения. */
+	void TryFinalizeMoveSettlement();
+
 	/**
 	 * Лучшая цель по АДДИТИВНОМУ СКОРИНГУ (A3, правила XCOM — см.
-	 * docs/12_AI_REFERENCE.md §III): шанс попадания + провокация + фланг +
+	 * docs/08_AI.md): шанс попадания + провокация + фланг +
 	 * добивание + ранение, минус штраф за тяжелораненого.
 	 *
 	 * Раньше здесь было «ближайший видимый, провоцирующий вне очереди» — самое
@@ -619,6 +639,9 @@ protected:
 	/** Идёт ли сейчас перемещение, начатое в рамках хода. */
 	bool bTurnMoveInProgress = false;
 
+	/** Порядковый номер фактического решения в текущей активации юнита. */
+	int32 DecisionOrdinalThisTurn = 0;
+
 	/**
 	 * Манёвр в укрытие в этом ходу уже ВЫБРАН. Один выбор на ход (XCOM:
 	 * переместился — стреляй): без флага открытый юнит, не нашедший идеального
@@ -652,6 +675,10 @@ protected:
 	float ManeuverArrivalTolerance = 120.f;
 
 	FTimerHandle TurnStepTimerHandle;
+
+	/** Отдельный таймер: новый AI-шаг нельзя запускать, пока юнит доводит позу у стены. */
+	FTimerHandle MoveSettlementTimerHandle;
+	TWeakObjectPtr<AUnitBase> PendingSettlementUnit;
 
 	// --- Движение по ломаной маршрута (см. MoveAlongRoute) --------------------
 

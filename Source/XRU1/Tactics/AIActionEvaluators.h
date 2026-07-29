@@ -7,19 +7,12 @@
 /**
  * Стандартный набор оценщиков вражеского AI.
  *
- * ⚠️ Фаза A9 — это КАРКАС, а не смена поведения. Базовые приоритеты подобраны
- * так, чтобы вместе с отсечением по верхней границе воспроизвести прежний
- * приоритетный список StepCombat ОДИН В ОДИН:
+ * Базовые потолки задают порядок дешёвого отсечения, но итоговый выбор уже
+ * утилитарный: Shoot масштабируется качеством выстрела, а позиционные действия
+ * проходят собственный поиск и могут отказаться:
  *
- *   Retreat 100 > MoveToCover 80 > Shoot 60 > AdvanceToCover 40 > CloseDistance 20
- *
- * Пока каждый оценщик возвращает свой BasePriority целиком, набор ведёт себя
- * как «первое подходящее правило» — то есть ровно как раньше, и по числу
- * дорогих запросов тоже (отсечение обрывает перебор на первом сработавшем).
- *
- * Настоящий утилити-скоринг (шанс попадания, укрытие против всех угроз, фланг,
- * высота, кучность) въезжает в фазах A3/A5: они меняют ТЕЛА ScoreAction, не
- * трогая ни каркас, ни друг друга.
+ *   Retreat 120 > Shoot 100 > Hunker 85 > MoveToCover 80
+ *   > Overwatch 45 > AdvanceToCover 40 > CloseDistance 20
  */
 
 /**
@@ -118,8 +111,9 @@ public:
 };
 
 /**
- * НАБЛЮДЕНИЕ (A7/W2). Врага видно, но выстрела нет (нет линии огня или шанс
- * ниже порога) — встать в овервотч вместо того, чтобы бежать вперёд под ответ.
+ * НАБЛЮДЕНИЕ (A7/W2). Врага видно, но выстрел невозможен (нет линии огня/
+ * дальности) либо лимит атакующих запретил атаку — удерживать позицию вместо
+ * бессмысленной пробежки под ответ.
  *
  * ⚠️ **Требует W1.** До неё овервотч бота не выстрелил бы НИ РАЗУ: реакция
  * висела на «врага увидел», а не на «видимый враг сдвинулся».
@@ -146,16 +140,20 @@ public:
 	UAIEval_Overwatch();
 	virtual bool IsApplicable(const FAIDecisionContext& Context) const override;
 	virtual float ScoreAction(const FAIDecisionContext& Context, FAIDecision& OutDecision) const override;
+	virtual float GetMaxPossibleScore() const override
+	{
+		return FMath::Max(BasePriority, IdleOverwatchScore) * Weight;
+	}
 
 	/**
 	 * Вероятность встать в наблюдение, когда стрелять НЕ ПО КОМУ (0..1). 0 —
 	 * поведение выключено, 1 — детерминированный овервотч. На занятую ветку A8
 	 * не влияет: там наблюдение обязательно.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|AI", meta = (ClampMin = "0", ClampMax = "1"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Evaluator", meta = (ClampMin = "0", ClampMax = "1"))
 	float ActivationChance = 0.33f;
 
-	/** Скор наблюдения в обычном случае «стрелять не по кому» (≤ BasePriority). */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|AI", meta = (ClampMin = "0"))
+	/** Скор наблюдения в обычном случае «стрелять не по кому». */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Evaluator", meta = (ClampMin = "0"))
 	float IdleOverwatchScore = 30.f;
 };

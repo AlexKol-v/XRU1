@@ -11,7 +11,17 @@ void UMissionResultWidget::SetupResult(bool bInVictory, bool bInDefeatByTimeout)
 
 void UMissionResultWidget::RetryMission()
 {
-	// Перезагрузка текущего уровня начисто.
+	// Scenario retry проходит через GameInstance: quest runtime очищается,
+	// RunId увеличивается и открывается та же shared combat map.
+	if (UTacticsGameInstance* GameInstance = GetTacticsGameInstance())
+	{
+		if (GameInstance->RestartActiveScenario())
+		{
+			return;
+		}
+	}
+
+	// Legacy fallback для старых боевых карт без Scenario Data Asset.
 	UGameplayStatics::OpenLevel(this, FName(*UGameplayStatics::GetCurrentLevelName(this)));
 }
 
