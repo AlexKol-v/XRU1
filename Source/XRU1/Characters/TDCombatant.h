@@ -46,6 +46,17 @@ protected:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "UI")
     TObjectPtr<UWidgetComponent> HUDWidgetComponent;
 
+public:
+    /**
+     * Показывает/прячет надголовный HUD (полоса HP, иконки статуса).
+     * Труп, тяжелораненый и эвакуированный не должны нести шкалу здоровья:
+     * до этого виджет оставался висеть над телом до конца боя.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Tactics|UI")
+    void SetOverheadHUDVisible(bool bVisible);
+
+protected:
+
     /** Контейнерный CommonUI-класс HUD'а. Дизайнер указывает в BP-наследнике. */
     UPROPERTY(EditDefaultsOnly, Category = "UI")
     TSubclassOf<UUnitHUDWidget> HUDWidgetClass;

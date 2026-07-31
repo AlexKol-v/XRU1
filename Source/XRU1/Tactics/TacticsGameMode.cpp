@@ -1,6 +1,8 @@
 #include "TacticsGameMode.h"
+#include "XRU1Log.h"
 #include "UnitBase.h"
 #include "MissionObjectives.h"
+#include "ScenarioActorRegistry.h"
 #include "TacticalPlayerController.h"
 #include "TacticalQuestEvents.h"
 #include "TacticalScenarioDataAsset.h"
@@ -9,6 +11,7 @@
 #include "TacticsGameInstance.h"
 #include "TacticsSaveGame.h"
 #include "TacticsCombatStatics.h"
+#include "AIBehaviorProfileDataAsset.h"
 #include "UnitAIController.h"
 #include "TDAttributeSet.h"
 #include "GameUIManagerSubsystem.h"
@@ -46,7 +49,7 @@ void ATacticsGameMode::BeginPlay()
 	const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>();
 	if (GameInstance && GameInstance->GetActiveScenario())
 	{
-		UE_LOG(LogTemp, Log, TEXT("[GameMode] Ожидаю готовности scenario sublevel"));
+		UE_LOG(LogXRU1Scenario, Log, TEXT("[GameMode] Ожидаю готовности scenario sublevel"));
 		return;
 	}
 
@@ -138,7 +141,7 @@ void ATacticsGameMode::StartMissionCombat()
 	}
 	if (!Params)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[GameMode] У %s нет FTacticsDifficultyParams для сложности %d — ")
+		UE_LOG(LogXRU1Scenario, Warning, TEXT("[GameMode] У %s нет FTacticsDifficultyParams для сложности %d — ")
 			TEXT("враги останутся с дефолтными статами BP, а таймер бомбы (если она есть на карте) не включится"),
 			*GetNameSafe(this), static_cast<int32>(Difficulty));
 	}
@@ -150,6 +153,13 @@ void ATacticsGameMode::StartMissionCombat()
 	for (TActorIterator<AUnitBase> It(GetWorld()); It; ++It)
 	{
 		AUnitBase* Unit = *It;
+		// Staged-голограмма шага C/D физически стоит на карте с начала боя, но в
+		// стороны попадает только когда её включит StateTree: иначе она ходила бы
+		// и считалась живым врагом всё обучение.
+		if (!UTacticalScenarioSubsystem::IsActorScenarioActive(Unit))
+		{
+			continue;
+		}
 		const uint8 TeamId = Unit->GetGenericTeamId().GetId();
 		if (TeamId == TacticsTeamIds::Player)
 		{
@@ -172,7 +182,7 @@ void ATacticsGameMode::StartMissionCombat()
 				? Cast<AUnitAIController>(EnemyPawn->GetController()) : nullptr;
 			if (!EnemyAI)
 			{
-				UE_LOG(LogTemp, Error,
+				UE_LOG(LogXRU1Scenario, Error,
 					TEXT("[CombatStart] Enemy %s has no UnitAIController (Controller=%s). Its turn will be skipped."),
 					*GetNameSafe(Unit), *GetNameSafe(EnemyPawn ? EnemyPawn->GetController() : nullptr));
 			}
@@ -181,16 +191,31 @@ void ATacticsGameMode::StartMissionCombat()
 			{
 				ApplyDifficultyToEnemy(Unit, *AppliedParams);
 			}
+
+			// Стиль поведения — вторая половина сложности. Профиль назначается
+			// ЗДЕСЬ, а не в BP каждого врага: иначе один забытый экземпляр играет
+			// по чужим правилам, и разница уровней перестаёт быть honest.
+			if (AUnitAIController* MutableAI = const_cast<AUnitAIController*>(EnemyAI))
+			{
+				if (GameInstance)
+				{
+					if (const TObjectPtr<UAIBehaviorProfileDataAsset>* Profile =
+						GameInstance->AIProfilesByDifficulty.Find(Difficulty))
+					{
+						MutableAI->SetBehaviorProfile(*Profile);
+					}
+				}
+			}
 			Enemies.Add(Unit);
 		}
 		else
 		{
-			UE_LOG(LogTemp, Warning,
+			UE_LOG(LogXRU1Scenario, Warning,
 				TEXT("[CombatStart] Tactical unit %s ignored: TeamId=%u (expected Player=%u or Enemy=%u)."),
 				*GetNameSafe(Unit), TeamId, TacticsTeamIds::Player, TacticsTeamIds::Enemy);
 		}
 	}
-	UE_LOG(LogTemp, Log, TEXT("[CombatStart] Registered players=%d enemies=%d"),
+	UE_LOG(LogXRU1Scenario, Log, TEXT("[CombatStart] Registered players=%d enemies=%d"),
 		Players.Num(), Enemies.Num());
 
 	// Таймер бомбы включаем только там, где есть заряд.
@@ -198,6 +223,12 @@ void ATacticsGameMode::StartMissionCombat()
 	for (TActorIterator<ABombObjective> It(GetWorld()); It; ++It)
 	{
 		bHasBomb = true;
+		break;
+	}
+	bool bHasEvacZone = false;
+	for (TActorIterator<AEvacZone> It(GetWorld()); It; ++It)
+	{
+		bHasEvacZone = true;
 		break;
 	}
 	int32 ResolvedTurnLimit = bHasBomb && AppliedParams ? AppliedParams->TurnLimit : 0;
@@ -208,7 +239,10 @@ void ATacticsGameMode::StartMissionCombat()
 	TurnManager->SetTurnLimit(ResolvedTurnLimit);
 	// A8: лимит одновременно атакующих врагов — из того же пресета сложности.
 	TurnManager->SetMaxAttackersPerTurn(AppliedParams ? AppliedParams->MaxAttackersPerTurn : -1);
-	TurnManager->bAutoWinWhenEnemiesDead = bWinWhenAllEnemiesDead && !bHasBomb;
+	// Победа зачисткой запрещена везде, где есть авторская цель. В туториале
+	// бомбы нет, но после D2 все голограммы мертвы, и без учёта evac-зоны бой
+	// закончился бы победой ДО шага D3 «эвакуировать отряд».
+	TurnManager->bAutoWinWhenEnemiesDead = bWinWhenAllEnemiesDead && !bHasBomb && !bHasEvacZone;
 
 	bCombatStarted = true;
 	TurnManager->StartCombat(Players, Enemies);
@@ -327,13 +361,13 @@ void ATacticsGameMode::HandleCombatEnded(bool bPlayerWon)
 
 		if (DirectorCount != 1 || !CurrentDirector)
 		{
-			UE_LOG(LogTemp, Error, TEXT("[GameMode] Для run %d найдено ScenarioDirector: %d; "
+			UE_LOG(LogXRU1Scenario, Error, TEXT("[GameMode] Для run %d найдено ScenarioDirector: %d; "
 				"save/result остановлены"), GameInstance->GetActiveScenarioRunId(), DirectorCount);
 			return;
 		}
 		if (!CurrentDirector->FinalizeConfiguredScenario(bPlayerWon))
 		{
-			UE_LOG(LogTemp, Error, TEXT("[GameMode] ScenarioDirector отклонил terminal request; "
+			UE_LOG(LogXRU1Scenario, Error, TEXT("[GameMode] ScenarioDirector отклонил terminal request; "
 				"save/result остановлены"));
 			return;
 		}
@@ -360,7 +394,7 @@ void ATacticsGameMode::PollScenarioFinalization()
 	ATacticalScenarioDirector* Director = PendingScenarioDirector.Get();
 	if (!Director || !Director->IsCurrentScenarioRun())
 	{
-		UE_LOG(LogTemp, Error, TEXT("[GameMode] ScenarioDirector потерян до terminal confirmation"));
+		UE_LOG(LogXRU1Scenario, Error, TEXT("[GameMode] ScenarioDirector потерян до terminal confirmation"));
 		bCombatResultPending = false;
 		return;
 	}
@@ -376,7 +410,7 @@ void ATacticsGameMode::PollScenarioFinalization()
 
 	if (GetWorld()->GetTimeSeconds() >= ScenarioFinalizationDeadline)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[GameMode] Quest не подтвердил terminal state за 3 секунды; "
+		UE_LOG(LogXRU1Scenario, Error, TEXT("[GameMode] Quest не подтвердил terminal state за 3 секунды; "
 			"save/result остановлены"));
 		bCombatResultPending = false;
 		return;

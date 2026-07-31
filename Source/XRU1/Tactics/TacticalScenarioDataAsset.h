@@ -46,6 +46,15 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Scenario", meta = (ClampMin = "-1"))
 	int32 TurnLimit = -1;
 
+	/**
+	 * AnchorId якоря стартовой позиции камеры в scenario sublevel
+	 * (AScenarioAnchorPoint). Камера ставится на него при старте сценария —
+	 * PlayerStart persistent-карты общий и не знает, где начинается конкретный
+	 * сценарий. None — камера остаётся где заспавнилась.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Scenario")
+	FName InitialCameraAnchorId;
+
 	/** Профиль начального reveal для будущей системы тумана войны. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Scenario|Fog")
 	FName FogProfileId;

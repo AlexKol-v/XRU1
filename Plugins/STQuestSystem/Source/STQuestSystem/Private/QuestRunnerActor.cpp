@@ -12,6 +12,7 @@
 #include "StateTreeEvents.h"
 #include "StateTreeExecutionContext.h"
 #include "StateTreeTypes.h"
+#include "StructUtils/InstancedStruct.h"
 
 AQuestRunnerActor::AQuestRunnerActor()
 {
@@ -120,11 +121,15 @@ void AQuestRunnerActor::HandleQuestEvent(FGameplayTag Channel, const FQuestEvent
         return;
     }
 
-    // Ретранслируем квест-событие в State Tree. Вклад Amount учитываем
-    // повторением: задача-цель инкрементирует счётчик на каждое событие.
+    // Ретранслируем квест-событие в State Tree ВМЕСТЕ с payload: без него задача
+    // не может отличить, какой юнит и по какой цели подтвердил результат, и шаги
+    // вида «два РАЗНЫХ бойца вошли в зону» становятся непроверяемыми.
     FStateTreeEvent Event;
     Event.Tag = Channel;
+    Event.Payload.InitializeAs<FQuestEventData>(Data);
 
+    // Amount учитываем повторением: задача-цель инкрементирует счётчик на каждое
+    // событие. Payload у повторов один и тот же — это один доменный факт.
     const int32 Repeats = FMath::Max(1, Data.Amount);
     for (int32 Index = 0; Index < Repeats; ++Index)
     {

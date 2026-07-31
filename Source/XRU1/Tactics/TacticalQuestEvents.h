@@ -72,4 +72,24 @@ public:
 		FGameplayTag EventChannel,
 		UObject* Source,
 		int32 Amount = 1);
+
+	/**
+	 * То же, но с объектом действия: цель атаки/лечения, зона, бомба. Payload
+	 * доезжает до StateTree, поэтому шаг может требовать конкретного бойца И
+	 * конкретную цель, а не «любое событие этого канала».
+	 * ScenarioRunId подставляется автоматически из GameInstance.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Quest",
+		meta = (WorldContext = "WorldContextObject"))
+	static bool BroadcastQuestEventEx(
+		const UObject* WorldContextObject,
+		FGameplayTag EventChannel,
+		UObject* Source,
+		UObject* Target,
+		int32 Amount = 1);
+
+	/** Поколение текущего запуска сценария; 0 — сценарий не активен. */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Quest",
+		meta = (WorldContext = "WorldContextObject"))
+	static int32 GetScenarioRunId(const UObject* WorldContextObject);
 };

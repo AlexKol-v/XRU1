@@ -1,4 +1,5 @@
 #include "UnitBase.h"
+#include "XRU1Log.h"
 #include "ActionPointsComponent.h"
 #include "CoverDetectionComponent.h"
 #include "CoverTuningDataAsset.h"
@@ -8,7 +9,11 @@
 #include "TacticalClassAbilities.h"
 #include "TacticsGameplayTags.h"
 #include "TacticsCombatStatics.h" // IsUnitInTransit / GetFiringStance для VisualState
+#include "UnitAIController.h"     // GetMoveStatus: отмена подшага ТОЛЬКО по новому приказу
+#include "Navigation/PathFollowingComponent.h" // EPathFollowingStatus
+#include "TacticsAudioSubsystem.h"
 #include "TDAttributeSet.h"
+#include "UnitAudioDataAsset.h"
 #include "UnitClasses.h"
 #include "AbilitySystemComponent.h"
 #include "Abilities/GameplayAbility.h"
@@ -131,6 +136,54 @@ void AUnitBase::SetHoverHighlight(bool bHovered)
 	}
 }
 
+void AUnitBase::PlayUnitSound(EUnitSoundEvent Event)
+{
+	const UWorld* World = GetWorld();
+	UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
+	UTacticsAudioSubsystem* Audio = GameInstance
+		? GameInstance->GetSubsystem<UTacticsAudioSubsystem>() : nullptr;
+	if (!AudioProfile || !Audio)
+	{
+		return;
+	}
+
+	if (const FTacticsSoundCue* Cue = AudioProfile->FindEvent(Event))
+	{
+		// Звук привязан к актору: боец во время выстрела делает StepOut и
+		// возвращается в anchor, и звук должен ехать вместе с ним.
+		Audio->PlayCueAttached(*Cue, this, AudioProfile->Attenuation);
+	}
+}
+
+void AUnitBase::SetPendingScriptedShot(const FScriptedShotOverride& Override, AActor* ScriptedTarget)
+{
+	PendingScriptedShot = Override;
+	bHasPendingScriptedShot = Override.IsMeaningful();
+	PendingScriptedShotTarget = ScriptedTarget;
+}
+
+bool AUnitBase::ConsumePendingScriptedShot(const AActor* Target, FScriptedShotOverride& OutOverride)
+{
+	if (!bHasPendingScriptedShot)
+	{
+		return false;
+	}
+	// Форс принадлежит конкретной цели шага. Если приказ по ней не прошёл, а AI
+	// выбрал себе другую жертву, постановочные числа не должны на неё перетечь:
+	// шаг ждёт выстрел по своему бойцу, а не «промах 0%» по случайному.
+	if (PendingScriptedShotTarget.IsValid() && PendingScriptedShotTarget.Get() != Target)
+	{
+		return false;
+	}
+	PendingScriptedShotTarget = nullptr;
+
+	// Форс одноразовый: второй выстрел того же юнита в том же ходу обязан
+	// считаться по обычным правилам, иначе шаг обучения «залипнет» на 100%.
+	OutOverride = PendingScriptedShot;
+	bHasPendingScriptedShot = false;
+	return true;
+}
+
 void AUnitBase::NotifyUnitStateChanged()
 {
 	// Срез для анимаций пересобирается ЗДЕСЬ и только здесь: это единственная
@@ -154,15 +207,14 @@ void AUnitBase::RebuildVisualState()
 		State.CoverDirectionLocal = GetActorRotation().UnrotateVector(State.CoverDirection);
 	}
 
-	// СТОРОНА УКРЫТИЯ для выбора Left/Right-клипа. Юнит стоит вдоль стены
-	// (HugCover), поэтому стена гарантированно сбоку и знак Y однозначен. Порог
-	// отсекает вырожденный случай «стена почти спереди»: там сторона — шум.
-	if (!State.CoverDirectionLocal.IsNearlyZero() &&
-		FMath::Abs(State.CoverDirectionLocal.Y) > 0.35f)
-	{
-		State.PeekSideLocal = FMath::Sign(State.CoverDirectionLocal.Y);
-	}
-	// Во время уже начатого cosmetic peek сторона неизменяема: разворот actor
+	// СТОРОНА УКРЫТИЯ для выбора Left/Right-клипа — из кэша компонента укрытий
+	// (§6: единый источник — геометрия стены и края). Прежний вывод из
+	// `CoverDirectionLocal.Y` был вторым источником правды и ломался, как только
+	// юнит после settlement оказывался не вдоль стены (доказано логом [Peek]:
+	// Y=0.02–0.21 при живом крае): порог 0.35 не проходил, сторона застревала
+	// в 0, и выглядывание не начиналось никогда.
+	State.PeekSideLocal = Cover ? Cover->PeekSideSign : 0.f;
+	// Во время уже начатого cosmetic peek сторона неизменяема: перевыбор стены
 	// не имеет права посреди клипа переключить Left/Right на противоположный.
 	if (bPeekActive && !FMath::IsNearlyZero(FrozenPeekSide))
 	{
@@ -170,13 +222,9 @@ void AUnitBase::RebuildVisualState()
 	}
 
 	// ЕСТЬ ЛИ КУДА ВЫГЛЯДЫВАТЬ — отдельный вопрос от стороны: у глухой стены
-	// сторона известна, а края нет.
-	bHasPeekEdge = false;
-	if (Cover && Cover->BestCoverAround != ECoverType::None)
-	{
-		float EdgeDistance = 0.f;
-		bHasPeekEdge = !Cover->FindPeekEdgeSide(EdgeDistance).IsNearlyZero();
-	}
+	// сторона известна, а края нет. Тоже кэш EvaluateSurroundings: пересборка
+	// среза больше НЕ трейсит мир (раньше — до 8 лучей на каждый notify).
+	bHasPeekEdge = Cover && Cover->HasPeekEdge();
 
 	// Подшаг к стене — тоже движение: иначе юнит ехал бы к укрытию в статичной
 	// позе вместо шага (см. HugCover).
@@ -212,6 +260,15 @@ void AUnitBase::HugCover()
 	const UCoverDetectionComponent* Cover = GetCoverDetection();
 	if (!Cover || Cover->BestCoverAround == ECoverType::None)
 	{
+		// «Боец не прижимается к стене» почти всегда означает именно это: боевой
+		// слой укрытия здесь ничего не нашёл. Причина видна только в логе, потому
+		// что визуально «встал рядом со стеной» и «стена не засчитана» одинаковы.
+		if (UTacticsCombatStatics::IsCoverDebugEnabled())
+		{
+			UE_LOG(LogXRU1Combat, Display,
+				TEXT("[Cover] %s: прижатие пропущено — BestCoverAround=None"),
+				*GetName());
+		}
 		return; // укрытия нет — прижиматься не к чему
 	}
 	FVector ToWall = Cover->BestCoverDirection;
@@ -234,15 +291,44 @@ void AUnitBase::HugCover()
 	//
 	// ⚠️ БЕЗ анимации доворота: здесь уже играют подшаг и вход в позу укрытия,
 	// а наложенный сверху `Turn_180` выглядит как вывернутое назад тело.
-	float EdgeDistance = 0.f;
-	const FVector EdgeSide = Cover->FindPeekEdgeSide(EdgeDistance);
+	//
+	// Край — из кэша (§6): вызывающие обязаны сделать EvaluateSurroundings перед
+	// HugCover (оба вызова в UnitAIController так и идут), значит кэш свежий.
+	const FVector EdgeSide = Cover->PeekEdgeDirection;
+	const float EdgeDistance = Cover->PeekEdgeDistance;
 	const FVector FaceDirection = EdgeSide.IsNearlyZero()
 		? (bCoverHugFaceWall ? ToWall : -ToWall) // глухая стена — выглядывать некуда
 		: EdgeSide;
 	const FVector DesiredFacingTarget = GetActorLocation() + FaceDirection * 100.f;
 
+	// Дальность подшага = дальность, на которой стена ещё СЧИТАЕТСЯ укрытием.
+	// Один источник правды: если стена достаточно близка, чтобы дать cover, она
+	// достаточно близка, чтобы к ней прижаться. Прежний фиксированный лимит
+	// 45 см оставлял бойца в «укрытии» в метре от стены (лог: план 45 см,
+	// «упёрлись в ничего») — стена давала cover с CoverTraceDistance, а подшаг
+	// до неё не доставал.
+	const UCoverTuningDataAsset* Tuning = UTacticsCombatStatics::GetCoverTuning(GetWorld());
+	const float HugReach = Tuning->CoverTraceDistance;
+
+	if (UTacticsCombatStatics::IsCoverDebugEnabled())
+	{
+		// Печатаем МАКСИМУМ подшага; фактический сдвиг логируется ниже, после
+		// свипа. Их расхождение и есть ответ на «почему не прижался».
+		// Плановый yaw печатаем, чтобы отличать «HugCover довернул не туда» от
+		// «после HugCover юнита развернул кто-то ещё»: итоговая стойка видна в
+		// строке [Peek] (CoverDirLocal.Y), расхождение с планом = чужой поворот.
+		UE_LOG(LogXRU1Combat, Display,
+			TEXT("[Cover] %s: прижатие — cover=%d, сторон %d, край %s (%.0f см при лимите поиска %.0f), дальность подшага %.0f см, доворот к yaw=%.0f (сейчас %.0f)"),
+			*GetName(), static_cast<int32>(Cover->BestCoverAround), Cover->CoverSides.Num(),
+			EdgeSide.IsNearlyZero() ? TEXT("НЕ найден") : TEXT("найден"),
+			EdgeDistance, Tuning->PeekEdgeMaxDistance,
+			HugReach, FaceDirection.Rotation().Yaw, GetActorRotation().Yaw);
+	}
+
 	if (CoverHugMaxNudge <= 0.f)
 	{
+		// Подшаг выключен настройкой: боец только доворачивается и остаётся там,
+		// куда его привёл маршрут. Снаружи это читается как «не прижался».
 		FaceTowardsSmooth(DesiredFacingTarget, /*bPlayTurnAnimation=*/false, CoverHugTurnRate);
 		return;
 	}
@@ -257,9 +343,8 @@ void AUnitBase::HugCover()
 		return;
 	}
 
-	FVector TargetLocation;
 	const FVector Start = GetActorLocation();
-	const FVector End = Start + ToWall * CoverHugMaxNudge;
+	const FVector End = Start + ToWall * HugReach;
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(CoverHug), /*bTraceComplex=*/false, this);
 	FHitResult Hit;
 	const FCollisionShape Shape = FCollisionShape::MakeCapsule(
@@ -269,11 +354,30 @@ void AUnitBase::HugCover()
 	// здесь вопрос физический — «куда пролезет капсула», а не «что остановит
 	// пулю». Значит юниты обязаны учитываться (в союзника вжиматься нельзя), то
 	// есть `GetShotGeometryObjects` тут был бы ошибкой.
-	TargetLocation = End;
-	if (World->SweepSingleByChannel(Hit, Start, End, FQuat::Identity,
+	if (!World->SweepSingleByChannel(Hit, Start, End, FQuat::Identity,
 		Capsule->GetCollisionObjectType(), Shape, Params))
 	{
-		TargetLocation = Start + ToWall * FMath::Max(0.f, Hit.Distance - CoverHugClearance);
+		// Свип не нащупал стену, хотя укрытие засчитано. Слепой шаг «на всю
+		// дальность» здесь запрещён: раньше он был ограничен 45 см и был почти
+		// безвреден, а на полной дальности укрытия увёл бы бойца в открытое
+		// поле. Не знаем, куда шагать, — стоим и доворачиваемся.
+		if (UTacticsCombatStatics::IsCoverDebugEnabled())
+		{
+			UE_LOG(LogXRU1Combat, Display,
+				TEXT("[Cover] %s: свип к стене НИЧЕГО не нашёл на %.0f см — подшаг пропущен, только доворот"),
+				*GetName(), HugReach);
+		}
+		FaceTowardsSmooth(DesiredFacingTarget, /*bPlayTurnAnimation=*/false, CoverHugTurnRate);
+		return;
+	}
+	FVector TargetLocation = Start + ToWall * FMath::Max(0.f, Hit.Distance - CoverHugClearance);
+
+	if (UTacticsCombatStatics::IsCoverDebugEnabled())
+	{
+		UE_LOG(LogXRU1Combat, Display,
+			TEXT("[Cover] %s: свип к стене — фактический сдвиг %.0f см (упёрлись в %s)"),
+			*GetName(), FVector::Dist2D(Start, TargetLocation),
+			Hit.GetActor() ? *GetNameSafe(Hit.GetActor()) : TEXT("ничего"));
 	}
 
 	// ⚠️ НЕ ВЫХОДИТЬ ЗА НАВМЕШ. Навмеш отступает от стен на радиус агента, а
@@ -281,6 +385,7 @@ void AUnitBase::HugCover()
 	// у него пропадает зона хода целиком: волна в AMoveRangeVisualizer стартует
 	// с проекции его позиции и без неё не строится вовсе. Поэтому от конечной
 	// точки отступаем назад, пока проекция не найдётся.
+	const FVector PreNavTarget = TargetLocation; // для лога: сколько съела проекция
 	if (const UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World))
 	{
 		const float FloorOffset = Capsule->GetScaledCapsuleHalfHeight();
@@ -305,9 +410,28 @@ void AUnitBase::HugCover()
 		TargetLocation = Reachable;
 	}
 
+	// Проекция на навмеш — единственный участник, который может МОЛЧА срезать
+	// шаг до нуля (навмеш отступает от стен на радиус агента). Видимым это
+	// делает только лог: «свип нашёл стену, а юнит не пошёл» без него неотличимо
+	// от любой другой причины.
+	if (UTacticsCombatStatics::IsCoverDebugEnabled()
+		&& FVector::Dist2D(PreNavTarget, TargetLocation) > 1.f)
+	{
+		UE_LOG(LogXRU1Combat, Display,
+			TEXT("[Cover] %s: навмеш урезал подшаг — было %.0f см, стало %.0f см"),
+			*GetName(), FVector::Dist2D(Start, PreNavTarget),
+			FVector::Dist2D(Start, TargetLocation));
+	}
+
 	// Идти уже некуда — не поднимаем шаг ради пары миллиметров.
 	if (FVector::DistSquared2D(Start, TargetLocation) < FMath::Square(CoverHugArriveTolerance))
 	{
+		if (UTacticsCombatStatics::IsCoverDebugEnabled())
+		{
+			UE_LOG(LogXRU1Combat, Display,
+				TEXT("[Cover] %s: подшаг не нужен (%.1f см < допуска %.1f) — только доворот"),
+				*GetName(), FVector::Dist2D(Start, TargetLocation), CoverHugArriveTolerance);
+		}
 		FaceTowardsSmooth(DesiredFacingTarget, /*bPlayTurnAnimation=*/false, CoverHugTurnRate);
 		return;
 	}
@@ -337,6 +461,14 @@ void AUnitBase::HugCover()
 	PendingTurnAmount = 0.f;
 	ActiveTurnRate = 0.f;
 	bCoverHugStepping = true;
+
+	if (UTacticsCombatStatics::IsCoverDebugEnabled())
+	{
+		UE_LOG(LogXRU1Combat, Display,
+			TEXT("[Cover] %s: подшаг СТАРТОВАЛ — %.0f см к (%.0f, %.0f)"),
+			*GetName(), FVector::Dist2D(Start, TargetLocation),
+			TargetLocation.X, TargetLocation.Y);
+	}
 
 	// Поза становится «идёт» ДО первого кадра подшага, иначе юнит успеет
 	// проехать часть пути в статичной позе укрытия.
@@ -368,6 +500,12 @@ void AUnitBase::FaceTowardsSmooth(const FVector& TargetLocation, bool bPlayTurnA
 		PendingTurnAmount = 0.f;
 		ActiveTurnRate = 0.f;
 		UTacticsCombatStatics::FaceActorTowards(this, TargetLocation);
+		if (UTacticsCombatStatics::IsCoverDebugEnabled())
+		{
+			UE_LOG(LogXRU1Combat, Display,
+				TEXT("[Turn] %s: мгновенный доворот, yaw=%.0f (дельта %.0f° < %.0f°)"),
+				*GetName(), DesiredYaw, Delta, TurnInPlaceMinAngle);
+		}
 		NotifyUnitStateChanged();
 		return;
 	}
@@ -478,8 +616,9 @@ void AUnitBase::FacePeekEdge()
 		return;
 	}
 
-	float EdgeDistance = 0.f;
-	const FVector EdgeSide = Cover->FindPeekEdgeSide(EdgeDistance);
+	// Край — из кэша (§6): peek стартует только у стоящего юнита, чей кэш
+	// пересчитан последним EvaluateSurroundings на этой позиции.
+	const FVector EdgeSide = Cover->PeekEdgeDirection;
 	FVector ToWall = Cover->BestCoverDirection;
 	ToWall.Z = 0.f;
 	if (EdgeSide.IsNearlyZero() || !ToWall.Normalize())
@@ -517,8 +656,25 @@ void AUnitBase::UpdateCoverHugStep(float DeltaSeconds)
 {
 	// Пришёл новый приказ на движение — подшаг больше не актуален, и держать
 	// заниженную скорость нельзя: боец пополз бы весь ход шагом.
-	if (UTacticsCombatStatics::IsUnitInTransit(this))
+	//
+	// ⚠️ «Новый приказ» — ТОЛЬКО активный path following. Здесь дважды сидел
+	// один и тот же баг самоотмены: сначала IsUnitInTransit (видит скорость,
+	// которую создаёт сам подшаг), затем AUnitAIController::IsMoving (включает
+	// PendingSettlementUnit и IsMoveSettlementInProgress — то есть сам подшаг).
+	// Оба раза шаг умирал на первом тике (лог: план 21–55 см, факт 0–1 см,
+	// «подшаг завершён» не печатался), а bApplyCoverFacing=false заодно молча
+	// отменял доворот к краю. Настоящий новый приказ во время подшага почти
+	// невозможен (MoveAlongRoute отвергает его при живом settlement) — проверка
+	// оставлена страховкой от прямых MoveTo* мимо MoveAlongRoute.
+	const AUnitAIController* UnitAI = Cast<AUnitAIController>(GetController());
+	if (UnitAI && UnitAI->GetMoveStatus() != EPathFollowingStatus::Idle)
 	{
+		if (UTacticsCombatStatics::IsCoverDebugEnabled())
+		{
+			UE_LOG(LogXRU1Combat, Display,
+				TEXT("[Cover] %s: подшаг ОТМЕНЁН — активен path following (новый приказ)"),
+				*GetName());
+		}
 		FinishCoverHugStep(/*bApplyCoverFacing=*/false);
 		return;
 	}
@@ -529,11 +685,21 @@ void AUnitBase::UpdateCoverHugStep(float DeltaSeconds)
 	ToTarget.Z = 0.f;
 	const float Distance = ToTarget.Size();
 
-	// Дошли — или уперлись во что-то и стоим (страховка по времени: путь короткий,
-	// на него заведомо хватает нескольких десятых секунды).
-	const float Timeout = FMath::Max(1.f, (CoverHugMaxNudge / FMath::Max(1.f, CoverHugStepSpeed)) * 3.f);
+	// Дошли — или уперлись во что-то и стоим (страховка по времени: путь не
+	// длиннее дальности укрытия, тройного запаса по времени заведомо хватает).
+	const float Timeout = FMath::Max(1.f,
+		(UTacticsCombatStatics::GetCoverTuning(GetWorld())->CoverTraceDistance
+			/ FMath::Max(1.f, CoverHugStepSpeed)) * 3.f);
 	if (Distance <= CoverHugArriveTolerance || CoverHugStepElapsed >= Timeout)
 	{
+		if (UTacticsCombatStatics::IsCoverDebugEnabled())
+		{
+			UE_LOG(LogXRU1Combat, Display,
+				TEXT("[Cover] %s: подшаг %s за %.2f с (осталось %.1f см)"),
+				*GetName(),
+				Distance <= CoverHugArriveTolerance ? TEXT("ДОШЁЛ") : TEXT("остановлен ПО ТАЙМАУТУ"),
+				CoverHugStepElapsed, Distance);
+		}
 		FinishCoverHugStep();
 		return;
 	}
@@ -562,6 +728,15 @@ void AUnitBase::FinishCoverHugStep(bool bApplyCoverFacing)
 	}
 	if (bApplyCoverFacing && !CoverHugFacingDirection.IsNearlyZero())
 	{
+		if (UTacticsCombatStatics::IsCoverDebugEnabled())
+		{
+			// Вторая точка следа доворотов (первая — «прижатие»): если итоговая
+			// стойка в [Peek] не совпадёт с этим yaw — юнита развернул кто-то
+			// после завершения всей последовательности HugCover.
+			UE_LOG(LogXRU1Combat, Display,
+				TEXT("[Cover] %s: подшаг завершён — доворот к yaw=%.0f (сейчас %.0f)"),
+				*GetName(), CoverHugFacingDirection.Rotation().Yaw, GetActorRotation().Yaw);
+		}
 		FaceTowardsSmooth(GetActorLocation() + CoverHugFacingDirection * 100.f,
 			/*bPlayTurnAnimation=*/false, CoverHugTurnRate);
 	}
@@ -581,6 +756,14 @@ void AUnitBase::UpdateTurnInPlace(float DeltaSeconds)
 		bTurningInPlace = false;
 		PendingTurnAmount = 0.f;
 		ActiveTurnRate = 0.f;
+		if (UTacticsCombatStatics::IsCoverDebugEnabled())
+		{
+			// Точка сверки для «не разворачивается»: если этот yaw верный, а в
+			// кадре юнит смотрит иначе — его развернул кто-то ПОСЛЕ доворота.
+			UE_LOG(LogXRU1Combat, Display,
+				TEXT("[Turn] %s: доворот завершён, yaw=%.0f"),
+				*GetName(), TurnTargetYaw);
+		}
 		NotifyUnitStateChanged(); // ABP гасит анимацию доворота
 		return;
 	}
@@ -800,6 +983,7 @@ void AUnitBase::HandleHealthChanged(const FOnAttributeChangeData& Data)
 		if (Data.NewValue < Data.OldValue)
 		{
 			OnHitReact();
+			PlayUnitSound(EUnitSoundEvent::Hit);
 		}
 		NotifyUnitStateChanged();
 	}
@@ -813,6 +997,11 @@ void AUnitBase::SetDowned(bool bNewDowned, float ReviveHealth)
 	}
 
 	bIsDowned = bNewDowned;
+	// Звук ставится по подтверждённой смене состояния, а не по запуску montage:
+	// отменённое падение/подъём не должны оставить звук без события.
+	PlayUnitSound(bIsDowned ? EUnitSoundEvent::Downed : EUnitSoundEvent::Revive);
+	// Тяжелораненый лежит без шкалы; поднятый медиком получает её обратно.
+	SetOverheadHUDVisible(!bIsDowned);
 	UAbilitySystemComponent* ASC = GetAbilitySystemComponent();
 
 	if (bIsDowned)
@@ -861,6 +1050,9 @@ void AUnitBase::Die()
 		return;
 	}
 	bIsDead = true;
+	PlayUnitSound(EUnitSoundEvent::Death);
+	// Шкала HP над трупом — самый заметный визуальный мусор боя.
+	SetOverheadHUDVisible(false);
 	// Пока назначенный montage играет через BP-хук, Dead state не запускает
 	// вторую death sequence под тем же Default Slot. Если montage отсутствует,
 	// старый Dead state остаётся штатным fallback.
@@ -909,7 +1101,7 @@ void AUnitBase::NotifyDeathMontageFinished(bool bInterrupted)
 	{
 		return;
 	}
-	UE_LOG(LogTemp, Verbose, TEXT("[Death] %s montage %s — terminal ragdoll"),
+	UE_LOG(LogXRU1Combat, Verbose, TEXT("[Death] %s montage %s — terminal ragdoll"),
 		*GetNameSafe(this), bInterrupted ? TEXT("interrupted") : TEXT("completed"));
 	StartRagdoll();
 }
@@ -1004,6 +1196,8 @@ void AUnitBase::Evacuate()
 		return;
 	}
 	bIsEvacuated = true;
+	PlayUnitSound(EUnitSoundEvent::Evacuated);
+	SetOverheadHUDVisible(false);
 
 	SetSelectionHighlight(false);
 	SetHoverHighlight(false);

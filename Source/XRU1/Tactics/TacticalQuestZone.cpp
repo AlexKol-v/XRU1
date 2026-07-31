@@ -12,7 +12,25 @@ ATacticalQuestZone::ATacticalQuestZone()
 
 	TriggerBox = CreateDefaultSubobject<UBoxComponent>(TEXT("TriggerBox"));
 	TriggerBox->InitBoxExtent(FVector(200.f, 200.f, 100.f));
-	TriggerBox->SetCollisionProfileName(TEXT("Trigger"));
+	// Не стандартный Trigger: его ObjectType = WorldDynamic, а cover и линия огня
+	// трассируются LineTraceByObjectType по WorldStatic/WorldDynamic. Бокс зоны
+	// тогда работает как стена — даёт бойцу внутри полное укрытие и не даёт
+	// стрелять наружу. Профиль ScenarioTrigger (DefaultEngine.ini) оставляет
+	// overlap с пешками, но выводит зону из этих трейсов.
+	TriggerBox->SetCollisionProfileName(TEXT("ScenarioTrigger"));
+
+	// Профиль даёт только ObjectType (чтобы cover/LOS-трейсы по WorldStatic и
+	// WorldDynamic зону не видели). Ответы каналов задаём здесь и явно: полагаться
+	// на DefaultResponse ini нельзя — неуказанный канал молча становится Block, и
+	// тогда бокс зоны перехватывает курсорный трейс по Pawn. Клик по бойцу внутри
+	// зоны попадал в саму зону, и целевые способности (лечение) выбрать было нельзя.
+	TriggerBox->SetCollisionResponseToAllChannels(ECR_Ignore);
+	TriggerBox->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
+	TriggerBox->SetGenerateOverlapEvents(true);
+
+	// Триггер не существует для навигации ни при каком профиле: иначе рекаст
+	// вырезал бы навмеш ровно там, куда шаг обучения просит прийти.
+	TriggerBox->SetCanEverAffectNavigation(false);
 	SetRootComponent(TriggerBox);
 }
 
@@ -41,7 +59,7 @@ void ATacticalQuestZone::HandleBeginOverlap(
 		return;
 	}
 
-	if (!UTacticalQuestEvents::BroadcastQuestEvent(this, EventChannel, Unit, 1))
+	if (!UTacticalQuestEvents::BroadcastQuestEventEx(this, EventChannel, Unit, this, 1))
 	{
 		return;
 	}

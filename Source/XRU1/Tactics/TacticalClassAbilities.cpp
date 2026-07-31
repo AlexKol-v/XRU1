@@ -1,4 +1,5 @@
 #include "TacticalClassAbilities.h"
+#include "XRU1Log.h"
 #include "UnitBase.h"
 #include "ActionPointsComponent.h"
 #include "TacticsGameplayTags.h"
@@ -141,6 +142,10 @@ bool UGA_HunkerDown::CanActivateAbility(const FGameplayAbilitySpecHandle Handle,
 void UGA_HunkerDown::OnBuffActivated()
 {
 	AUnitBase* Unit = Cast<AUnitBase>(GetAvatarActorFromActorInfo());
+	if (Unit)
+	{
+		Unit->PlayUnitSound(EUnitSoundEvent::HunkerDown);
+	}
 	if (UTacticalQuestEvents::IsPlayerSideUnit(Unit, Unit))
 	{
 		UTacticalQuestEvents::BroadcastQuestEvent(
@@ -163,6 +168,10 @@ UGA_Taunt::UGA_Taunt()
 void UGA_Taunt::OnBuffActivated()
 {
 	AUnitBase* Unit = Cast<AUnitBase>(GetAvatarActorFromActorInfo());
+	if (Unit)
+	{
+		Unit->PlayUnitSound(EUnitSoundEvent::Taunt);
+	}
 	if (UTacticalQuestEvents::IsPlayerSideUnit(Unit, Unit))
 	{
 		UTacticalQuestEvents::BroadcastQuestEvent(
@@ -286,18 +295,22 @@ void UGA_Heal::ActivateAbility(
 	if (bMechanicsApplied)
 	{
 		OnHealApplied(Target, bRevive);
+		if (Healer)
+		{
+			Healer->PlayUnitSound(EUnitSoundEvent::Heal);
+		}
 		if (UTacticalQuestEvents::IsPlayerSideUnit(Healer, Healer))
 		{
-			UTacticalQuestEvents::BroadcastQuestEvent(Healer,
+			UTacticalQuestEvents::BroadcastQuestEventEx(Healer,
 				bRevive
 					? TacticalQuestTags::Event_Tactical_Ability_Heal_Revive
 					: TacticalQuestTags::Event_Tactical_Ability_Heal_Normal,
-				Healer);
+				Healer, Target);
 		}
 	}
 	else
 	{
-		UE_LOG(LogTemp, Error, TEXT("[Heal] %s: Commit прошёл, но механика не изменила цель %s"),
+		UE_LOG(LogXRU1Combat, Error, TEXT("[Heal] %s: Commit прошёл, но механика не изменила цель %s"),
 			*GetNameSafe(Healer), *GetNameSafe(Target));
 	}
 	EndAbility(Handle, ActorInfo, ActivationInfo, true, !bMechanicsApplied);
@@ -333,6 +346,10 @@ void UGA_RunAndGun::ActivateAbility(
 
 	ActionPoints->GrantExtraPoints(ExtraActionPoints);
 	OnRunAndGun();
+	if (Unit)
+	{
+		Unit->PlayUnitSound(EUnitSoundEvent::RunAndGun);
+	}
 	if (UTacticalQuestEvents::IsPlayerSideUnit(Unit, Unit))
 	{
 		UTacticalQuestEvents::BroadcastQuestEvent(Unit,

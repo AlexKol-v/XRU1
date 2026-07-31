@@ -110,6 +110,54 @@ public:
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Tactics|Cover")
 	int32 ActiveCoverRevision = 0;
 
+	/**
+	 * КРАЙ УКРЫТИЯ (кэш последнего EvaluateSurroundings): мировое направление
+	 * вдоль стены к ближайшему краю, Zero — края нет (глухая стена / нет укрытия).
+	 *
+	 * Единственный источник правды о крае (§6 передачи): считается ОДИН раз за
+	 * evaluate, атомарно с активной геометрией. Раньше FindPeekEdgeSide дёргался
+	 * трейсами на каждый NotifyUnitStateChanged (до 8 лучей на вызов) и мог
+	 * попасть между обновлениями active-геометрии — отсюда ложные края.
+	 */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Tactics|Cover")
+	FVector PeekEdgeDirection = FVector::ZeroVector;
+
+	/** Расстояние до края (см); валидно при ненулевом PeekEdgeDirection. */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Tactics|Cover")
+	float PeekEdgeDistance = 0.f;
+
+	/**
+	 * СТОРОНА СТЕНЫ для выбора Left/Right-клипа: −1 — стена слева, +1 — справа,
+	 * 0 — края нет. Считается В ПРОЕКТНОЙ СТОЙКЕ (боец стоит вдоль стены лицом к
+	 * краю), то есть из чистой геометрии стены и края — и НЕ зависит от
+	 * фактического поворота актора. Прежний вывод из `CoverDirectionLocal.Y`
+	 * ломался, как только юнит после доворотов оказывался не вдоль стены:
+	 * порог не проходил и сторона застревала в 0 при живом крае.
+	 */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Tactics|Cover")
+	float PeekSideSign = 0.f;
+
+	/** Есть ли край для выглядывания (по кэшу последнего EvaluateSurroundings). */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Cover")
+	bool HasPeekEdge() const { return !PeekEdgeDirection.IsNearlyZero(); }
+
+	/** Плоскость стороны укрытия: нормаль (от стены к юниту, XY) + удаление. */
+	struct FCoverSidePlane
+	{
+		FVector Normal = FVector::ZeroVector;
+		float PlaneDistance = 0.f;
+	};
+
+	/**
+	 * Плоскости СВОИХ стен (кэш последнего EvaluateSurroundings) — ЕДИНЫЙ
+	 * ИСТОЧНИК ПРАВДЫ об укрытии юнита. Из этого же evaluate растут поза,
+	 * иконка и GE-тег; выстрел (`GetCoverAgainst`) даёт бонус укрытия только
+	 * если блокер лежит на одной из этих плоскостей. Иначе случайная геометрия
+	 * (склон рампы, перепад пола) давала защиту юниту, который стоит в полный
+	 * рост без иконки, — рассинхрон «выстрел с укрытием, а позы нет».
+	 */
+	TArray<FCoverSidePlane> CoverSidePlanes;
+
 	UPROPERTY(BlueprintAssignable, Category = "Tactics|Cover")
 	FOnCoverStateChanged OnCoverStateChanged;
 
@@ -195,6 +243,7 @@ public:
 	static void GatherCoverSides(const UWorld* World, const FVector& Base,
 		const UCoverTuningDataAsset* Tuning, const AActor* Ignored, TArray<FCoverSide>& OutSides);
 
+
 	/**
 	 * С КАКОЙ СТОРОНЫ КОНЧАЕТСЯ укрытие юнита: мировое направление ВДОЛЬ стены
 	 * (XY, нормализовано) в сторону ближайшего края. Zero — укрытия нет или в
@@ -211,6 +260,10 @@ public:
 	 * вопросы разные («откуда стрелять по нему» и «куда выглядывать вообще»).
 	 *
 	 * OutEdgeDistance — расстояние до края (см) от позиции юнита, 0 если края нет.
+	 *
+	 * ⚠️ В C++ НЕ вызывать напрямую: результат кэшируется в `PeekEdgeDirection` /
+	 * `PeekEdgeDistance` / `PeekSideSign` при EvaluateSurroundings — читать кэш.
+	 * Прямой вызов оставлен BlueprintPure только для совместимости с BP.
 	 */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Cover")
 	FVector FindPeekEdgeSide(float& OutEdgeDistance) const;

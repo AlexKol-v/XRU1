@@ -78,11 +78,11 @@ bool ABombObjective::TryDefuse(AUnitBase* Unit)
 	bDisarmed = bComplete;
 	OnDefuseProgress.Broadcast(DefuseProgress, RequiredActions);
 	OnDefuseStep(Unit, bComplete);
-	UTacticalQuestEvents::BroadcastQuestEvent(this,
+	UTacticalQuestEvents::BroadcastQuestEventEx(this,
 		bComplete
 			? TacticalQuestTags::Event_Tactical_Objective_Defuse_Completed
 			: TacticalQuestTags::Event_Tactical_Objective_Defuse_Progressed,
-		Unit);
+		Unit, this);
 
 	if (bComplete)
 	{
@@ -152,8 +152,8 @@ bool AEvacZone::TryEvacuate(AUnitBase* Unit)
 	{
 		return false;
 	}
-	UTacticalQuestEvents::BroadcastQuestEvent(
-		this, TacticalQuestTags::Event_Tactical_Objective_Evac_Unit, Unit);
+	UTacticalQuestEvents::BroadcastQuestEventEx(
+		this, TacticalQuestTags::Event_Tactical_Objective_Evac_Unit, Unit, this);
 	OnUnitEvacuated.Broadcast(Unit);
 	return true;
 }

@@ -1,6 +1,9 @@
 #include "TurnManagerSubsystem.h"
+#include "XRU1Log.h"
 #include "ActionPointsComponent.h"
 #include "TacticsCombatStatics.h"
+#include "TacticalAIDirectorSubsystem.h"
+#include "TacticsAudioSubsystem.h"
 #include "TacticalQuestEvents.h"
 #include "UnitAIController.h"
 #include "UnitBase.h"
@@ -26,6 +29,72 @@ void UTurnManagerSubsystem::StartCombat(const TArray<AActor*>& PlayerUnits, cons
 	bInCombat = true;
 	TurnNumber = 1;
 	BeginPhase(ETurnPhase::Player);
+}
+
+bool UTurnManagerSubsystem::RegisterUnitInCombat(AActor* Unit)
+{
+	AUnitBase* TacticalUnit = Cast<AUnitBase>(Unit);
+	if (!bInCombat || !TacticalUnit)
+	{
+		return false;
+	}
+
+	const uint8 TeamId = TacticalUnit->GetGenericTeamId().GetId();
+	if (TeamId != TacticsTeamIds::Player && TeamId != TacticsTeamIds::Enemy)
+	{
+		UE_LOG(LogXRU1Turns, Warning, TEXT("[Turns] %s не введён в бой: TeamId=%u"),
+			*GetNameSafe(Unit), TeamId);
+		return false;
+	}
+
+	TArray<TObjectPtr<AActor>>& Side = (TeamId == TacticsTeamIds::Player) ? PlayerSide : EnemySide;
+	if (Side.Contains(Unit))
+	{
+		return false;
+	}
+
+	// Размещённый враг мог остаться без контроллера, пока был выключен.
+	if (!TacticalUnit->GetController())
+	{
+		TacticalUnit->SpawnDefaultController();
+	}
+
+	Side.Add(Unit);
+	if (UActionPointsComponent* ActionPoints = Unit->FindComponentByClass<UActionPointsComponent>())
+	{
+		ActionPoints->ResetForNewTurn();
+	}
+	OnUnitsChanged.Broadcast();
+	return true;
+}
+
+bool UTurnManagerSubsystem::UnregisterUnitFromCombat(AActor* Unit)
+{
+	if (!Unit)
+	{
+		return false;
+	}
+
+	const int32 EnemyIndex = EnemySide.IndexOfByKey(Unit);
+	if (EnemyIndex != INDEX_NONE)
+	{
+		EnemySide.RemoveAt(EnemyIndex);
+		// Очередь вражеского хода индексирует ровно этот массив: без коррекции
+		// удаление до текущего индекса пропустило бы следующего врага.
+		if (EnemyIndex < EnemyTurnIndex)
+		{
+			--EnemyTurnIndex;
+		}
+		OnUnitsChanged.Broadcast();
+		return true;
+	}
+
+	if (PlayerSide.Remove(Unit) > 0)
+	{
+		OnUnitsChanged.Broadcast();
+		return true;
+	}
+	return false;
 }
 
 void UTurnManagerSubsystem::SetTurnLimit(int32 NewLimit)
@@ -131,10 +200,32 @@ void UTurnManagerSubsystem::BeginPhase(ETurnPhase Phase)
 {
 	CurrentPhase = Phase;
 	ResetActionPointsForSide(Phase == ETurnPhase::Player ? PlayerSide : EnemySide);
+
+	// Память контактов стареет ровно на границе хода: внутри хода достоверность
+	// не должна «плыть» между решениями одного и того же бойца.
+	if (UWorld* World = GetWorld())
+	{
+		if (UTacticalAIDirectorSubsystem* Director =
+			World->GetSubsystem<UTacticalAIDirectorSubsystem>())
+		{
+			Director->AgeContacts(TurnNumber);
+		}
+	}
 	OnTurnStarted.Broadcast(Phase);
 	if (!bInCombat || CurrentPhase != Phase)
 	{
 		return; // listener мог синхронно завершить бой или сменить фазу
+	}
+
+	// Смена фазы — самый важный для игрока звуковой ориентир: без него непонятно,
+	// закончился ход врага или бой просто «завис».
+	if (const UWorld* World = GetWorld())
+	{
+		if (UTacticsAudioSubsystem* Audio = World->GetGameInstance()
+			? World->GetGameInstance()->GetSubsystem<UTacticsAudioSubsystem>() : nullptr)
+		{
+			Audio->PlayTurnStarted(Phase == ETurnPhase::Player);
+		}
 	}
 
 	if (Phase == ETurnPhase::Player)
@@ -180,6 +271,20 @@ void UTurnManagerSubsystem::NotifyUnitAttacked(const AActor* Unit)
 	}
 }
 
+void UTurnManagerSubsystem::NotifyUnitTargeted(const AActor* Target)
+{
+	if (Target)
+	{
+		++TargetedThisTurn.FindOrAdd(TObjectKey<AActor>(Target));
+	}
+}
+
+int32 UTurnManagerSubsystem::GetTimesTargetedThisTurn(const AActor* Target) const
+{
+	const int32* Found = Target ? TargetedThisTurn.Find(TObjectKey<AActor>(Target)) : nullptr;
+	return Found ? *Found : 0;
+}
+
 bool UTurnManagerSubsystem::IsAttackThrottled(const AActor* Unit) const
 {
 	if (MaxAttackersPerTurn < 0 || !Unit)
@@ -204,8 +309,9 @@ bool UTurnManagerSubsystem::IsAttackThrottled(const AActor* Unit) const
 void UTurnManagerSubsystem::StartEnemyTurnProcessing()
 {
 	EnemyTurnIndex = 0;
-	// Лимит атакующих считается ЗА ХОД: новый ход — чистый счётчик.
+	// Лимит атакующих и сведение огня считаются ЗА ХОД: новый ход — чистые счётчики.
 	AttackedThisTurn.Reset();
+	TargetedThisTurn.Reset();
 	// Небольшая пауза перед первым действием: даём HUD показать смену фазы.
 	GetWorld()->GetTimerManager().SetTimer(EnemyStepTimerHandle, this,
 		&UTurnManagerSubsystem::ProcessNextEnemyUnit, EnemyStepInterval, false);
@@ -243,7 +349,7 @@ void UTurnManagerSubsystem::ProcessNextEnemyUnit()
 
 		if (Unit && UTacticsCombatStatics::IsUnitAlive(Unit))
 		{
-			UE_LOG(LogTemp, Error,
+			UE_LOG(LogXRU1Turns, Error,
 				TEXT("[TurnManager] Skipping living enemy %s: Pawn=%s Controller=%s (UnitAIController required)."),
 				*GetNameSafe(Unit), *GetNameSafe(Pawn),
 				*GetNameSafe(Pawn ? Pawn->GetController() : nullptr));

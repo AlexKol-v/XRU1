@@ -1,4 +1,5 @@
 #include "CoverDetectionComponent.h"
+#include "XRU1Log.h"
 #include "CoverTuningDataAsset.h"
 #include "TacticsCombatStatics.h"
 #include "TacticsGameplayTags.h"
@@ -29,6 +30,28 @@ static TAutoConsoleVariable<int32> CVarCoverDebug(
 
 namespace
 {
+	/**
+	 * Допуск «точка лежит на плоскости стены» (см). Один на все проверки
+	 * идентичности стен: и удержание active-стены, и гейт выстрела по своим
+	 * плоскостям. Чуть шире стыков модульных секций (§2 передачи).
+	 */
+	constexpr float CoverPlaneTolerance = 16.f;
+
+	/** Лежит ли точка на плоскости одной из перечисленных стен. */
+	bool PointMatchesPlanes(const TArray<UCoverDetectionComponent::FCoverSidePlane>& Planes,
+		const FVector& Point)
+	{
+		for (const UCoverDetectionComponent::FCoverSidePlane& Plane : Planes)
+		{
+			if (FMath::Abs(FVector::DotProduct(Plane.Normal, Point) - Plane.PlaneDistance)
+				<= CoverPlaneTolerance)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
 	/**
 	 * Половина капсулы владельца (см), фолбэк — дефолт ACharacter (88). Нужна,
 	 * чтобы из ActorLocation (центр капсулы) получить точку ПОЛА: высоты укрытия
@@ -286,6 +309,15 @@ ECoverType UCoverDetectionComponent::EvaluateSurroundings()
 		Candidates.Add(MakeCoverCandidate(Side, Owner->GetWorld(), FloorBase, Tuning, Owner));
 	}
 
+	// ЕДИНЫЙ ИСТОЧНИК ПРАВДЫ: плоскости всех сторон записываются здесь и только
+	// здесь. Поза/иконка/GE берут тип из этого же evaluate, а выстрел
+	// (GetCoverAgainst) даёт бонус лишь блокеру на одной из этих плоскостей.
+	CoverSidePlanes.Reset();
+	for (const FCoverCandidate& Candidate : Candidates)
+	{
+		CoverSidePlanes.Add({ Candidate.WallNormal, Candidate.PlaneDistance });
+	}
+
 	const FCoverCandidate* BestCandidate = nullptr;
 	for (const FCoverCandidate& Candidate : Candidates)
 	{
@@ -348,6 +380,40 @@ ECoverType UCoverDetectionComponent::EvaluateSurroundings()
 		}
 	}
 
+	// КРАЙ И СТОРОНА ВЫГЛЯДЫВАНИЯ — здесь и только здесь (§6): активная геометрия
+	// уже зафиксирована выше, значит пробы края гарантированно сверяются с той
+	// стеной, которую мы только что выбрали. Пересчёт безусловный: даже при
+	// удержанной стене позиция юнита могла сдвинуться (подшаг к стене).
+	PeekEdgeDirection = FindPeekEdgeSide(PeekEdgeDistance);
+
+	// Сторона стены в ПРОЕКТНОЙ стойке: боец стоит вдоль стены лицом к краю
+	// (Forward = PeekEdgeDirection), право = Cross(Up, Forward). Знак говорит,
+	// с какой стороны от бойца стена, — чистая геометрия, фактический поворот
+	// актора не участвует. В правильной стойке совпадает с прежним
+	// sign(CoverDirectionLocal.Y); в любой другой — определён, а не ноль.
+	PeekSideSign = PeekEdgeDirection.IsNearlyZero()
+		? 0.f
+		: FMath::Sign(FVector::DotProduct(BestCoverDirection,
+			FVector::CrossProduct(FVector::UpVector, PeekEdgeDirection)));
+
+	// СВОДКА КАЖДОГО EVALUATE — полный след решения одной строкой: где стоим,
+	// что нашли, удержали или перевыбрали стену, чем кончился поиск края.
+	// Evaluate дёргается только в settle-точках (BeginPlay, финиш подшага,
+	// финиш перемещения), так что спама нет, а последовательность строк — это
+	// готовая трасса вызовов для разбора «кто и когда пересчитал укрытие».
+	if (CVarCoverDebug.GetValueOnAnyThread() > 0)
+	{
+		const FVector Loc = Owner->GetActorLocation();
+		UE_LOG(LogXRU1Combat, Log,
+			TEXT("[Cover] %s: evaluate @(%.0f, %.0f) — cover=%d, сторон %d, стена %s (active=%s), край %s (%.0f см, сторона %+.0f)"),
+			*GetNameSafe(Owner), Loc.X, Loc.Y,
+			static_cast<int32>(BestCoverAround), CoverSides.Num(),
+			SelectedCandidate ? (bKeptActiveGeometry ? TEXT("удержана") : TEXT("перевыбрана")) : TEXT("НЕТ"),
+			*GetNameSafe(ActiveCoverComponent.IsValid() ? ActiveCoverComponent->GetOwner() : nullptr),
+			HasPeekEdge() ? TEXT("есть") : TEXT("НЕТ"),
+			PeekEdgeDistance, PeekSideSign);
+	}
+
 	// Оба события видят уже согласованные тип, GE и geometry. Старый delegate
 	// сохраняет прежнюю семантику и не стреляет при Full→Full.
 	if (bCoverTypeChanged)
@@ -372,7 +438,13 @@ bool UCoverDetectionComponent::MatchesActiveCoverHit(const FHitResult& Hit) cons
 
 	UPrimitiveComponent* HitComponent = Hit.GetComponent();
 	const FVector HitNormal = Hit.ImpactNormal.GetSafeNormal2D();
-	if (!HitComponent || !ActiveCoverComponent.IsValid() || HitNormal.IsNearlyZero())
+	// ⚠️ Валидность ActiveCoverComponent НЕ требуется. Он бывает пуст при живой
+	// стене: контрольный луч в MakeCoverCandidate не подтвердил поверхность, и
+	// кандидат зафиксирован без компонента. Требование IsValid() здесь проваливало
+	// КАЖДУЮ пробу края → «край» на первом же шаге при непрерывной стене
+	// (доказано логом: «стена есть, но НЕ active, active=None»). Идентичность
+	// стены и так решает плоскость — см. блок ниже.
+	if (!HitComponent || HitNormal.IsNearlyZero())
 	{
 		return false;
 	}
@@ -384,9 +456,19 @@ bool UCoverDetectionComponent::MatchesActiveCoverHit(const FHitResult& Hit) cons
 		return true;
 	}
 
-	return HitComponent == ActiveCoverComponent.Get()
-		&& FVector::DotProduct(HitNormal, ActiveCoverNormal) > 0.9659f
-		&& FMath::Abs(HitPlaneDistance - ActiveCoverPlaneDistance) <= 8.f;
+	// ⚠️ КОМПОНЕНТ НАМЕРЕННО НЕ СРАВНИВАЕТСЯ.
+	//
+	// Уровни собираются из модульных секций: одна визуально сплошная стена — это
+	// десяток отдельных StaticMeshActor. Требование «тот же компонент» рвало её
+	// на куски: шаг вдоль стены попадал в соседнюю секцию, совпадение не
+	// проходило, и система объявляла КРАЙ укрытия через 15–45 см. Отсюда боец,
+	// доворачивающийся «к краю» посреди стены, и полностью мёртвое выглядывание.
+	//
+	// Одна и та же стена — это одна ПЛОСКОСТЬ: совпали нормаль и её удаление от
+	// начала координат. Допуск по плоскости чуть шире прежнего, чтобы пережить
+	// стыки модульных секций и небольшие зазоры между ними.
+	return FVector::DotProduct(HitNormal, ActiveCoverNormal) > 0.9659f
+		&& FMath::Abs(HitPlaneDistance - ActiveCoverPlaneDistance) <= CoverPlaneTolerance;
 }
 
 void UCoverDetectionComponent::SetActiveCoverGeometry(const FVector& NewAnchor,
@@ -454,8 +536,14 @@ FVector UCoverDetectionComponent::FindPeekEdgeSide(float& OutEdgeDistance) const
 	// иначе сторона дёргалась бы между пересчётами.
 	FVector BestSide = FVector::ZeroVector;
 	float BestEdgeDistance = TNumericLimits<float>::Max();
-	for (const float SideSign : {1.f, -1.f})
+	// В кого упёрлась ПОСЛЕДНЯЯ совпавшая проба на каждой стороне. Нужно ветке
+	// «край не найден»: по актору видно, продолжается ли та же стена или пробы
+	// склеили ЧУЖУЮ коллинеарную стену по плоскости (§2) — снаружи эти случаи
+	// неотличимы, а лечатся противоположно.
+	const AActor* FarthestSameWall[2] = { nullptr, nullptr };
+	for (int32 SideIndex = 0; SideIndex < 2; ++SideIndex)
 	{
+		const float SideSign = SideIndex == 0 ? 1.f : -1.f;
 		for (float Offset = Step; Offset <= Tuning->PeekEdgeMaxDistance; Offset += Step)
 		{
 			const FVector Probe = FloorBase + Side * (SideSign * Offset);
@@ -466,7 +554,21 @@ FVector UCoverDetectionComponent::FindPeekEdgeSide(float& OutEdgeDistance) const
 				Owner, 0.f, &ProbeHit);
 			if (ProbeCover != ECoverType::None && MatchesActiveCoverHit(ProbeHit))
 			{
+				FarthestSameWall[SideIndex] = ProbeHit.GetActor();
 				continue; // ещё вдоль той же active wall — шагаем дальше к краю
+			}
+
+			// Почему шаг прервался: реального края нет / стена та же, но не
+			// опознана как active. Второе — ложный край, из-за него боец
+			// доворачивается «в никуда» и не выглядывает.
+			if (CVarCoverDebug.GetValueOnAnyThread() > 0)
+			{
+				UE_LOG(LogXRU1Combat, Log,
+					TEXT("[Cover] %s: край на %.0f см — стена %s, попадание в %s, active=%s"),
+					*GetNameSafe(Owner), Offset,
+					ProbeCover == ECoverType::None ? TEXT("КОНЧИЛАСЬ") : TEXT("есть, но НЕ active"),
+					*GetNameSafe(ProbeHit.GetComponent() ? ProbeHit.GetComponent()->GetOwner() : nullptr),
+					*GetNameSafe(ActiveCoverComponent.IsValid() ? ActiveCoverComponent->GetOwner() : nullptr));
 			}
 
 			if (Offset < BestEdgeDistance)
@@ -480,6 +582,18 @@ FVector UCoverDetectionComponent::FindPeekEdgeSide(float& OutEdgeDistance) const
 
 	if (BestSide.IsNearlyZero())
 	{
+		// Раньше эта ветка молчала, и «юнит у угла, а края нет» было не отличить
+		// от честной глухой стены. Акторы последних совпавших проб дают ответ:
+		// тот же актор — стена реально длинная; другой — угол «зашит» склейкой
+		// коллинеарной соседки по плоскости.
+		if (CVarCoverDebug.GetValueOnAnyThread() > 0)
+		{
+			UE_LOG(LogXRU1Combat, Log,
+				TEXT("[Cover] %s: край НЕ найден — плоскость непрерывна ≥%.0f см: +сторона до %s, −сторона до %s (active=%s)"),
+				*GetNameSafe(Owner), Tuning->PeekEdgeMaxDistance,
+				*GetNameSafe(FarthestSameWall[0]), *GetNameSafe(FarthestSameWall[1]),
+				*GetNameSafe(ActiveCoverComponent.IsValid() ? ActiveCoverComponent->GetOwner() : nullptr));
+		}
 		return FVector::ZeroVector; // глухая стена шире PeekEdgeMaxDistance
 	}
 	OutEdgeDistance = BestEdgeDistance;
@@ -541,6 +655,16 @@ ECoverType UCoverDetectionComponent::GetCoverAgainst(const AActor* Threat) const
 		FiringPositions.Add(Fallback);
 	}
 
+	// ЕДИНЫЙ ИСТОЧНИК ПРАВДЫ: если EvaluateSurroundings не нашёл юниту стен —
+	// у него нет ни позы укрытия, ни иконки, ни GE, и выстрел ОБЯЗАН считать его
+	// открытым. Раньше физика ниже решала вопрос заново и находила «укрытие» в
+	// случайной геометрии (склон рампы, перепад пола) — юнит в полный рост без
+	// иконки получал бонус защиты.
+	if (BestCoverAround == ECoverType::None || CoverSidePlanes.Num() == 0)
+	{
+		return ECoverType::None;
+	}
+
 	ECoverType Result = ECoverType::Full; // худшее для стрелка; ищем минимум
 	FHitResult CoverHit;
 	FVector BestEye = FiringPositions[0];
@@ -558,11 +682,27 @@ ECoverType UCoverDetectionComponent::GetCoverAgainst(const AActor* Threat) const
 		FHitResult Hit;
 		// Толстый свип: волосяной луч на скользящем угле проскакивал вдоль грани
 		// и терял укрытие. Толщина — та же, что у луча линии огня.
-		const ECoverType FromHere = TraceLength > 0.f
+		ECoverType FromHere = TraceLength > 0.f
 			? TraceCoverAtLocation(Owner->GetWorld(), FloorBase, ToShooter,
 				TraceLength, Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
 				Owner, Tuning->LosSphereRadius, &Hit)
 			: ECoverType::None;
+
+		// Гейт единого источника: блокер обязан лежать на плоскости СВОЕЙ стены.
+		// Чужая геометрия между целью и стрелком — вопрос линии огня, а не
+		// бонуса защиты: защищает только укрытие, у которого юнит СТОИТ.
+		if (FromHere != ECoverType::None
+			&& !PointMatchesPlanes(CoverSidePlanes, Hit.ImpactPoint))
+		{
+			if (CVarCoverDebug.GetValueOnAnyThread() > 0)
+			{
+				UE_LOG(LogXRU1Combat, Log,
+					TEXT("[Cover] %s vs %s: блокер %s НЕ моя стена (плоскость не совпала) — фланг"),
+					*GetNameSafe(Owner), *GetNameSafe(Threat),
+					*GetNameSafe(Hit.GetActor()));
+			}
+			FromHere = ECoverType::None;
+		}
 
 		if (FromHere < Result)
 		{
@@ -583,7 +723,7 @@ ECoverType UCoverDetectionComponent::GetCoverAgainst(const AActor* Threat) const
 		// можно только из центра, и никакого пика на самом деле нет.
 		static const TCHAR* CoverNames[] = { TEXT("None"), TEXT("Half"), TEXT("Full") };
 		const float BestTraceLength = GetCoverTraceLength(Tuning, FloorBase, BestEye);
-		UE_LOG(LogTemp, Log,
+		UE_LOG(LogXRU1Combat, Log,
 			TEXT("[Cover] %s vs %s: pos=%d distToShot=%.0f traceLen=%.0f cover=%s blocker=%s"),
 			*GetNameSafe(Owner), *GetNameSafe(Threat), FiringPositions.Num(),
 			FVector::Dist2D(FloorBase, BestEye), BestTraceLength,
@@ -673,6 +813,7 @@ ECoverType UCoverDetectionComponent::EvaluateCoverAtLocation(const FVector& Base
 	// и гонять полный расчёт выглядывания на каждую пару слишком дорого.
 	// Погрешность ограничена выносом peek (≈1 м) и заметна только вплотную.
 	const UCoverTuningDataAsset* Tuning = GetTuning();
+
 	// Тот же кламп «стена должна быть МЕЖДУ», что и в GetCoverAgainst: план и
 	// факт обязаны считаться одинаково, иначе AI выберет точку, которая по
 	// прибытии окажется без укрытия (инвариант «план == факт»).
@@ -681,9 +822,36 @@ ECoverType UCoverDetectionComponent::EvaluateCoverAtLocation(const FVector& Base
 	{
 		return ECoverType::None;
 	}
-	return TraceCoverAtLocation(Owner->GetWorld(), Base, ToThreat,
+
+	// ЕДИНЫЙ ИСТОЧНИК ПРАВДЫ и для ПЛАНА: в точке собираются те же стороны, что
+	// соберёт EvaluateSurroundings по прибытии, и бонус даёт только их плоскость.
+	// Без этого план обещал бы «укрытие» от склона рампы, которого по прибытии
+	// не окажется ни в позе, ни в иконке, ни в защите. Цена — лучи
+	// GatherCoverSides на точку; планирование это уже переживает у стоящих
+	// юнитов, а здесь точек на порядок меньше, чем у поля хода.
+	TArray<FCoverSide> SidesAtPoint;
+	GatherCoverSides(Owner->GetWorld(), Base, Tuning, Owner, SidesAtPoint);
+	if (SidesAtPoint.Num() == 0)
+	{
+		return ECoverType::None; // стен рядом нет — и стоя здесь юнит был бы открыт
+	}
+	TArray<FCoverSidePlane> PlanesAtPoint;
+	PlanesAtPoint.Reserve(SidesAtPoint.Num());
+	for (const FCoverSide& Side : SidesAtPoint)
+	{
+		const FCoverCandidate Candidate = MakeCoverCandidate(Side, Owner->GetWorld(), Base, Tuning, Owner);
+		PlanesAtPoint.Add({ Candidate.WallNormal, Candidate.PlaneDistance });
+	}
+
+	FHitResult PlanHit;
+	const ECoverType PlanResult = TraceCoverAtLocation(Owner->GetWorld(), Base, ToThreat,
 		TraceLength, Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
-		Owner, Tuning->LosSphereRadius);
+		Owner, Tuning->LosSphereRadius, &PlanHit);
+	if (PlanResult != ECoverType::None && !PointMatchesPlanes(PlanesAtPoint, PlanHit.ImpactPoint))
+	{
+		return ECoverType::None; // блокер не из сторон этой точки — там юнит был бы открыт
+	}
+	return PlanResult;
 }
 
 ECoverType UCoverDetectionComponent::TraceCoverAtLocation(const UWorld* World, const FVector& Base,

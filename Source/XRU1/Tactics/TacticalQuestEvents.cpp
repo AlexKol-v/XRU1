@@ -4,6 +4,9 @@
 #include "Engine/World.h"
 #include "QuestGameplayTags.h"
 #include "QuestTypes.h"
+#include "TacticsDebug.h"
+#include "TacticsGameInstance.h"
+#include "XRU1Log.h"
 #include "TurnManagerSubsystem.h"
 
 namespace TacticalQuestTags
@@ -63,10 +66,28 @@ bool UTacticalQuestEvents::IsPlayerSideUnit(
 	return false;
 }
 
+int32 UTacticalQuestEvents::GetScenarioRunId(const UObject* WorldContextObject)
+{
+	const UWorld* World = WorldContextObject ? WorldContextObject->GetWorld() : nullptr;
+	const UTacticsGameInstance* GameInstance = World
+		? World->GetGameInstance<UTacticsGameInstance>() : nullptr;
+	return GameInstance ? GameInstance->GetActiveScenarioRunId() : 0;
+}
+
 bool UTacticalQuestEvents::BroadcastQuestEvent(
 	const UObject* WorldContextObject,
 	FGameplayTag EventChannel,
 	UObject* Source,
+	int32 Amount)
+{
+	return BroadcastQuestEventEx(WorldContextObject, EventChannel, Source, nullptr, Amount);
+}
+
+bool UTacticalQuestEvents::BroadcastQuestEventEx(
+	const UObject* WorldContextObject,
+	FGameplayTag EventChannel,
+	UObject* Source,
+	UObject* Target,
 	int32 Amount)
 {
 	if (!WorldContextObject || !EventChannel.IsValid() || Amount <= 0 ||
@@ -80,6 +101,20 @@ bool UTacticalQuestEvents::BroadcastQuestEvent(
 	EventData.EventTag = EventChannel;
 	EventData.Amount = Amount;
 	EventData.Source = Source;
+	EventData.Target = Target;
+	// Поколение проставляем здесь, а не в каждом вызывающем: иначе один забытый
+	// emitter снова начнёт засчитываться после retry.
+	EventData.ScenarioRunId = GetScenarioRunId(WorldContextObject);
+
+	if (TacticsDebug::IsQuestLogEnabled())
+	{
+		// Источник и цель — ровно то, чего не хватало для разбора «почему шаг не
+		// закрылся»: канал совпал, а боец оказался не тот.
+		UE_LOG(LogXRU1Quest, Display,
+			TEXT("Событие %s | source=%s | target=%s | amount=%d | run=%d"),
+			*EventChannel.ToString(), *GetNameSafe(Source), *GetNameSafe(Target),
+			Amount, EventData.ScenarioRunId);
+	}
 
 	UGameplayMessageSubsystem::Get(WorldContextObject).BroadcastMessage(EventChannel, EventData);
 	return true;

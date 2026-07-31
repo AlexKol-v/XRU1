@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/SaveGame.h"
+#include "TacticsAudioTypes.h"
 #include "TacticsTypes.h"
 #include "TacticsSaveGame.generated.h"
 
@@ -30,6 +31,18 @@ public:
 	/** Роли отряда (фиксированный ростер). По умолчанию — 4 класса из ТЗ. */
 	UPROPERTY(BlueprintReadWrite, SaveGame, Category = "Tactics|Save")
 	TArray<EUnitRole> SquadRoles;
+
+	/**
+	 * Пользовательские громкости. Живут в слоте кампании, а не в GameUserSettings:
+	 * меню настроек и подсистема звука обязаны читать одно и то же состояние,
+	 * иначе «ползунок стоит на 0.3, а играет громко» становится нормой.
+	 */
+	UPROPERTY(BlueprintReadWrite, SaveGame, Category = "Tactics|Save")
+	FTacticsAudioSettings AudioSettings;
+
+	/** Настройки изображения; применяются к UGameUserSettings при загрузке слота. */
+	UPROPERTY(BlueprintReadWrite, SaveGame, Category = "Tactics|Save")
+	FTacticsVideoSettings VideoSettings;
 
 	UFUNCTION(BlueprintPure, Category = "Tactics|Save")
 	bool IsMissionCompleted(FName MissionId) const { return CompletedMissions.Contains(MissionId); }

@@ -38,6 +38,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
 	void FocusOnActor(const AActor* Target, bool bInstant = false);
 
+	/**
+	 * Перевзвод шага A1: сбрасывает one-shot и накопители поворота/зума.
+	 * Вызывается при применении политики шага обучения — «осмотритесь»
+	 * отсчитывается от начала шага, а не от загрузки карты, иначе вращение
+	 * камеры во время стриминга закрыло бы one-shot до того, как его ждут.
+	 */
+	void ReArmCameraAdjustedEvent();
+
 	/** Перелететь к точке в плоскости земли (плавно; bInstant — телепорт). */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
 	void FocusOnLocation(const FVector& Location, bool bInstant = false);
@@ -321,6 +329,29 @@ protected:
 	 */
 	float TacticalYaw = 45.f;
 	float TacticalZoom = 1800.f;
+
+	// --- Шаг A1 обучения: подтверждённая настройка ракурса ---------------------
+	//
+	// Событие `Camera.Adjusted` публикуется не по raw Q/E/колесу, а после того,
+	// как игрок реально изменил И поворот, И приближение сверх порога. Иначе шаг
+	// закрывался бы от случайного касания колеса.
+
+	/** На сколько градусов суммарно нужно повернуть камеру, чтобы засчитать шаг. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Tutorial",
+		meta = (ClampMin = "5"))
+	float AdjustedYawThreshold = 60.f;
+
+	/** На сколько сантиметров суммарно нужно изменить дистанцию камеры. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Tutorial",
+		meta = (ClampMin = "50"))
+	float AdjustedZoomThreshold = 400.f;
+
+	/** Публикует `Camera.Adjusted` один раз, когда оба порога пройдены. */
+	void ReportCameraAdjustment(float YawDelta, float ZoomDelta);
+
+	float AccumulatedYawAdjustment = 0.f;
+	float AccumulatedZoomAdjustment = 0.f;
+	bool bCameraAdjustmentReported = false;
 
 	/** Текущие цели интерполяции: обычный ракурс либо временный action-camera. */
 	float TargetYaw = 45.f;

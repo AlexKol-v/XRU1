@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "AIController.h"
 #include "Engine/TimerHandle.h"
+#include "AIBehaviorProfileDataAsset.h"
 #include "AIDecisionTypes.h"
 #include "UnitAIController.generated.h"
 
@@ -59,6 +60,14 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|AI|Tuning")
 	TObjectPtr<UAIBehaviorProfileDataAsset> BehaviorProfile;
 
+	/**
+	 * Назначает профиль уже созданному контроллеру и немедленно применяет его.
+	 * Зовёт GameMode на старте боя, выбирая профиль по уровню сложности: стиль
+	 * врага обязан отличаться на Easy/Medium/Hard, а не только его меткость.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|AI|Tuning")
+	void SetBehaviorProfile(UAIBehaviorProfileDataAsset* NewProfile);
+
 	UAIPerceptionComponent* GetUnitPerception() const { return Perception; }
 
 	/**
@@ -106,15 +115,33 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Tactics|AI")
 	EUnitAlertState GetAlertState() const { return AlertState; }
 
+	/**
+	 * Под этого бойца вскрыт: переводит его в бой независимо от того, видит ли
+	 * он противника сам. Зовёт UTacticalAIDirectorSubsystem.
+	 */
+	void NotifyPodActivated();
+
 	// --- Perception ---------------------------------------------------------
 
-	/** Радиус зрения (см). Дизайнерский параметр, влияет на дальность обнаружения. */
+	/**
+	 * Радиус зрения (см).
+	 *
+	 * ⚠️ Значение НЕ произвольное. `AUnitBase::AttackRange` = 3000, а обзор отряда
+	 * игрока (`SquadVisionRange`) = 2500. Прежние 1400 означали, что игрок
+	 * спокойно расстреливает врага с дистанции, на которой тот физически не может
+	 * его увидеть, — и враг честно стоял на посту, ничего не зная. Радиус
+	 * приведён к дистанциям, на которых реально идёт бой.
+	 *
+	 * Групповая активация и память контактов (UTacticalAIDirectorSubsystem)
+	 * страхуют остальные случаи, но обзор не должен быть заведомо меньше
+	 * дальности, с которой по бойцу ведут огонь.
+	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Perception")
-	float SightRadius = 1400.f;
+	float SightRadius = 2500.f;
 
 	/** Радиус, на котором цель теряется после обнаружения. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Perception")
-	float LoseSightRadius = 1600.f;
+	float LoseSightRadius = 2800.f;
 
 	/**
 	 * Половина угла конуса зрения (град). **180 = круговой обзор**, и это
@@ -585,7 +612,8 @@ protected:
 	bool StepPatrol(AUnitBase* Unit);
 
 	/** Движение к точке с обрезкой по бюджету пути юнита (1 AP). true — движение началось. */
-	bool MoveWithBudget(AUnitBase* Unit, const FVector& Goal, float AcceptanceRadius);
+	bool MoveWithBudget(AUnitBase* Unit, const FVector& Goal, float AcceptanceRadius,
+		int32 MaxActionPoints = 1);
 
 	/** Завершает ход юнита и уведомляет TurnManager. */
 	void FinishUnitTurn();
@@ -593,8 +621,42 @@ protected:
 	/** Планирует следующий шаг хода через ActionInterval. */
 	void ScheduleNextStep();
 
+	/** Директор групповой активации и общей памяти контактов (может быть nullptr). */
+	class UTacticalAIDirectorSubsystem* GetAIDirector() const;
+
+	/** Применяет текущие Sight-параметры к перцепции (после смены профиля). */
+	void RefreshPerceptionConfig();
+
+	/** Рисует принятое решение в мире при `xru1.AI.DebugDraw 1`. */
+	void DrawDecisionDebug(const AUnitBase* Unit, const struct FAIDecision& Decision) const;
+
 	/** Ждёт полного финиша route + cover-hug + turn-in-place. */
 	void BeginMoveSettlement(AUnitBase* Unit);
+
+public:
+	/**
+	 * Токен «этот маршрут заказал игрок». Ставится ATacticalPlayerController сразу
+	 * после принятого MoveAlongRoute. Только помеченное перемещение публикует
+	 * `Movement.Settled.*`: служебный подшаг стрелка и маршрут AI — не приказ.
+	 */
+	void MarkPlayerOrderedMove() { bPlayerOrderedMove = true; }
+
+	/**
+	 * Сценарный приказ обучения: в свою ближайшую активацию юнит обязан стрелять
+	 * именно по этой цели, минуя utility-выбор. Выстрел при этом идёт обычным
+	 * pipeline (GA_Attack → montage → FireCommit → урон), а не подменяет урон.
+	 * Приказ одноразовый: он снимается в момент активации способности.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|AI|Scripted")
+	void SetScriptedAttackOrder(AActor* Target);
+
+	UFUNCTION(BlueprintCallable, Category = "Tactics|AI|Scripted")
+	void ClearScriptedAttackOrder();
+
+	UFUNCTION(BlueprintPure, Category = "Tactics|AI|Scripted")
+	bool HasScriptedAttackOrder() const { return ScriptedAttackTarget.IsValid(); }
+
+protected:
 
 	/** Таймерная проверка и единая финализация тактического перемещения. */
 	void TryFinalizeMoveSettlement();
@@ -643,6 +705,14 @@ protected:
 	int32 DecisionOrdinalThisTurn = 0;
 
 	/**
+	 * Цели, атака по которым НЕ АКТИВИРОВАЛАСЬ в этом ходу (нет линии огня из
+	 * замороженной позиции и т.п.). Повтор бессмыслен — мир не менялся, а без
+	 * блокировки детерминированное утилити повторяло отклонённый выстрел вечно.
+	 * Сбрасывается в начале каждого хода.
+	 */
+	TArray<TWeakObjectPtr<AActor>> FailedAttackTargetsThisTurn;
+
+	/**
 	 * Манёвр в укрытие в этом ходу уже ВЫБРАН. Один выбор на ход (XCOM:
 	 * переместился — стреляй): без флага открытый юнит, не нашедший идеального
 	 * укрытия, мог бы потратить оба AP на метания и не выстрелить вовсе.
@@ -679,6 +749,32 @@ protected:
 	/** Отдельный таймер: новый AI-шаг нельзя запускать, пока юнит доводит позу у стены. */
 	FTimerHandle MoveSettlementTimerHandle;
 	TWeakObjectPtr<AUnitBase> PendingSettlementUnit;
+
+	/** Поведенческие оси активного профиля (копия — профиль может быть заменён). */
+	FAIStyleTuning Style;
+
+	/** Исходные веса оценщиков до множителей стиля — чтобы они не накапливались. */
+	TMap<TObjectPtr<UAIActionEvaluator>, float> BaseEvaluatorWeights;
+
+	/** Текущий маршрут заказан игроком (см. MarkPlayerOrderedMove). */
+	bool bPlayerOrderedMove = false;
+
+	/**
+	 * Все пригодные предложения последнего решения по убыванию скора.
+	 * Нужен фолбэк: провалившееся исполнение лучшего варианта не должно съедать
+	 * весь ход бойца (см. StepCombat).
+	 */
+	TArray<FAIDecision> RankedDecisions;
+
+	/** Цель сценарного приказа обучения (см. SetScriptedAttackOrder). */
+	TWeakObjectPtr<AActor> ScriptedAttackTarget;
+
+	/**
+	 * Стоимость запланированного перемещения в AP. Раньше финализация всегда
+	 * списывала ровно 1 AP, поэтому манёвр приходилось планировать бюджетом в
+	 * одно очко — и боец останавливался на полпути к укрытию.
+	 */
+	int32 PendingMoveActionPointCost = 1;
 
 	// --- Движение по ломаной маршрута (см. MoveAlongRoute) --------------------
 

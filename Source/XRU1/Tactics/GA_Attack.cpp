@@ -1,6 +1,7 @@
 #include "GA_Attack.h"
 #include "UnitBase.h"
 #include "CoverDetectionComponent.h"
+#include "ScenarioActorRegistry.h"
 #include "TacticsGameplayTags.h"
 #include "TacticsGameplayEffects.h"
 #include "TacticsCombatStatics.h"
@@ -106,6 +107,12 @@ EAttackTargetStatus UGA_Attack::GetTargetStatus(const AUnitBase* Shooter, const 
 	{
 		return EAttackTargetStatus::Dead;
 	}
+	// Staged-актор сценария физически стоит на карте, но скрыт и не в бою:
+	// целиться в невидимую голограмму следующей секции нельзя ни игроку, ни AI.
+	if (!UTacticalScenarioSubsystem::IsActorScenarioActive(Target))
+	{
+		return EAttackTargetStatus::Dead;
+	}
 
 	const float Distance = FVector::Dist(Shooter->GetActorLocation(), Target->GetActorLocation());
 	if (Distance > Shooter->AttackRange)
@@ -161,9 +168,41 @@ void UGA_Attack::ActivateAbility(
 	AUnitBase* Shooter = Cast<AUnitBase>(GetAvatarActorFromActorInfo());
 	AActor* Target = TriggerData ? const_cast<AActor*>(TriggerData->Target.Get()) : nullptr;
 
-	// Все проверки ДО Commit: при провале AP не списываются.
+	// Все проверки ДО Commit: при провале AP не списываются. Сценарный выстрел
+	// НЕ обходит LOS: видимость симметрична (Ф5 — цель выглядывает из-за края
+	// так же, как стрелок), поэтому если боец может стрелять по голограмме из
+	// своего укрытия, голограмма обязана видеть его через тот же peek-луч.
 	if (!Shooter || !DamageEffect || !CanTargetActor(Shooter, Target))
 	{
+		// Отказ активации обязан называть причину: немое «не активировалась»
+		// стоило дня отладки. Печатаем статус и число точек каждой стороны —
+		// по нему сразу видно, чей peek-набор не построился.
+		if (Shooter && Target)
+		{
+			const EAttackTargetStatus Status = GetTargetStatus(Shooter, Target);
+			int32 ShooterPoints = 0, TargetPoints = 0;
+			if (const UWorld* World = Shooter->GetWorld())
+			{
+				const float EyeOffset =
+					UTacticsCombatStatics::GetCoverTuning(World)->EyeHeightOffset;
+				TArray<FVector, TInlineAllocator<4>> Points;
+				UTacticsCombatStatics::GetFiringPositions(World, Shooter,
+					Shooter->GetActorLocation() + FVector(0.f, 0.f, EyeOffset),
+					Target->GetActorLocation(), Points);
+				ShooterPoints = Points.Num();
+				UTacticsCombatStatics::GetTargetExposedPoints(World, Target,
+					Shooter->GetActorLocation() + FVector(0.f, 0.f, EyeOffset), Points);
+				TargetPoints = Points.Num();
+			}
+			UE_LOG(LogTacticsAttackAction, Warning,
+				TEXT("[FireAction] ОТКАЗ активации %s → %s: статус=%s, огневых точек стрелка=%d, exposed-точек цели=%d"),
+				*GetNameSafe(Shooter), *GetNameSafe(Target),
+				Status == EAttackTargetStatus::Dead ? TEXT("Dead/Inactive")
+					: Status == EAttackTargetStatus::OutOfRange ? TEXT("OutOfRange")
+					: Status == EAttackTargetStatus::NoLineOfSight ? TEXT("NoLineOfSight")
+					: TEXT("NotHostile/другое"),
+				ShooterPoints, TargetPoints);
+		}
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
 		return;
 	}
@@ -172,7 +211,27 @@ void UGA_Attack::ActivateAbility(
 	// чтобы синхронный OnActionPointsChanged уже видел action barrier.
 	const UActionPointsComponent* ActionPoints = FindActionPoints(ActorInfo);
 	const int32 ActionPointsBefore = ActionPoints ? ActionPoints->CurrentActionPoints : INDEX_NONE;
-	const float ResolvedHitChance = ComputeAttackHitChance(Shooter, Target);
+
+	// Сценарный форс шага обучения меняет только входные числа snapshot'а: roll,
+	// GE урона, HitReact, камера и quest-события остаются общим pipeline.
+	float ResolvedHitChance = ComputeAttackHitChance(Shooter, Target);
+	float ResolvedDamage = Shooter->ShotDamage;
+	FScriptedShotOverride ScriptedShot;
+	if (Shooter->ConsumePendingScriptedShot(Target, ScriptedShot))
+	{
+		if (ScriptedShot.bOverrideHitChance)
+		{
+			ResolvedHitChance = ScriptedShot.HitChancePercent;
+		}
+		if (ScriptedShot.bOverrideDamage)
+		{
+			ResolvedDamage = ScriptedShot.Damage;
+		}
+		UE_LOG(LogTacticsAttackAction, Log,
+			TEXT("[FireAction] Scripted shot %s → %s: chance=%.0f damage=%.0f"),
+			*GetNameSafe(Shooter), *GetNameSafe(Target), ResolvedHitChance, ResolvedDamage);
+	}
+
 	EFiringStance FiringStance = EFiringStance::Open;
 	FVector FiringEyeLocation = FVector::ZeroVector;
 	FVector PresentationRootLocation = Shooter->GetActorLocation();
@@ -191,7 +250,7 @@ void UGA_Attack::ActivateAbility(
 		&& Shooter->bHasSquadsight
 		&& UTacticsCombatStatics::SquadHasLineOfSight(Shooter, Target);
 	FireAction.Begin(Shooter, Target, FiringEyeLocation, ResolvedHitChance,
-		Shooter->ShotDamage, Shooter->AttackRange, DamageEffect, ActionPointsBefore);
+		ResolvedDamage, Shooter->AttackRange, DamageEffect, ActionPointsBefore);
 	const UCoverDetectionComponent* Cover = Shooter->GetCoverDetection();
 	FireAction.SetPresentation(FireMontage, FiringStance, Shooter->GetActorLocation(),
 		PresentationRootLocation,
@@ -201,6 +260,20 @@ void UGA_Attack::ActivateAbility(
 		Cover ? Cover->ActiveCoverRevision : 0,
 		bUsedSquadsight);
 	const FGuid ActionId = FireAction.ActionId;
+
+	// Замороженное решение проверяется ЗДЕСЬ — до оплаты AP и до монтажа, тем же
+	// предикатом, что и commit. Иначе слепое решение (гонка после выбора цели)
+	// оплачивало монтаж, отклонялось на commit, возвращало AP — и детерминированный
+	// AI повторял его вечно: «монтаж → reject → refund → повтор» (лог 2026-07-30).
+	if (!IsFrozenFireCommitValid())
+	{
+		UE_LOG(LogTacticsAttackAction, Warning,
+			TEXT("[FireAction] Reject at activation: из замороженной позиции нет линии огня shooter=%s target=%s"),
+			*GetNameSafe(Shooter), *GetNameSafe(Target));
+		FireAction.Reset();
+		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
+		return;
+	}
 
 	if (!CommitAbility(Handle, ActorInfo, ActivationInfo))
 	{
@@ -357,6 +430,8 @@ bool UGA_Attack::FireCommit(const FGuid& ActionId, bool& bOutHit)
 				{
 					// A8 throttle считается по необратимому commit, а не по AP/reservation.
 					TurnManager->NotifyUnitAttacked(Shooter);
+					// Тот же момент фиксирует цель для сведения огня отряда.
+					TurnManager->NotifyUnitTargeted(Target);
 				}
 			}
 		}
@@ -366,17 +441,23 @@ bool UGA_Attack::FireCommit(const FGuid& ActionId, bool& bOutHit)
 	if (FireAction.Matches(ActionId))
 	{
 		FireAction.SetCommitResult(bOutHit);
+		// Звук выстрела — здесь, а не на старте montage: до commit действие ещё
+		// могло быть прервано, и выстрел без урона звучал бы как попадание.
+		if (AUnitBase* ShooterUnit = Cast<AUnitBase>(Shooter))
+		{
+			ShooterUnit->PlayUnitSound(EUnitSoundEvent::Fire);
+		}
 		OnShotFired(Target, bOutHit);
-		// Пока STQuestSystem отбрасывает payload/Source, публикуем автоматически
-		// только действия стороны игрока. Scripted enemy shot подтверждает его
-		// orchestration-task, иначе любой обычный выстрел врага закрыл бы tutorial.
+		// Автоматически публикуем только атаки стороны игрока: обычный выстрел
+		// врага не должен закрывать шаг обучения. Scripted enemy shot подтверждает
+		// его собственная orchestration-task по своему ActionId.
 		if (UTacticalQuestEvents::IsPlayerSideUnit(Shooter, Shooter))
 		{
-			UTacticalQuestEvents::BroadcastQuestEvent(Shooter,
+			UTacticalQuestEvents::BroadcastQuestEventEx(Shooter,
 				FireAction.bUsedSquadsight
 					? TacticalQuestTags::Event_Tactical_Combat_Attack_Squadsight
 					: TacticalQuestTags::Event_Tactical_Combat_Attack_Normal,
-				Shooter);
+				Shooter, Target);
 		}
 	}
 

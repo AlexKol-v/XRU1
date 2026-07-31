@@ -1,4 +1,6 @@
 #include "TacticalCameraPawn.h"
+#include "XRU1Log.h"
+#include "TacticalQuestEvents.h"
 #include "TacticsCombatStatics.h" // GetShotGeometryObjects — единая геометрия мира
 #include "GameFramework/SpringArmComponent.h"
 #include "Camera/CameraComponent.h"
@@ -47,7 +49,7 @@ void ATacticalCameraPawn::BeginPlay()
 	}
 	else if (!OutlineMaterial)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[Highlight] OutlineMaterial не назначен в пешке-камере — ")
+		UE_LOG(LogXRU1Combat, Warning, TEXT("[Highlight] OutlineMaterial не назначен в пешке-камере — ")
 			TEXT("обводки юнитов не будет (проверь Default Pawn Class в GameMode = BP_TacticalCameraPawn)"));
 	}
 }
@@ -91,7 +93,36 @@ void ATacticalCameraPawn::AddRotationStep(float Direction)
 		{
 			TargetYaw = TacticalYaw;
 		}
+		ReportCameraAdjustment(FMath::Abs(RotationStep), 0.f);
 	}
+}
+
+void ATacticalCameraPawn::ReArmCameraAdjustedEvent()
+{
+	bCameraAdjustmentReported = false;
+	AccumulatedYawAdjustment = 0.f;
+	AccumulatedZoomAdjustment = 0.f;
+}
+
+void ATacticalCameraPawn::ReportCameraAdjustment(float YawDelta, float ZoomDelta)
+{
+	if (bCameraAdjustmentReported)
+	{
+		return;
+	}
+
+	AccumulatedYawAdjustment += FMath::Abs(YawDelta);
+	AccumulatedZoomAdjustment += FMath::Abs(ZoomDelta);
+	if (AccumulatedYawAdjustment < AdjustedYawThreshold ||
+		AccumulatedZoomAdjustment < AdjustedZoomThreshold)
+	{
+		return;
+	}
+
+	// One-shot на запуск: шаг A1 засчитывается один раз, повторные вращения уже
+	// не создают событий и не могут накрутить чужой счётчик.
+	bCameraAdjustmentReported = UTacticalQuestEvents::BroadcastQuestEvent(
+		this, TacticalQuestTags::Event_Tactical_Camera_Adjusted, this);
 }
 
 void ATacticalCameraPawn::AddZoomInput(float Input)
@@ -101,11 +132,15 @@ void ATacticalCameraPawn::AddZoomInput(float Input)
 		AbandonShotFraming();
 	}
 
+	const float ZoomBefore = TacticalZoom;
 	TacticalZoom = FMath::Clamp(TacticalZoom - Input * ZoomStep, MinZoom, MaxZoom);
 	if (!bShotFraming)
 	{
 		TargetZoom = TacticalZoom;
 	}
+	// Считаем фактическое изменение, а не ввод: упёртое в MinZoom колесо не должно
+	// накапливать «настройку», которой на экране не произошло.
+	ReportCameraAdjustment(0.f, TacticalZoom - ZoomBefore);
 }
 
 void ATacticalCameraPawn::FocusOnActor(const AActor* Target, bool bInstant)

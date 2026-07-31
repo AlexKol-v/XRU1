@@ -16,6 +16,9 @@ public class XRU1 : ModuleRules
 			"EnhancedInput",
 			"AIModule",
 			"NavigationSystem",
+			// EPhysicalSurface/UPhysicalMaterial: шаги выбирают звук по реальной
+			// поверхности под ногой (Audio/AnimNotify_UnitFootstep).
+			"PhysicsCore",
 			"StateTreeModule",
 			"GameplayStateTreeModule",
 			"Niagara",
@@ -44,6 +47,7 @@ public class XRU1 : ModuleRules
 
 		PublicIncludePaths.AddRange(new string[] {
 			"XRU1",
+			"XRU1/Audio",
 			"XRU1/Characters",
 			"XRU1/UI",
 			"XRU1/Interaction",

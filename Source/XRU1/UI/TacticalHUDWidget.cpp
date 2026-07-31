@@ -364,6 +364,18 @@ void UTacticalHUDWidget::RefreshActionButtons()
 	const UTacticalHUDStyleData* Theme = GetUITheme();
 	RefreshAbilityIcon(Selected);
 
+	// Без выбранного бойца или вне фазы игрока панель действий прячется целиком:
+	// ряд серых квадратов без владельца читается как сломанный HUD, а не как
+	// «выберите бойца». RefreshActionButtons вызывается на смене выбора и фазы,
+	// поэтому видимость всегда актуальна.
+	if (ActionsPanel)
+	{
+		const UTurnManagerSubsystem* Turns = GetTurnManager();
+		const bool bPlayerPhase = Turns && Turns->GetCurrentPhase() == ETurnPhase::Player;
+		ActionsPanel->SetVisibility(Selected && bPlayerPhase
+			? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+	}
+
 	auto SetEnabled = [](UWidget* Widget, bool bEnabled)
 	{
 		if (Widget)

@@ -20,8 +20,16 @@
 | [09_UI_HUD.md](09_UI_HUD.md) | Архитектура интерфейса, готовые блоки и остаток HUD/меню |
 | [10_FOG_OF_WAR.md](10_FOG_OF_WAR.md) | Архитектура видимости, actor gating, renderer и план тумана войны |
 | [11_SHARED_MAP_TUTORIAL.md](11_SHARED_MAP_TUTORIAL.md) | Tutorial и Mission01 на одной карте: StateTree, sublevels и Editor-план |
+| [12_TUTORIAL_LAYOUT_SPEC.md](12_TUTORIAL_LAYOUT_SPEC.md) | Требования расстановки обучения: AP-бюджет, дистанции, укрытия, LOS |
+| [13_LOS_TARGETING.md](13_LOS_TARGETING.md) | Исследование выбора цели/LOS: одна система, симметрия Ф5, диагностика |
+| [agents/](agents/) | Брифы для отдельных сессий (главное меню, голографический хаб, рефакторинг AI), трекеры статуса и [справочник по тулингу агента](agents/AGENT_UNREAL_TOOLING.md) |
 
-## Текущий срез — 2026-07-29
+## Текущий срез — 2026-07-31
+
+Свежее: секция A обучения (A1–A9) проходится end-to-end в PIE — путь
+Hub-scenario bootstrap → StateTree → Action Gate → подтверждённые события
+работает вживую; детали и попутно закрытые баги — в `04_ROADMAP.md` и
+`13_LOS_TARGETING.md`. Следующий шаг — секции B–D.
 
 Закрыто и не ведётся как активный план:
 
@@ -35,7 +43,7 @@
 Активная работа:
 
 1. Собрать Tutorial и Mission01 как два сценария одной persistent-карты
-   `/Game/US_Military/Levels/Showreel_Scene`.
+   `/Game/XRU1Game/Maps/Main_Map_Showreel`.
 2. Полноценно настроить и отладить AI на готовой системе укрытий.
 3. Реализовать туман войны без утечек через HUD/camera/targeting.
 4. Точнее настроить способности классов и доделать HUD/экраны.

@@ -32,6 +32,22 @@ public:
 		meta = (ClampMin = "0.05", ClampMax = "2.0"))
 	float QuestFinalizationGracePeriod = 0.25f;
 
+	/**
+	 * Загружать ScenarioSublevel и запускать сценарий нативно, без BP-графа.
+	 * Порядок тот же, что предписан документом: OnLevelShown → следующий tick →
+	 * StartConfiguredQuest. Выключить, только если BP-наследник делает это сам.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Scenario")
+	bool bAutoStreamScenarioSublevel = true;
+
+	/**
+	 * Сценарий для прямого запуска общей карты из редактора, когда Hub/POI ещё
+	 * не пройден и GameInstance не выбрал ActiveScenario. Настоящий bootstrap
+	 * всегда приоритетнее: если сценарий уже выбран, это поле игнорируется.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scenario|Preview")
+	TSoftObjectPtr<UTacticalScenarioDataAsset> PreviewScenario;
+
 	/** Вызывается один раз после чтения ActiveScenario из GameInstance. */
 	UFUNCTION(BlueprintImplementableEvent, Category = "Scenario")
 	void OnScenarioSelected(UTacticalScenarioDataAsset* Scenario);
@@ -67,6 +83,19 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 private:
+	/** Ставит ScenarioSublevel в загрузку и подписывается на его фактический показ. */
+	void BeginScenarioStreaming();
+
+	/** Уровень действительно показан: даём streamed actors закончить BeginPlay. */
+	UFUNCTION()
+	void HandleScenarioLevelShown();
+
+	/** Следующий tick после OnLevelShown — единственная точка старта боя и квеста. */
+	void StartScenarioAfterStream();
+
+	/** Ставит camera pawn на сценарный якорь InitialCameraAnchorId (один раз). */
+	void PlaceCameraAtScenarioAnchor();
+
 	/** Разносит PlayerStarted и Scenario.Ready по разным ticks. */
 	void BroadcastReadyEvent();
 
@@ -79,6 +108,10 @@ private:
 	FGameplayTag ActiveQuestId;
 	FTimerHandle ReadyEventTimerHandle;
 	FTimerHandle FinalizationTimerHandle;
+	FTimerHandle StreamingTimerHandle;
+	TWeakObjectPtr<class ULevelStreaming> ScenarioStreamingLevel;
+	bool bScenarioStartRequested = false;
+	bool bInitialCameraPlaced = false;
 	int32 PendingFinalizationRunId = 0;
 	int32 FinalizationStage = 0;
 	bool bReadyEventBroadcast = false;

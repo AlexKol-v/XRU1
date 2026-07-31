@@ -145,6 +145,21 @@ struct FQuestEventData
     /** Источник события (актор или объект), опционально. */
     UPROPERTY(BlueprintReadWrite, Category = "Quest")
     TObjectPtr<UObject> Source = nullptr;
+
+    /**
+     * Объект, НАД которым подтверждён результат: цель атаки, лечения, зона,
+     * обезвреженная бомба. Позволяет задаче-цели отличить «Медик выстрелил в
+     * Holo A» от «Медик выстрелил в Holo B» без разведения каналов.
+     */
+    UPROPERTY(BlueprintReadWrite, Category = "Quest")
+    TObjectPtr<UObject> Target = nullptr;
+
+    /**
+     * Поколение конкретного запуска сценария. Задачи отбрасывают поздние события
+     * предыдущего запуска, пережившие travel/retry. 0 — «не проверять».
+     */
+    UPROPERTY(BlueprintReadWrite, Category = "Quest")
+    int32 ScenarioRunId = 0;
 };
 
 /**

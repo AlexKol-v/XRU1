@@ -180,6 +180,20 @@ public:
 		const AActor* Target);
 
 	/**
+	 * Точки, которыми цель может быть ВИДНА/ПОРАЖЕНА из FromEye: центр глаз,
+	 * пик-позиции у краёв её укрытия и корпус. XCOM-правило: боец в укрытии
+	 * «занимает» и соседний peek-тайл — симметрично для стрельбы И для попадания
+	 * под выстрел.
+	 *
+	 * ЕДИНСТВЕННЫЙ источник набора точек цели. Решение «видно ли», выбор стойки,
+	 * огневые позиции и commit-валидация обязаны целиться в ОДИН набор: их
+	 * рассинхрон (стойка целилась только в глаза/корпус) давал вечный цикл
+	 * «AI видит цель по пику, а замороженная позиция её не видит» (лог 2026-07-30).
+	 */
+	static void GetTargetExposedPoints(const UWorld* World, const AActor* Target,
+		const FVector& FromEye, TArray<FVector, TInlineAllocator<4>>& OutPoints);
+
+	/**
 	 * ЕДИНЫЙ источник позиций выглядывания. Собирает точки ГЛАЗ, из которых Unit
 	 * может стрелять/быть виден, и НИЧЕГО не решает про видимость (перебор пар —
 	 * в HasLineOfSightFromLocation). Зовётся ДВАЖДЫ с переставленными аргументами:
@@ -260,6 +274,9 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Combat")
 	static void NotifyCombatNoise(AActor* Instigator, const FVector& Location, float Radius = 2000.f);
+
+	/** Включён ли `xru1.Cover.Debug` — общий предикат для диагностики укрытий. */
+	static bool IsCoverDebugEnabled();
 
 	/**
 	 * Точка на пути по навмешу от Start до Goal, не дальше PathBudget по длине

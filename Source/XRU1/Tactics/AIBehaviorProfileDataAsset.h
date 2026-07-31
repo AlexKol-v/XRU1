@@ -11,11 +11,13 @@ struct XRU1_API FAIPerceptionTuning
 {
 	GENERATED_BODY()
 
+	/** См. комментарий у AUnitAIController::SightRadius: обзор не должен быть
+	 *  меньше дистанции, с которой по бойцу реально стреляют. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Perception", meta = (ClampMin = "0"))
-	float SightRadius = 1400.f;
+	float SightRadius = 2500.f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Perception", meta = (ClampMin = "0"))
-	float LoseSightRadius = 1600.f;
+	float LoseSightRadius = 2800.f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Perception", meta = (ClampMin = "1", ClampMax = "180"))
 	float PeripheralVisionHalfAngle = 180.f;
@@ -167,6 +169,54 @@ struct XRU1_API FAITargetScoringTuning
 };
 
 /**
+ * ПОВЕДЕНЧЕСКИЕ оси сложности — то, что отличает Rookie от Legend в XCOM.
+ *
+ * Разница уровней сложности не должна сводиться к «врагу подкрутили меткость»:
+ * такой бой ощущается одинаково, просто дольше или короче. В XCOM 2 отличается
+ * именно СТИЛЬ — на низкой сложности пришельцы почти не пользуются гранатами и
+ * не сводят огонь, а число одновременно вступающих в бой подов ограничено.
+ * Эти оси воспроизводят тот же принцип нашими средствами.
+ */
+USTRUCT(BlueprintType)
+struct XRU1_API FAIStyleTuning
+{
+	GENERATED_BODY()
+
+	/**
+	 * Множители веса конкретных оценщиков. Именно здесь задаётся «этот уровень
+	 * сложности любит наступать» либо «предпочитает окапываться»: осторожный
+	 * профиль поднимает Hunker/MoveToCover, агрессивный — Shoot/AdvanceToCover.
+	 * Пустая карта оставляет веса как есть.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Style")
+	TMap<TSubclassOf<UAIActionEvaluator>, float> EvaluatorWeightMultipliers;
+
+	/**
+	 * Готовность искать обходную позицию: множитель бонуса за фланг при выборе
+	 * точки. 0 — враг никогда не станет обходить укрытие и будет драться в лоб.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Style", meta = (ClampMin = "0", ClampMax = "3"))
+	float FlankWillingness = 1.f;
+
+	/**
+	 * Сосредоточение огня: бонус к оценке цели за каждого союзника, уже
+	 * стрелявшего по ней в этом ходу. 0 — каждый враг воюет сам по себе;
+	 * заметная величина заставляет отряд добивать одного бойца, а это самое
+	 * читаемое отличие высокой сложности.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Style", meta = (ClampMin = "0"))
+	float FocusFireBonus = 0.f;
+
+	/**
+	 * Насколько цель, у которой уже мало здоровья, приоритетнее. Отдельно от
+	 * FocusFireBonus: добивание раненого — решение одного бойца, сведение огня —
+	 * поведение отряда.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Style", meta = (ClampMin = "0", ClampMax = "3"))
+	float FinishWoundedWillingness = 1.f;
+};
+
+/**
  * Единый переиспользуемый профиль тактического AI.
  *
  * Профиль имеет приоритет над полями BP-контроллера и применяется один раз в BeginPlay.
@@ -193,6 +243,10 @@ public:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "AI|Tuning")
 	FAITargetScoringTuning Target;
+
+	/** Поведенческие оси уровня сложности (см. FAIStyleTuning). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "AI|Tuning")
+	FAIStyleTuning Style;
 
 	/**
 	 * Если включено, нативный набор оценщиков контроллера полностью заменяется этим массивом.

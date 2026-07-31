@@ -1,0 +1,37 @@
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Widgets/SCompoundWidget.h"
+
+class ATacticalPlayerController;
+
+/**
+ * Оверлей подсказок обучения: трекер целей квеста + причина отказа Action Gate.
+ *
+ * Нарисован на чистом Slate и добавляется в viewport из контроллера — не требует
+ * UMG-вёрстки (WBP_QuestTracker из 11_SHARED_MAP_TUTORIAL §9.1 остаётся
+ * production-заменой; этот оверлей — рабочий минимум, который агент может
+ * поддерживать без ручной работы в Designer).
+ *
+ * Данные тянутся атрибутами каждый кадр из контроллера: Slate сам перерисует
+ * только изменившийся текст, отдельная система событий не нужна.
+ */
+class XRU1_API STutorialHintOverlay : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(STutorialHintOverlay) {}
+		SLATE_ARGUMENT(TWeakObjectPtr<ATacticalPlayerController>, Owner)
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs);
+
+private:
+	TWeakObjectPtr<ATacticalPlayerController> Owner;
+
+	FText GetQuestTitle() const;
+	FText GetObjectiveLines() const;
+	FText GetDenialText() const;
+	EVisibility GetTitleVisibility() const;
+	EVisibility GetObjectiveVisibility() const;
+	EVisibility GetDenialVisibility() const;
+};

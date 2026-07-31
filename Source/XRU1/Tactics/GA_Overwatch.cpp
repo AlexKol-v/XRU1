@@ -120,6 +120,7 @@ void UGA_Overwatch::ActivateAbility(
 	if (AUnitBase* Unit = Cast<AUnitBase>(GetAvatarActorFromActorInfo()))
 	{
 		Unit->NotifyUnitStateChanged();
+		Unit->PlayUnitSound(EUnitSoundEvent::OverwatchEnter);
 		if (UTacticalQuestEvents::IsPlayerSideUnit(Unit, Unit))
 		{
 			UTacticalQuestEvents::BroadcastQuestEvent(Unit,
@@ -499,11 +500,15 @@ bool UGA_Overwatch::FireCommit(const FGuid& ActionId, bool& bOutHit)
 	if (ReactionAction.Matches(ActionId))
 	{
 		ReactionAction.SetCommitResult(bOutHit);
+		if (AUnitBase* ShooterUnit = Cast<AUnitBase>(Shooter))
+		{
+			ShooterUnit->PlayUnitSound(EUnitSoundEvent::ReactionFire);
+		}
 		OnReactionShot(Target, bOutHit);
 		if (UTacticalQuestEvents::IsPlayerSideUnit(Shooter, Shooter))
 		{
-			UTacticalQuestEvents::BroadcastQuestEvent(Shooter,
-				TacticalQuestTags::Event_Tactical_Combat_Attack_Overwatch, Shooter);
+			UTacticalQuestEvents::BroadcastQuestEventEx(Shooter,
+				TacticalQuestTags::Event_Tactical_Combat_Attack_Overwatch, Shooter, Target);
 		}
 	}
 

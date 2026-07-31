@@ -4,6 +4,7 @@
 #include "TDCombatant.h"
 #include "TacticsTypes.h"
 #include "CoverTypes.h"       // EFiringStance для выбора монтажа выстрела
+#include "TacticsAudioTypes.h" // EUnitSoundEvent для доменных звуков юнита
 #include "UnitVisualState.h"  // единая точка состояния для ABP (S2)
 #include "UnitBase.generated.h"
 
@@ -51,8 +52,13 @@ public:
 
 	// --- Боевые статы (GDD §7/§10; правятся в BP-наследниках) ----------------
 
-	/** Максимальное и стартовое здоровье класса. Применяется до BeginPlay. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Stats", meta = (ClampMin = "1"))
+	/**
+	 * Максимальное и стартовое здоровье. Применяется до BeginPlay.
+	 * EditAnywhere, а не EditDefaultsOnly: учебным голограммам туториала HP
+	 * задаётся на конкретном экземпляре, чтобы шаги A8/B5/C2/D2 закрывались
+	 * одним выстрелом без отдельного BP-класса на каждую голограмму.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|Stats", meta = (ClampMin = "1"))
 	float BaseMaxHealth = 100.f;
 
 	/** Базовый шанс попадания до модификаторов укрытия, %. */
@@ -137,6 +143,14 @@ public:
 	TArray<TSubclassOf<UGameplayAbility>> ClassAbilities;
 
 	// --- Патруль (мирное состояние AI; точки расставляются на карте) ---------
+
+	/**
+	 * Группа врагов (под) для совместной активации. Все бойцы с одинаковым
+	 * PodId вступают в бой вместе, как только ЛЮБОЙ из них обнаружен, и делят
+	 * общую память контактов. Пустое значение = боец сам себе группа.
+	 */
+	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Tactics|AI")
+	FName PodId;
 
 	/** Маршрут патруля этого юнита (TargetPoint'ы уровня). Пусто = стоит на месте. */
 	UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category = "Tactics|AI")
@@ -276,7 +290,15 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Tactics|Visual")
 	bool IsMoveSettlementInProgress() const { return bCoverHugStepping || bTurningInPlace; }
 
-	/** Максимальный подтяг к стене при `HugCover` (см). 0 — только разворот. */
+	/**
+	 * Выключатель подтяга к стене при `HugCover`: 0 — только разворот, без шага.
+	 *
+	 * ⚠️ Числовое значение ДАЛЬНОСТИ больше не используется: подшаг идёт до
+	 * стены, которая дала укрытие, а его предел — `CoverTraceDistance` из
+	 * тюнинга укрытий (один источник правды: стена, достаточно близкая для
+	 * cover, достаточно близка для прижатия). Прежний фиксированный лимит 45 см
+	 * оставлял бойца «в укрытии» в метре от стены.
+	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Visual", meta = (ClampMin = "0"))
 	float CoverHugMaxNudge = 45.f;
 
@@ -336,10 +358,10 @@ public:
 
 	/** Через сколько секунд ожидания в укрытии юнит выглядывает (мин/макс). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Visual", meta = (ClampMin = "0.5"))
-	float CoverPeekDelayMin = 4.f;
+	float CoverPeekDelayMin = 2.f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Visual", meta = (ClampMin = "0.5"))
-	float CoverPeekDelayMax = 8.f;
+	float CoverPeekDelayMax = 5.f;
 
 	/**
 	 * Сколько длится одно выглядывание (с). Должно быть НЕ МЕНЬШЕ длины клипа
@@ -393,6 +415,52 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Highlight")
 	void SetHoverHighlight(bool bHovered);
 
+	// --- Звук ------------------------------------------------------------------
+
+	/**
+	 * Звуковой профиль класса: выстрел своего оружия, шаги, боль, подтверждения
+	 * способностей. Назначается в BP юнита; без него юнит просто молчит.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Audio")
+	TObjectPtr<class UUnitAudioDataAsset> AudioProfile;
+
+	UFUNCTION(BlueprintPure, Category = "Tactics|Audio")
+	UUnitAudioDataAsset* GetAudioProfile() const { return AudioProfile; }
+
+	/**
+	 * Проигрывает звук доменного события юнита. Вызывается из C++ в тех же
+	 * точках, где публикуются quest-события, — то есть после подтверждённого
+	 * результата, а не в момент запуска montage.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Audio")
+	void PlayUnitSound(EUnitSoundEvent Event);
+
+	// --- Сценарный форс исхода выстрела (шаги A4/A7/B4) -----------------------
+
+	/**
+	 * Взводит форс на СЛЕДУЮЩИЙ выстрел этого юнита. Потребляется один раз при
+	 * активации GA_Attack; повторные выстрелы снова считаются по общим правилам.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Scripted")
+	void SetPendingScriptedShot(const FScriptedShotOverride& Override, AActor* ScriptedTarget = nullptr);
+
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Scripted")
+	void ClearPendingScriptedShot()
+	{
+		bHasPendingScriptedShot = false;
+		PendingScriptedShotTarget = nullptr;
+	}
+
+	UFUNCTION(BlueprintPure, Category = "Tactics|Scripted")
+	bool HasPendingScriptedShot() const { return bHasPendingScriptedShot; }
+
+	/**
+	 * Забирает форс ровно один раз — и только для его собственной цели: если
+	 * приказ сорвался и AI стреляет в другого, постановочные числа не перетекают.
+	 * false — обычный выстрел по общим правилам.
+	 */
+	bool ConsumePendingScriptedShot(const AActor* Target, FScriptedShotOverride& OutOverride);
+
 protected:
 	virtual void PostInitializeComponents() override;
 	virtual void BeginPlay() override;
@@ -438,6 +506,17 @@ protected:
 	/** Роль в ростере. Переопределяется в подклассах/BP. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Unit")
 	EUnitRole UnitRole = EUnitRole::Assault;
+
+	/** Взведённый сценарный форс следующего выстрела (см. SetPendingScriptedShot). */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Tactics|Scripted")
+	FScriptedShotOverride PendingScriptedShot;
+
+	/** Цель, которой принадлежит форс; пусто — любая (совместимость). */
+	UPROPERTY(Transient)
+	TWeakObjectPtr<AActor> PendingScriptedShotTarget;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "Tactics|Scripted")
+	bool bHasPendingScriptedShot = false;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tactics|Unit")
 	TObjectPtr<UActionPointsComponent> ActionPoints;
@@ -541,6 +620,7 @@ protected:
 	/**
 	 * Есть ли у укрытия край в пределах `PeekEdgeMaxDistance`. Отдельно от
 	 * стороны: у глухой стены сторона известна, а выглядывать некуда.
+	 * Снимок кэша `UCoverDetectionComponent` (§6), трейсов при пересборке нет.
 	 */
 	bool bHasPeekEdge = false;
 

@@ -35,6 +35,13 @@
 | `UTacticsGameInstance` | save/UI/cover и выбранный scenario одной общей боевой карты |
 | `ATacticalScenarioDirector` | вход в scenario sublevel и запуск квеста после его загрузки |
 | `UTacticalQuestEvents` / `ATacticalQuestZone` | подтверждённые доменные события обучения и зоны тактических бойцов |
+| `UTacticalScenarioSubsystem` | реестр акторов сценария по `AnchorId` и единое включение staged-акторов |
+| `UTutorialActionGateSubsystem` | политика текущего шага обучения: что игрок вправе сделать прямо сейчас |
+| `UTutorialPresentationSubsystem` | активный такт обучения: спикер, субтитр, фокус камеры, подсветки |
+| `STutorialHintOverlay` | Slate-трекер целей обучения поверх viewport (без WBP), настройки — в `DA_TacticalHUDStyle` |
+| StateTree-задачи «XRU1 Tutorial» (`TacticalQuestTasks`) | Tactical Objective с payload, Apply Action Gate, Set Scenario Actor Active, Scripted Shot, Tutorial Beat |
+| `TacticsDebug` | общий реестр debug-cvar (`xru1.AI.LogCombat`, `xru1.Tutorial.LogGate`, …) и команда `xru1.LOS.Explain` |
+| `UTacticsAudioSubsystem` | единственная точка воспроизведения звука и применения громкостей |
 | `UTacticsCombatStatics` | LOS, шанс, firing positions, cover shield, урон и общие predicates |
 
 Правило владения: механическое состояние находится в C++; Blueprint отображает
@@ -178,9 +185,44 @@ Tactical objectives и specs группы поддерживают exact channel
 `Quest Wait Outcome` возвращает правильный terminal `Succeeded`/`Failed`.
 Content-only objective IDs уже перечислены в `Config/DefaultGameplayTags.ini`.
 
-Production-графы StateTree, два scenario-specific streaming sublevel и
-BP-director создаются в Editor по
-[11_SHARED_MAP_TUTORIAL.md](11_SHARED_MAP_TUTORIAL.md).
+`FQuestEventData` несёт `Source`, `Target` и `ScenarioRunId`, а
+`AQuestRunnerActor` кладёт её в `FStateTreeEvent::Payload`. Поэтому игровые
+задачи `Tactical Objective`, `Apply Action Gate`, `Set Scenario Actor Active`,
+`Scripted Shot` и `Tutorial Beat` (категория **XRU1 Tutorial**,
+[TacticalQuestTasks.h](../Source/XRU1/Tactics/TacticalQuestTasks.h)) проверяют
+конкретного бойца, конкретную цель и «N разных источников», не размножая каналы.
+Ссылки на акторов сценария идут только через `AnchorId`
+`UScenarioActorIdComponent`; имена World Outliner остаются диагностикой.
+
+Сценарный выстрел обучения не подменяет урон: `FScriptedShotOverride` меняет
+только шанс и урон в snapshot'е `UGA_Attack`, а приказ «стрелять по этому
+бойцу» ставится `AUnitAIController::SetScriptedAttackOrder`. Roll, GE, montage,
+`FireCommit`, HitReact и quest-события остаются общим attack pipeline.
+
+Наполнение графов StateTree и обоих scenario sublevel делается в Editor по
+[11_SHARED_MAP_TUTORIAL.md](11_SHARED_MAP_TUTORIAL.md) §5.3–5.4.
+
+## 9.5. Звук
+
+Слой звука построен вокруг одного правила: **звук привязан к подтверждённому
+доменному факту, а не к запуску montage**. Точки вызова те же, что у
+quest-событий, поэтому отменённое действие не может прозвучать как выполненное.
+
+| Блок | Файл | Роль |
+|---|---|---|
+| `UTacticsAudioSubsystem` | [TacticsAudioSubsystem.h](../Source/XRU1/Audio/TacticsAudioSubsystem.h) | воспроизведение 2D/3D/attached, применение громкостей через SoundMix |
+| `UTacticsAudioSettingsDataAsset` | там же | SoundMix, пять SoundClass и общие звуки интерфейса |
+| `UUnitAudioDataAsset` | [UnitAudioDataAsset.h](../Source/XRU1/Audio/UnitAudioDataAsset.h) | профиль класса: выстрел, боль, смерть, способности, шаги по поверхностям |
+| `UAnimNotify_UnitFootstep` | [AnimNotify_UnitFootstep.h](../Source/XRU1/Audio/AnimNotify_UnitFootstep.h) | шаг с выбором звука по физматериалу под ногой |
+| `FTacticsAudioSettings` / `FTacticsVideoSettings` | [TacticsAudioTypes.h](../Source/XRU1/Audio/TacticsAudioTypes.h) | пользовательские настройки в слоте кампании |
+
+`AUnitBase::PlayUnitSound(EUnitSoundEvent)` — единственный вход для звуков
+юнита; Blueprint ничего подключать не обязан. Громкости применяются
+`UTacticsGameInstance::ApplySavedUserSettings()` сразу после создания или
+загрузки слота, а меню настроек пишет в тот же слот.
+
+Ассетов звука под бой в проекте пока нет: каркас рассчитан на подстановку
+файлов в Data Asset без единой правки кода.
 
 ## 10. UI
 
@@ -204,12 +246,27 @@ BP-director создаются в Editor по
 
 ## 12. Диагностика
 
+Все переключатели собраны в одном реестре
+[TacticsDebug.h](../Source/XRU1/Tactics/TacticsDebug.h); `xru1.Debug.List`
+печатает их текущие значения прямо в консоль во время теста.
+
 | Команда | Назначение |
 |---|---|
+| `xru1.Debug.List` | показать все переключатели и категории логов |
 | `xru1.AI.LogCombat 1` | варианты AI, score, принятое действие и причина |
+| `xru1.AI.DebugDraw 1` | решение AI прямо в мире: цель, точка манёвра, скор |
+| `xru1.Quest.LogEvents 1` | каждое quest-событие с источником, целью и RunId |
+| `xru1.Tutorial.LogGate 1` | применение политик Action Gate и причины отказов |
+| `xru1.Audio.LogEvents 1` | звуковые события и незаполненные реплики |
 | `xru1.LOS.Debug 1` | firing positions и линия огня |
 | `xru1.Cover.Debug 1` | геометрия, засчитанная укрытием |
 | `xru1.MoveRange.LogBuildTime 1` | стоимость построения поля хода |
+
+Логи разведены по доменным категориям вместо общего `LogTemp`:
+`LogXRU1AI`, `LogXRU1Combat`, `LogXRU1Turns`, `LogXRU1Scenario`,
+`LogXRU1Quest`, `LogXRU1Audio`, `LogXRU1UI`
+([XRU1Log.h](../Source/XRU1/XRU1Log.h)). Подробность включается точечно:
+`Log LogXRU1AI Verbose`.
 
 После C++-изменений: короткая сборка UE 5.7 при закрытом редакторе, затем PIE.
 После правок BP: Compile, Save, повторное чтение графа через UnrealClaude и PIE.
@@ -222,7 +279,7 @@ P0/P1 на ближайшие этапы:
 - actor gating и renderer тумана по [10_FOG_OF_WAR.md](10_FOG_OF_WAR.md);
 - баланс и presentation четырёх классовых способностей;
 - завершение HUD/экранов по [09_UI_HUD.md](09_UI_HUD.md);
-- Editor-интеграция двух сценариев `Showreel_Scene` по
+- Editor-интеграция двух сценариев `Main_Map_Showreel` по
   [11_SHARED_MAP_TUTORIAL.md](11_SHARED_MAP_TUTORIAL.md).
 
 Отложено:

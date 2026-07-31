@@ -130,6 +130,39 @@ class XRU1_API UTacticalHUDStyleData : public UDataAsset
 	GENERATED_BODY()
 
 public:
+	// --- Оверлей подсказок обучения (STutorialHintOverlay) --------------------
+
+	/** Отступ блока подсказок от левого верхнего угла экрана, px. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "07. Обучение|Подсказки")
+	FVector2D TutorialHintOffset = FVector2D(28.f, 110.f);
+
+	/** Размер шрифта названия квеста. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "07. Обучение|Подсказки", meta = (ClampMin = "6"))
+	int32 TutorialHintTitleFontSize = 12;
+
+	/** Размер шрифта строк целей. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "07. Обучение|Подсказки", meta = (ClampMin = "6"))
+	int32 TutorialHintTextFontSize = 17;
+
+	/** Размер шрифта причины отказа. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "07. Обучение|Подсказки", meta = (ClampMin = "6"))
+	int32 TutorialHintDenialFontSize = 14;
+
+	/** Ширина переноса строк, px. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "07. Обучение|Подсказки", meta = (ClampMin = "200"))
+	float TutorialHintWrapWidth = 560.f;
+
+	/**
+	 * Декаль-маркер разрешённых точек перемещения шага (AllowedDestinationAnchors
+	 * активной политики). Радиус кольца ВСЕГДА равен DestinationTolerance
+	 * политики: картинка и проверка клика — один источник правды. Размер кольца
+	 * меняется через DestinationTolerance в задаче Apply Action Gate шага.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "07. Обучение|Подсказки")
+	TSoftObjectPtr<UMaterialInterface> TutorialDestinationMarkerMaterial =
+		TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(
+			TEXT("/Game/XRU1Game/Materials/M_SelectionRing.M_SelectionRing")));
+
 	// --- Кнопки действий (ActionsPanel + EndTurn) ----------------------------
 
 	/** Размер иконки внутри кнопок панели действий. */

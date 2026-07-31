@@ -1,5 +1,9 @@
 #include "MenuWidgets.h"
+#include "TacticsAudioSubsystem.h"
 #include "TacticsGameInstance.h"
+#include "TacticsSaveGame.h"
+#include "GameFramework/GameUserSettings.h"
+#include "XRU1Log.h"
 #include "TacticalHUDStyleData.h"
 #include "GameUIManagerSubsystem.h"
 #include "PrimaryGameLayout.h"
@@ -141,4 +145,84 @@ void UPauseMenuWidget::RequestReturnToMenu()
 	{
 		GI->TravelToMainMenu();
 	}
+}
+
+// --- USettingsMenuWidget ----------------------------------------------------
+
+FTacticsAudioSettings USettingsMenuWidget::GetAudioSettings() const
+{
+	const UTacticsGameInstance* GameInstance = GetTacticsGameInstance();
+	if (GameInstance && GameInstance->CurrentSave)
+	{
+		return GameInstance->CurrentSave->AudioSettings;
+	}
+	// Меню открыто до создания кампании — показываем дефолты, а не нули.
+	return FTacticsAudioSettings();
+}
+
+FTacticsVideoSettings USettingsMenuWidget::GetVideoSettings() const
+{
+	const UTacticsGameInstance* GameInstance = GetTacticsGameInstance();
+	if (GameInstance && GameInstance->CurrentSave)
+	{
+		return GameInstance->CurrentSave->VideoSettings;
+	}
+	return FTacticsVideoSettings();
+}
+
+void USettingsMenuWidget::ApplyAudioSettings(const FTacticsAudioSettings& NewSettings, bool bSaveToSlot)
+{
+	UTacticsGameInstance* GameInstance = GetTacticsGameInstance();
+	if (!GameInstance)
+	{
+		return;
+	}
+
+	// Сначала применяем: игрок должен слышать результат прямо во время
+	// перетаскивания ползунка, а не после нажатия «Сохранить».
+	if (UTacticsAudioSubsystem* Audio = GameInstance->GetSubsystem<UTacticsAudioSubsystem>())
+	{
+		Audio->ApplyAudioSettings(NewSettings);
+	}
+
+	if (bSaveToSlot && GameInstance->CurrentSave)
+	{
+		GameInstance->CurrentSave->AudioSettings = NewSettings;
+		GameInstance->SaveCampaign();
+	}
+}
+
+void USettingsMenuWidget::ApplyVideoSettings(const FTacticsVideoSettings& NewSettings, bool bSaveToSlot)
+{
+	UGameUserSettings* UserSettings = GEngine ? GEngine->GetGameUserSettings() : nullptr;
+	if (!UserSettings)
+	{
+		UE_LOG(LogXRU1UI, Warning, TEXT("UGameUserSettings недоступны — настройки изображения не применены"));
+		return;
+	}
+
+	if (NewSettings.ScalabilityLevel >= 0)
+	{
+		UserSettings->SetOverallScalabilityLevel(FMath::Clamp(NewSettings.ScalabilityLevel, 0, 3));
+	}
+	UserSettings->SetResolutionScaleNormalized(FMath::Clamp(NewSettings.ResolutionScale, 0.25f, 1.f));
+	UserSettings->SetFullscreenMode(NewSettings.bFullscreen
+		? EWindowMode::WindowedFullscreen : EWindowMode::Windowed);
+	UserSettings->SetVSyncEnabled(NewSettings.bVSync);
+	// bCheckForCommandLineOverrides=false: параметры запуска не должны молча
+	// отменять осознанный выбор игрока в меню.
+	UserSettings->ApplySettings(/*bCheckForCommandLineOverrides=*/false);
+
+	UTacticsGameInstance* GameInstance = GetTacticsGameInstance();
+	if (bSaveToSlot && GameInstance && GameInstance->CurrentSave)
+	{
+		GameInstance->CurrentSave->VideoSettings = NewSettings;
+		GameInstance->SaveCampaign();
+	}
+}
+
+void USettingsMenuWidget::ResetToDefaults()
+{
+	ApplyAudioSettings(FTacticsAudioSettings());
+	ApplyVideoSettings(FTacticsVideoSettings());
 }

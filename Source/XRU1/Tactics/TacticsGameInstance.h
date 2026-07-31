@@ -41,6 +41,22 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Cover")
 	TObjectPtr<UCoverTuningDataAsset> CoverTuning;
 
+	/**
+	 * Микшер проекта (DA_TacticsAudio): SoundMix пользовательских громкостей,
+	 * SoundClass категорий и общие звуки интерфейса. Без него ползунки громкости
+	 * ни на что не влияют — подсистема звука об этом предупреждает в лог.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Audio")
+	TObjectPtr<class UTacticsAudioSettingsDataAsset> AudioSettings;
+
+	/**
+	 * Профили поведения AI по уровням сложности. Сложность обязана менять СТИЛЬ
+	 * врага, а не только его меткость: профиль задаёт агрессию, готовность
+	 * фланкировать, частоту Overwatch/Hunker и дальность обзора.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|AI")
+	TMap<EDifficultyLevel, TObjectPtr<class UAIBehaviorProfileDataAsset>> AIProfilesByDifficulty;
+
 	/** Имя слота на диске. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Save")
 	FString SaveSlotName = TEXT("TacticsCampaign");
@@ -88,6 +104,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Save")
 	UTacticsSaveGame* LoadCampaign();
 
+	/**
+	 * Применяет сохранённые громкости и настройки изображения к движку.
+	 * Вызывается сразу после создания/загрузки слота: без этого ползунки в меню
+	 * показывали бы сохранённые значения, а звучала бы игра на дефолтах.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Save")
+	void ApplySavedUserSettings();
+
 	/** Открывает уровень хаба (после «Продолжить» / выбора сложности новой игры). */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Levels")
 	void TravelToHub();
@@ -104,9 +128,21 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Scenario")
 	bool RestartActiveScenario();
 
+	/**
+	 * Принять сценарий БЕЗ travel: общая карта уже открыта. Нужен прямому запуску
+	 * Main_Map_Showreel из редактора, когда Hub/POI ещё не пройден. Если сценарий
+	 * уже выбран настоящим bootstrap'ом, ничего не меняет.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Scenario")
+	bool AdoptScenarioInPlace(UTacticalScenarioDataAsset* Scenario);
+
 	UFUNCTION(BlueprintPure, Category = "Tactics|Scenario")
 	UTacticalScenarioDataAsset* GetActiveScenario() const { return ActiveScenario; }
 
 	UFUNCTION(BlueprintPure, Category = "Tactics|Scenario")
 	int32 GetActiveScenarioRunId() const { return ActiveScenarioRunId; }
+
+private:
+	/** Валидация сценария, сброс quest runtime и новый RunId — общее для travel и in-place. */
+	bool PrepareScenarioRun(UTacticalScenarioDataAsset* Scenario);
 };

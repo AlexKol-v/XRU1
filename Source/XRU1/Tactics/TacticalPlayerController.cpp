@@ -11,9 +11,20 @@
 #include "GA_Overwatch.h"
 #include "MoveRangeVisualizer.h"
 #include "MissionObjectives.h"
+#include "ScenarioActorRegistry.h"
+#include "TacticsAudioSubsystem.h"
+#include "TacticsGameInstance.h"
+#include "XRU1Log.h"
+#include "TacticalQuestEvents.h"
 #include "TacticsCombatStatics.h"
 #include "TacticsGameplayTags.h"
 #include "TurnManagerSubsystem.h"
+#include "TutorialActionGate.h"
+#include "TutorialHintOverlay.h"
+#include "QuestDefinition.h"
+#include "QuestInstance.h"
+#include "QuestSubsystem.h"
+#include "Engine/GameViewportClient.h"
 #include "FogOfWarSubsystem.h"
 #include "GameUIManagerSubsystem.h"
 #include "PrimaryGameLayout.h"
@@ -25,9 +36,34 @@
 #include "InputMappingContext.h"
 #include "Navigation/PathFollowingComponent.h"
 #include "Kismet/GameplayStatics.h"
+#include "Components/DecalComponent.h"
+#include "TacticalHUDStyleData.h"
 #include "EngineUtils.h"
 #include "Engine/World.h"
 #include "CoreGlobals.h" // GFrameCounter — штамп кадра для отложенного автоперехода
+
+namespace
+{
+	/**
+	 * Приказ игрока в терминах обучения. Отдельный enum нужен потому, что gate
+	 * ограничивает НАМЕРЕНИЕ шага, а ETacticalPlayerCommand описывает конкуренцию
+	 * за одну тактическую активацию — это разные оси.
+	 */
+	ETutorialAction TacticalCommandToTutorialAction(ETacticalPlayerCommand Command)
+	{
+		switch (Command)
+		{
+		case ETacticalPlayerCommand::Move:         return ETutorialAction::Move;
+		case ETacticalPlayerCommand::Attack:       return ETutorialAction::Attack;
+		case ETacticalPlayerCommand::Overwatch:    return ETutorialAction::Overwatch;
+		case ETacticalPlayerCommand::HunkerDown:   return ETutorialAction::Hunker;
+		case ETacticalPlayerCommand::ClassAbility: return ETutorialAction::ClassAbility;
+		case ETacticalPlayerCommand::Interact:     return ETutorialAction::Interact;
+		case ETacticalPlayerCommand::SkipUnitTurn: return ETutorialAction::EndTurn;
+		default:                                   return ETutorialAction::Move;
+		}
+	}
+}
 
 ATacticalPlayerController::ATacticalPlayerController()
 {
@@ -55,6 +91,26 @@ void ATacticalPlayerController::BeginPlay()
 		}
 	}
 
+	// Политика шага обучения может прийти уже после автовыбора бойца в начале
+	// фазы — тогда выбор нужно снять, иначе шаг «выбери такого-то» окажется
+	// закрыт автоматикой и не сможет опубликовать подтверждённое событие.
+	if (UTutorialActionGateSubsystem* Gate = UTutorialActionGateSubsystem::Get(this))
+	{
+		Gate->OnPolicyChanged.AddUniqueDynamic(
+			this, &ATacticalPlayerController::HandleTutorialPolicyChanged);
+		Gate->OnDestinationsChanged.AddUniqueDynamic(
+			this, &ATacticalPlayerController::HandleTutorialDestinationsChanged);
+	}
+
+	// Трекер целей обучения — чистый Slate поверх viewport, WBP не требуется.
+	if (GEngine && GEngine->GameViewport)
+	{
+		TutorialHintOverlay = SNew(STutorialHintOverlay)
+			.Owner(TWeakObjectPtr<ATacticalPlayerController>(this));
+		GEngine->GameViewport->AddViewportWidgetContent(
+			TutorialHintOverlay.ToSharedRef(), /*ZOrder=*/8);
+	}
+
 	// Визуализатор зоны хода.
 	if (MoveRangeVisualizerClass)
 	{
@@ -66,7 +122,7 @@ void ATacticalPlayerController::BeginPlay()
 	}
 	else
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[MoveRange] MoveRangeVisualizerClass не назначен в BP-контроллере — зона хода и превью пути не будут видны"));
+		UE_LOG(LogXRU1Combat, Warning, TEXT("[MoveRange] MoveRangeVisualizerClass не назначен в BP-контроллере — зона хода и превью пути не будут видны"));
 	}
 
 	// Блокировка ввода в фазу врага + сброс выбора при смене фазы.
@@ -81,6 +137,24 @@ void ATacticalPlayerController::BeginPlay()
 	InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
 	InputMode.SetHideCursorDuringCapture(false);
 	SetInputMode(InputMode);
+}
+
+void ATacticalPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (TutorialHintOverlay.IsValid() && GEngine && GEngine->GameViewport)
+	{
+		GEngine->GameViewport->RemoveViewportWidgetContent(TutorialHintOverlay.ToSharedRef());
+	}
+	TutorialHintOverlay.Reset();
+	for (const TWeakObjectPtr<UDecalComponent>& Marker : TutorialDestinationMarkers)
+	{
+		if (Marker.IsValid())
+		{
+			Marker->DestroyComponent();
+		}
+	}
+	TutorialDestinationMarkers.Reset();
+	Super::EndPlay(EndPlayReason);
 }
 
 void ATacticalPlayerController::SetupInputComponent()
@@ -196,7 +270,7 @@ void ATacticalPlayerController::PlayerTick(float DeltaTime)
 		IsPlayerPhase() && !bMovingNow && !IsCameraFramingShot() &&
 		!IsUnitActionInProgress(SelectedUnit))
 	{
-		UE_LOG(LogTemp, Log, TEXT("[AutoAdv] pending дозрел (кадр выстрела кончился) → переход"));
+		UE_LOG(LogXRU1Combat, Log, TEXT("[AutoAdv] pending дозрел (кадр выстрела кончился) → переход"));
 		bPendingAutoAdvance = false;
 		if (bAutoSelectUnits && SelectedUnit && SelectedUnit->GetActionPoints() &&
 			!SelectedUnit->GetActionPoints()->HasActionsLeft())
@@ -450,12 +524,139 @@ void ATacticalPlayerController::UpdatePathPreviewUnderCursor()
 
 // --- Выбор юнита ---------------------------------------------------------------
 
+void ATacticalPlayerController::NotifyCommandDenied()
+{
+	if (UTacticsAudioSubsystem* Audio = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UTacticsAudioSubsystem>() : nullptr)
+	{
+		Audio->PlayUIDenied();
+	}
+
+	// HUD показывает причину из Action Gate, если шаг обучения её задал.
+	if (const UTutorialActionGateSubsystem* Gate = UTutorialActionGateSubsystem::Get(this))
+	{
+		const FText Reason = Gate->GetDenialReason();
+		if (!Reason.IsEmpty())
+		{
+			LastDenialReason = Reason;
+			LastDenialTimeSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+			UE_LOG(LogXRU1Quest, Verbose, TEXT("Команда отклонена: %s"), *Reason.ToString());
+		}
+	}
+}
+
+// --- Подсказки обучения (данные для Slate-оверлея) -----------------------------
+
+FText ATacticalPlayerController::GetTutorialQuestTitle() const
+{
+	const UQuestSubsystem* Quests = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UQuestSubsystem>() : nullptr;
+	if (!Quests)
+	{
+		return FText::GetEmpty();
+	}
+	const FGameplayTag Tracked = Quests->GetTrackedQuest();
+	const UQuestInstance* Instance = Tracked.IsValid() ? Quests->GetQuestInstance(Tracked) : nullptr;
+	if (!Instance || !Instance->Definition ||
+		Quests->GetQuestState(Tracked) != EQuestState::Active)
+	{
+		return FText::GetEmpty();
+	}
+	return Instance->Definition->DisplayName;
+}
+
+FText ATacticalPlayerController::GetTutorialObjectiveLines() const
+{
+	const UQuestSubsystem* Quests = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UQuestSubsystem>() : nullptr;
+	if (!Quests)
+	{
+		return FText::GetEmpty();
+	}
+	const FGameplayTag Tracked = Quests->GetTrackedQuest();
+	const UQuestInstance* Instance = Tracked.IsValid() ? Quests->GetQuestInstance(Tracked) : nullptr;
+	if (!Instance || Quests->GetQuestState(Tracked) != EQuestState::Active)
+	{
+		return FText::GetEmpty();
+	}
+
+	// Активные цели снимка прогресса. Скрытые условия (пустой Description)
+	// в HUD не показываются — они существуют только для StateTree.
+	FString Lines;
+	for (const FObjectiveProgress& Objective : Instance->Progress.Objectives)
+	{
+		if (Objective.State != EObjectiveState::Active || Objective.Description.IsEmpty())
+		{
+			continue;
+		}
+		FString Line = Objective.Description.ToString();
+		if (Objective.Required > 1)
+		{
+			Line += FString::Printf(TEXT("  (%d/%d)"), Objective.Current, Objective.Required);
+		}
+		if (!Lines.IsEmpty())
+		{
+			Lines += TEXT("\n");
+		}
+		Lines += TEXT("• ") + Line;
+	}
+
+	// У шага не заполнены Description — показываем инструкцию политики шага:
+	// DenialReason сформулирован как «что сделать» и лучше, чем пустой экран.
+	if (Lines.IsEmpty())
+	{
+		if (const UTutorialActionGateSubsystem* Gate = UTutorialActionGateSubsystem::Get(this);
+			Gate && Gate->IsGateActive() && !Gate->GetDenialReason().IsEmpty())
+		{
+			Lines = Gate->GetDenialReason().ToString();
+		}
+	}
+	return FText::FromString(Lines);
+}
+
+FText ATacticalPlayerController::GetTutorialDenialText() const
+{
+	if (LastDenialReason.IsEmpty() || !GetWorld() ||
+		GetWorld()->GetTimeSeconds() - LastDenialTimeSeconds > 3.f)
+	{
+		return FText::GetEmpty();
+	}
+	return LastDenialReason;
+}
+
+bool ATacticalPlayerController::IsUnitSelectableByGate(const AUnitBase* Unit) const
+{
+	const UTutorialActionGateSubsystem* Gate = UTutorialActionGateSubsystem::Get(this);
+	if (!Gate)
+	{
+		return true;
+	}
+
+	// Снятие выбора (nullptr) проверяется тем же правилом. Шаг, ограничивший
+	// выбор одним бойцом, обязан запрещать и клик по пустому месту: иначе игрок
+	// снимет выбор, а вернуть его тот же gate уже не даст — шаг встанет намертво.
+	return Gate->IsActionAllowed(ETutorialAction::Select, Unit);
+}
+
 void ATacticalPlayerController::SelectUnit(AUnitBase* Unit)
+{
+	SelectUnitInternal(Unit, /*bPlayerInitiated=*/true);
+}
+
+void ATacticalPlayerController::SelectUnitInternal(AUnitBase* Unit, bool bPlayerInitiated)
 {
 	// Reaction-window — глобальная модальная транзакция: смена HUD/camera owner не должна
 	// сорвать чужой Overwatch и возобновить остановленного mover уже в другой фазе.
 	if (bReactionPlaying)
 	{
+		return;
+	}
+
+	// Шаг обучения может требовать конкретного бойца. Отказ происходит здесь, до
+	// смены владельца HUD и камеры, поэтому мир остаётся нетронутым.
+	if (bPlayerInitiated && !IsUnitSelectableByGate(Unit))
+	{
+		NotifyCommandDenied();
 		return;
 	}
 
@@ -493,6 +694,7 @@ void ATacticalPlayerController::SelectUnit(AUnitBase* Unit)
 	// постоянный и потому визуально «сбрасывал» поворот при смене бойца.
 	SetTargetingMode(EPlayerTargetingMode::None);
 	SelectedUnit = Unit;
+	bSelectionByPlayer = bPlayerInitiated && Unit != nullptr;
 
 	if (SelectedUnit)
 	{
@@ -511,6 +713,22 @@ void ATacticalPlayerController::SelectUnit(AUnitBase* Unit)
 	// Навмеш статичен, занятость — дисками: зона строится сразу, без задержек.
 	RefreshMoveRange();
 	OnSelectedUnitChanged.Broadcast(SelectedUnit);
+
+	// Квест-событие публикуется ПОСЛЕ фактической смены canonical SelectedUnit и
+	// только для пользовательского выбора: автовыбор XCOM в начале фазы не должен
+	// закрывать шаг «выбери Медика» сам за игрока.
+	if (bPlayerInitiated && SelectedUnit &&
+		UTacticsCombatStatics::IsUnitAlive(SelectedUnit) &&
+		UTacticalQuestEvents::IsPlayerSideUnit(this, SelectedUnit))
+	{
+		if (UTacticsAudioSubsystem* Audio = GetGameInstance()
+			? GetGameInstance()->GetSubsystem<UTacticsAudioSubsystem>() : nullptr)
+		{
+			Audio->PlayUnitSelected();
+		}
+		UTacticalQuestEvents::BroadcastQuestEventEx(this,
+			TacticalQuestTags::Event_Tactical_Unit_Selected, SelectedUnit, SelectedUnit);
+	}
 }
 
 void ATacticalPlayerController::NotifyUnitMoveFinished(AUnitBase* Unit)
@@ -571,21 +789,136 @@ void ATacticalPlayerController::SelectNextUnit()
 	{
 		AUnitBase* Candidate = Squad[(StartIndex + Offset) % Squad.Num()];
 		if (Candidate && Candidate != SelectedUnit && UTacticsCombatStatics::IsUnitAlive(Candidate) &&
+			IsUnitSelectableByGate(Candidate) &&
 			Candidate->GetActionPoints() && Candidate->GetActionPoints()->HasActionsLeft())
 		{
-			SelectUnit(Candidate);
+			// Tab — пользовательское действие: событие выбора публикуется.
+			SelectUnitInternal(Candidate, /*bPlayerInitiated=*/true);
 			return;
+		}
+	}
+}
+
+void ATacticalPlayerController::HandleTutorialPolicyChanged()
+{
+	const UTutorialActionGateSubsystem* Gate = UTutorialActionGateSubsystem::Get(this);
+	if (!Gate || !Gate->IsGateActive())
+	{
+		return;
+	}
+
+	// Порог «осмотритесь» шага A1 отсчитывается от начала шага: всё, что игрок
+	// накрутил камерой во время стриминга и до применения политики, не считается.
+	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+	{
+		Camera->ReArmCameraAdjustedEvent();
+	}
+
+	if (Gate->RequiresExplicitUnitSelection() && SelectedUnit)
+	{
+		// Шаг ждёт выбор именно от игрока — снимаем ЛЮБОЙ уже сделанный выбор.
+		// Даже если бойца успел выбрать сам игрок, его событие ушло ДО входа шага
+		// и никем не услышано, а клик по уже выбранному события не публикует.
+		SelectUnitInternal(nullptr, /*bPlayerInitiated=*/false);
+	}
+
+	// Новая политика меняет и доступные действия, и допустимые точки: зона хода
+	// была спрятана шагом без Move и сама не перестроится (её обновления привязаны
+	// к выбору и тратам AP, а не к политике), кнопки HUD должны пересчитать
+	// серость, маркеры точек назначения — перерисоваться.
+	RefreshMoveRange();
+	RefreshTutorialDestinationMarkers();
+	OnAvailableActionsChanged.Broadcast();
+}
+
+void ATacticalPlayerController::HandleTutorialDestinationsChanged()
+{
+	// Точка маршрута пройдена: политика та же, меняются только маркеры и зона.
+	RefreshTutorialDestinationMarkers();
+	RefreshMoveRange();
+}
+
+void ATacticalPlayerController::RefreshTutorialDestinationMarkers()
+{
+	for (const TWeakObjectPtr<UDecalComponent>& Marker : TutorialDestinationMarkers)
+	{
+		if (Marker.IsValid())
+		{
+			Marker->DestroyComponent();
+		}
+	}
+	TutorialDestinationMarkers.Reset();
+
+	const UTutorialActionGateSubsystem* Gate = UTutorialActionGateSubsystem::Get(this);
+	if (!Gate || !Gate->IsGateActive())
+	{
+		return;
+	}
+	// Только те точки, куда шаг разрешает идти ПРЯМО СЕЙЧАС: пройденные гаснут,
+	// а при последовательном маршруте открыта ровно одна следующая.
+	const TArray<FName> OpenAnchors = Gate->GetOpenDestinationAnchors();
+	if (OpenAnchors.IsEmpty())
+	{
+		return;
+	}
+
+	const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>();
+	const UTacticalHUDStyleData* Theme = GameInstance ? GameInstance->GetUITheme() : nullptr;
+	UMaterialInterface* MarkerMaterial = Theme
+		? Theme->TutorialDestinationMarkerMaterial.LoadSynchronous() : nullptr;
+	UTacticalScenarioSubsystem* Registry =
+		GetWorld() ? GetWorld()->GetSubsystem<UTacticalScenarioSubsystem>() : nullptr;
+	if (!MarkerMaterial || !Registry)
+	{
+		return;
+	}
+
+	// Радиус кольца = допуск проверки клика: игрок видит ровно ту область,
+	// в которую разрешено тыкать. Размер регулируется DestinationTolerance шага.
+	const float MarkerRadius = FMath::Max(50.f, Gate->GetActivePolicy().DestinationTolerance);
+	for (const FName& AnchorId : OpenAnchors)
+	{
+		for (AActor* Point : Registry->FindScenarioActors(AnchorId))
+		{
+			if (!Point)
+			{
+				continue;
+			}
+			UDecalComponent* Marker = UGameplayStatics::SpawnDecalAtLocation(
+				this, MarkerMaterial,
+				FVector(200.f, MarkerRadius, MarkerRadius),
+				Point->GetActorLocation(), FRotator(-90.f, 0.f, 0.f), /*LifeSpan=*/0.f);
+			if (Marker)
+			{
+				// Маркер шага не должен исчезать при отдалении камеры.
+				Marker->SetFadeScreenSize(0.f);
+				TutorialDestinationMarkers.Add(Marker);
+			}
 		}
 	}
 }
 
 void ATacticalPlayerController::SelectNextAvailableUnit()
 {
+	// Шаг «выбери такого-то бойца» обязан оставить выбор игроку: автоподстановка
+	// сделала бы его сама, а повторный клик по уже выбранному не меняет canonical
+	// SelectedUnit и не публикует Unit.Selected — шаг завис бы навсегда.
+	if (const UTutorialActionGateSubsystem* Gate = UTutorialActionGateSubsystem::Get(this);
+		Gate && Gate->RequiresExplicitUnitSelection())
+	{
+		// Автовыбор в таком шаге запрещён полностью; выбор самого игрока не трогаем.
+		if (SelectedUnit && !bSelectionByPlayer)
+		{
+			SelectUnitInternal(nullptr, /*bPlayerInitiated=*/false);
+		}
+		return;
+	}
+
 	const TArray<AUnitBase*> Squad = GetSquad();
 	const int32 Num = Squad.Num();
 	if (Num == 0)
 	{
-		SelectUnit(nullptr);
+		SelectUnitInternal(nullptr, /*bPlayerInitiated=*/false);
 		return;
 	}
 
@@ -596,13 +929,14 @@ void ATacticalPlayerController::SelectNextAvailableUnit()
 	{
 		const int32 Index = (CurrentIndex == INDEX_NONE) ? i : (CurrentIndex + 1 + i) % Num;
 		AUnitBase* Candidate = Squad[Index];
-		if (!Candidate || Candidate == SelectedUnit || !UTacticsCombatStatics::IsUnitAlive(Candidate))
+		if (!Candidate || Candidate == SelectedUnit || !UTacticsCombatStatics::IsUnitAlive(Candidate) ||
+			!IsUnitSelectableByGate(Candidate))
 		{
 			continue;
 		}
 		if (Candidate->GetActionPoints() && Candidate->GetActionPoints()->HasActionsLeft())
 		{
-			SelectUnit(Candidate);
+			SelectUnitInternal(Candidate, /*bPlayerInitiated=*/false);
 			return;
 		}
 		if (!AliveFallback)
@@ -610,8 +944,16 @@ void ATacticalPlayerController::SelectNextAvailableUnit()
 			AliveFallback = Candidate;
 		}
 	}
+	// Шаг обучения, ограничивший выбор, оставляет текущего бойца: снять выбор
+	// автоматически означало бы отдать игроку HUD без владельца и без права
+	// выбрать нужного юнита заново.
+	if (!AliveFallback && SelectedUnit && !IsUnitSelectableByGate(SelectedUnit))
+	{
+		return;
+	}
+
 	// Никого с AP: живой без AP (HUD остаётся на бойце), весь отряд выбит — nullptr.
-	SelectUnit(AliveFallback);
+	SelectUnitInternal(AliveFallback, /*bPlayerInitiated=*/false);
 }
 
 TArray<AUnitBase*> ATacticalPlayerController::GetSquad() const
@@ -652,13 +994,13 @@ bool ATacticalPlayerController::TraceUnderCursor(FHitResult& OutHit) const
 	FHitResult VisibilityHit;
 	if (MutableThis->GetHitResultUnderCursor(ECC_Visibility, false, VisibilityHit))
 	{
-		if (Cast<AUnitBase>(VisibilityHit.GetActor()) || !bPawnHit)
-		{
-			OutHit = VisibilityHit;
-			return true;
-		}
+		// Хит по Pawn-каналу, который НЕ юнит, — это посторонний коллайдер
+		// (например, бокс сценарной зоны). Отдавать его наружу нельзя: клик по
+		// бойцу внутри зоны возвращал бы зону и все целевые действия срывались.
+		OutHit = VisibilityHit;
+		return true;
 	}
-	return bPawnHit;
+	return bPawnHit && Cast<AUnitBase>(OutHit.GetActor()) != nullptr;
 }
 
 void ATacticalPlayerController::HandleSelectPressed()
@@ -782,6 +1124,14 @@ bool ATacticalPlayerController::CanIssueCommand(ETacticalPlayerCommand Command) 
 		return false;
 	}
 
+	// Action Gate обучения — тот же единственный арбитр и для hotkey, и для
+	// серости кнопок HUD: отказ происходит ДО траты AP, montage и quest-события.
+	if (!UTutorialActionGateSubsystem::AllowsAction(
+			this, TacticalCommandToTutorialAction(Command), SelectedUnit))
+	{
+		return false;
+	}
+
 	const UActionPointsComponent* ActionPoints = SelectedUnit->GetActionPoints();
 
 	// Блок выполняющейся тактической GA относится ко ВСЕМ приказам, а не только
@@ -880,6 +1230,17 @@ void ATacticalPlayerController::TryMoveSelectedUnit(const FVector& Goal)
 		return;
 	}
 
+	// Шаг обучения может разрешать только определённые точки маршрута. Проверка
+	// стоит до PlanMoveTo: отказ не должен ни строить путь, ни трогать камеру.
+	if (const UTutorialActionGateSubsystem* Gate = UTutorialActionGateSubsystem::Get(this))
+	{
+		if (!Gate->IsDestinationAllowed(Goal))
+		{
+			NotifyCommandDenied();
+			return;
+		}
+	}
+
 	// ЕДИНЫЙ план приказа — тот же вызов, которым нарисованы зона и лента превью.
 	// Он же приводит цель к полю: проецирует на навмеш и выталкивает из дисков
 	// занятости. Поэтому «что подсвечено — то и кликается, и туда же побежим»
@@ -897,6 +1258,21 @@ void ATacticalPlayerController::TryMoveSelectedUnit(const FVector& Goal)
 	if (!MoveRangeVisualizer->PlanMoveTo(Goal, Plan) || !ActionPoints->CanSpend(Plan.ActionPointCost))
 	{
 		return; // недостижимо по занятости / вне оплачиваемой зоны
+	}
+
+	// Маршрут обучения идёт по отрезкам: рывок за 2 AP «через точку» даёт ОДНО
+	// событие Settled вместо двух, счётчик шага замирает на 1/2, а End Turn в
+	// таком шаге запрещён — получается тупик без выхода. Поэтому в шаге с
+	// точками назначения каждый приказ стоит ровно 1 AP.
+	if (Plan.ActionPointCost > 1)
+	{
+		if (const UTutorialActionGateSubsystem* Gate = UTutorialActionGateSubsystem::Get(this);
+			Gate && Gate->IsGateActive() &&
+			!Gate->GetActivePolicy().AllowedDestinationAnchors.IsEmpty())
+		{
+			NotifyCommandDenied();
+			return;
+		}
 	}
 
 	AUnitAIController* UnitAI = Cast<AUnitAIController>(SelectedUnit->GetController());
@@ -921,6 +1297,12 @@ void ATacticalPlayerController::TryMoveSelectedUnit(const FVector& Goal)
 		// AP списываем сразу (как XCOM), укрытие пересчитается в OnMoveCompleted.
 		ActionPoints->TrySpendActionPoint(Plan.ActionPointCost);
 
+		// Токен приказа игрока: quest-событие перемещения публикует ЕДИНСТВЕННАЯ
+		// финализация settlement, и только для приказа, а не для служебного
+		// подшага стрелка или маршрута AI.
+		UnitAI->MarkPlayerOrderedMove();
+		SelectedUnit->PlayUnitSound(EUnitSoundEvent::MoveStart);
+
 		// Камера сопровождает бегущего бойца (follow отпустится по остановке
 		// в PlayerTick или по ручной панораме игрока).
 		if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
@@ -944,6 +1326,16 @@ void ATacticalPlayerController::TryAttackTarget(AActor* Target)
 	{
 		return;
 	}
+	// Шаг A8/B5/C2 требует конкретную голограмму: чужая цель отклоняется до
+	// отправки Event.Attack, поэтому AP и montage не расходуются.
+	if (const UTutorialActionGateSubsystem* Gate = UTutorialActionGateSubsystem::Get(this))
+	{
+		if (!Gate->IsTargetAllowed(Target))
+		{
+			NotifyCommandDenied();
+			return;
+		}
+	}
 
 	// Событие Event.Attack: GA_Attack сама валидирует дальность/LOS и платит AP.
 	FGameplayEventData Payload;
@@ -965,11 +1357,18 @@ void ATacticalPlayerController::HandleAbilityTargetClick(AActor* ClickedActor)
 	const UTacticalAbility* AbilityCDO = ActingUnit && ActingUnit->ClassAbilityClass
 		? ActingUnit->ClassAbilityClass->GetDefaultObject<UTacticalAbility>()
 		: nullptr;
+	const UTutorialActionGateSubsystem* Gate = UTutorialActionGateSubsystem::Get(this);
 	if (!AbilityCDO || !AbilityCDO->bRequiresTargetActor ||
 		!AbilityCDO->TargetedActivationEventTag.IsValid() ||
-		!AbilityCDO->IsValidTargetActor(ActingUnit, ClickedActor))
+		!AbilityCDO->IsValidTargetActor(ActingUnit, ClickedActor) ||
+		(Gate && !Gate->IsTargetAllowed(ClickedActor)))
 	{
 		// Невалидный клик не закрывает targeting: игрок может выбрать другую цель.
+		UE_LOG(LogXRU1Combat, Display,
+			TEXT("[Ability] Цель %s отклонена: cdo=%d target-механика=%d gate=%d"),
+			*GetNameSafe(ClickedActor), AbilityCDO ? 1 : 0,
+			AbilityCDO && AbilityCDO->IsValidTargetActor(ActingUnit, ClickedActor) ? 1 : 0,
+			!Gate || Gate->IsTargetAllowed(ClickedActor) ? 1 : 0);
 		return;
 	}
 
@@ -998,6 +1397,13 @@ void ATacticalPlayerController::RequestEndTurn()
 	if (IsTargetingAttack() || IsTargetingAbility())
 	{
 		CancelTargeting();
+		return;
+	}
+
+	// Конец хода — самостоятельное действие обучения (шаги A3 и D1): пока шаг его
+	// не разрешил, Enter и кнопка HUD не должны передавать ход врагу.
+	if (!UTutorialActionGateSubsystem::AllowsAction(this, ETutorialAction::EndTurn, SelectedUnit))
+	{
 		return;
 	}
 
@@ -1321,6 +1727,7 @@ void ATacticalPlayerController::RequestOverwatch()
 {
 	if (!CanIssueCommand(ETacticalPlayerCommand::Overwatch))
 	{
+		NotifyCommandDenied();
 		return;
 	}
 	if (UAbilitySystemComponent* ASC = SelectedUnit->GetAbilitySystemComponent())
@@ -1333,6 +1740,7 @@ void ATacticalPlayerController::RequestHunkerDown()
 {
 	if (!CanIssueCommand(ETacticalPlayerCommand::HunkerDown))
 	{
+		NotifyCommandDenied();
 		return;
 	}
 	if (UAbilitySystemComponent* ASC = SelectedUnit->GetAbilitySystemComponent())
@@ -1345,6 +1753,12 @@ void ATacticalPlayerController::RequestClassAbility()
 {
 	if (!CanIssueCommand(ETacticalPlayerCommand::ClassAbility))
 	{
+		UE_LOG(LogXRU1Combat, Display,
+			TEXT("[Ability] Запрос отклонён CanIssueCommand (unit=%s, gate=%d, targeting=%d)"),
+			*GetNameSafe(SelectedUnit),
+			UTutorialActionGateSubsystem::AllowsAction(
+				this, ETutorialAction::ClassAbility, SelectedUnit) ? 1 : 0,
+			static_cast<int32>(TargetingMode));
 		return;
 	}
 
@@ -1357,6 +1771,9 @@ void ATacticalPlayerController::RequestClassAbility()
 		// контроллер больше не знает ни UGA_Heal, ни Event.Heal.
 		if (AbilityCDO->TargetedActivationEventTag.IsValid())
 		{
+			UE_LOG(LogXRU1Combat, Display,
+				TEXT("[Ability] %s: вход в режим выбора цели — кликните союзника"),
+				*GetNameSafe(SelectedUnit));
 			SetTargetingMode(EPlayerTargetingMode::Ability);
 		}
 		return;
@@ -1531,7 +1948,7 @@ void ATacticalPlayerController::RefreshMoveRange()
 	// (нештатная ситуация уровня, а не гонка) — просто логируем.
 	if (!MoveRangeVisualizer->ShowForUnit(SelectedUnit))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[MoveRange] Зона не построилась: %s стоит вне навмеша"),
+		UE_LOG(LogXRU1Combat, Warning, TEXT("[MoveRange] Зона не построилась: %s стоит вне навмеша"),
 			*GetNameSafe(SelectedUnit));
 	}
 }
@@ -1715,7 +2132,7 @@ void ATacticalPlayerController::HandleSelectedUnitAPChanged(int32 NewCurrent, in
 	// его до финиша; переход сделает PlayerTick по остановке). Пока играет кадр
 	// выстрела — тоже ждём (иначе переход выбора сорвал бы кадр в тот же тик):
 	// доделает PlayerTick по окончании кадра.
-	UE_LOG(LogTemp, Log, TEXT("[AutoAdv] AP=%d autoSel=%d playerPhase=%d moving=%d framingShot=%d"),
+	UE_LOG(LogXRU1Combat, Log, TEXT("[AutoAdv] AP=%d autoSel=%d playerPhase=%d moving=%d framingShot=%d"),
 		NewCurrent, bAutoSelectUnits, IsPlayerPhase(), IsSelectedUnitMoving(), IsCameraFramingShot());
 	if (NewCurrent == 0 && bAutoSelectUnits && IsPlayerPhase() && !IsSelectedUnitMoving())
 	{
@@ -1725,7 +2142,7 @@ void ATacticalPlayerController::HandleSelectedUnitAPChanged(int32 NewCurrent, in
 		// SelectNextUnit сменил бы HUD/camera owner посреди этой транзакции. Штамп
 		// кадра плюс action/reaction barriers разрешают переход только после terminal.
 		// Ходьба на 2 AP идёт другим путём (по остановке в PlayerTick).
-		UE_LOG(LogTemp, Log, TEXT("[AutoAdv] AP=0 → откладываем переход (ждём возможный кадр выстрела)"));
+		UE_LOG(LogXRU1Combat, Log, TEXT("[AutoAdv] AP=0 → откладываем переход (ждём возможный кадр выстрела)"));
 		bPendingAutoAdvance = true;
 		PendingAutoAdvanceFrame = GFrameCounter;
 	}
@@ -1768,6 +2185,12 @@ bool ATacticalPlayerController::IsCameraFramingShot() const
 void ATacticalPlayerController::TryAutoEndTurn()
 {
 	if (bReactionPlaying || !bAutoEndTurnWhenExhausted || !IsPlayerPhase())
+	{
+		return;
+	}
+	// В обучении конец хода — отдельный шаг (A3, D1). Автозавершение сделало бы
+	// его за игрока, и инструкция «нажми Завершить ход» осталась бы без действия.
+	if (!UTutorialActionGateSubsystem::AllowsAction(this, ETutorialAction::EndTurn, SelectedUnit))
 	{
 		return;
 	}

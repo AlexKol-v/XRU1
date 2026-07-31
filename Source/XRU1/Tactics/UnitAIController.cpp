@@ -6,6 +6,11 @@
 #include "ActionPointsComponent.h"
 #include "CoverDetectionComponent.h"
 #include "CoverTuningDataAsset.h"
+#include "TacticalAIDirectorSubsystem.h"
+#include "TacticalQuestEvents.h"
+#include "TutorialActionGate.h"
+#include "TacticsDebug.h"
+#include "DrawDebugHelpers.h"
 #include "TacticsCombatStatics.h"
 #include "TacticsGameplayTags.h"
 #include "TurnManagerSubsystem.h"
@@ -28,6 +33,7 @@
 #include "HAL/IConsoleManager.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/Crc.h"
+#include "XRU1Log.h"
 #include "Math/RandomStream.h"
 
 /**
@@ -36,11 +42,8 @@
  * Отвечает на «понимают ли враги, где прятаться» — печатает, нашёл ли манёвр
  * укрытие и с какой оценкой (0 найдено = на карте нет укрытий рядом).
  */
-static TAutoConsoleVariable<int32> CVarLogAICombat(
-	TEXT("xru1.AI.LogCombat"),
-	0,
-	TEXT("1 — логировать боевые решения вражеского AI (укрытие/выстрел/сближение)."),
-	ECVF_Default);
+// Переключатель живёт в общем реестре TacticsDebug: два объявления одного и
+// того же cvar в разных .cpp конфликтуют при регистрации.
 
 namespace
 {
@@ -111,7 +114,7 @@ void AUnitAIController::BeginPlay()
 	if (TargetHitChanceHighThreshold < TargetHitChanceLowThreshold)
 	{
 		Swap(TargetHitChanceHighThreshold, TargetHitChanceLowThreshold);
-		UE_LOG(LogTemp, Warning, TEXT("[AI] %s: пороги hit chance были инвертированы и переставлены"),
+		UE_LOG(LogXRU1AI, Warning, TEXT("[AI] %s: пороги hit chance были инвертированы и переставлены"),
 			*GetNameSafe(this));
 	}
 
@@ -142,19 +145,46 @@ void AUnitAIController::BeginPlay()
 	// созданный до правки, унёс бы с собой старый конус 120° — и враг
 	// по-прежнему «терял» бойца, зашедшего за спину. Здесь же гарантируем, что
 	// в игре стоит ровно то, что написано в свойствах.
-	if (SightConfig && Perception)
-	{
-		SightConfig->SightRadius = SightRadius;
-		SightConfig->LoseSightRadius = LoseSightRadius;
-		SightConfig->PeripheralVisionAngleDegrees = PeripheralVisionHalfAngle;
-		Perception->ConfigureSense(*SightConfig);
-		Perception->RequestStimuliListenerUpdate();
-	}
+	RefreshPerceptionConfig();
 
 	if (Perception)
 	{
 		Perception->OnTargetPerceptionUpdated.AddDynamic(this, &AUnitAIController::HandlePerceptionUpdated);
 	}
+}
+
+void AUnitAIController::RefreshPerceptionConfig()
+{
+	// Конфиг зрения применяется здесь, а не только в конструкторе: значения
+	// SightConfig сериализуются в CDO, поэтому BP-наследник контроллера, созданный
+	// до правки, унёс бы старый конус. Метод отдельный, потому что профиль
+	// сложности назначается уже ПОСЛЕ BeginPlay — без повторного вызова разница в
+	// дальности обзора между Easy и Hard просто не применилась бы.
+	if (!SightConfig || !Perception)
+	{
+		return;
+	}
+	SightConfig->SightRadius = SightRadius;
+	SightConfig->LoseSightRadius = LoseSightRadius;
+	SightConfig->PeripheralVisionAngleDegrees = PeripheralVisionHalfAngle;
+	Perception->ConfigureSense(*SightConfig);
+	Perception->RequestStimuliListenerUpdate();
+}
+
+void AUnitAIController::SetBehaviorProfile(UAIBehaviorProfileDataAsset* NewProfile)
+{
+	if (!NewProfile || BehaviorProfile == NewProfile)
+	{
+		return;
+	}
+	BehaviorProfile = NewProfile;
+	ApplyBehaviorProfile();
+	SightRadius = FMath::Max(0.f, SightRadius);
+	LoseSightRadius = FMath::Max(SightRadius, LoseSightRadius);
+	PeripheralVisionHalfAngle = FMath::Clamp(PeripheralVisionHalfAngle, 1.f, 180.f);
+	RefreshPerceptionConfig();
+	UE_LOG(LogXRU1AI, Log, TEXT("[AI] %s: профиль поведения = %s"),
+		*GetNameSafe(GetPawn()), *GetNameSafe(NewProfile));
 }
 
 void AUnitAIController::ApplyBehaviorProfile()
@@ -218,6 +248,7 @@ void AUnitAIController::ApplyBehaviorProfile()
 
 	if (BehaviorProfile->bOverrideActionEvaluators)
 	{
+		BaseEvaluatorWeights.Reset();
 		ActionEvaluators.Reset(BehaviorProfile->ActionEvaluators.Num());
 		for (const TObjectPtr<UAIActionEvaluator>& Template : BehaviorProfile->ActionEvaluators)
 		{
@@ -227,11 +258,41 @@ void AUnitAIController::ApplyBehaviorProfile()
 			}
 		}
 	}
+
+	Style = BehaviorProfile->Style;
+
+	// FlankPositionBonus и TargetScoreWounded только что присвоены из профиля,
+	// поэтому множитель к ним применяется от чистого значения.
+	FlankPositionBonus *= FMath::Max(0.f, Style.FlankWillingness);
+	TargetScoreWounded *= FMath::Max(0.f, Style.FinishWoundedWillingness);
+
+	// А вот веса оценщиков живут в самих объектах и профилем не переприсваиваются.
+	// Множитель обязан считаться от ИСХОДНОГО веса: профиль назначается второй раз
+	// (BeginPlay, затем выбор сложности в GameMode), и умножение «поверх» дало бы
+	// квадрат множителя и необъяснимо агрессивного врага.
+	for (const TObjectPtr<UAIActionEvaluator>& Evaluator : ActionEvaluators)
+	{
+		if (!Evaluator)
+		{
+			continue;
+		}
+		const float BaseWeight = BaseEvaluatorWeights.FindOrAdd(Evaluator, Evaluator->Weight);
+		const float* Multiplier = Style.EvaluatorWeightMultipliers.Find(Evaluator->GetClass());
+		Evaluator->Weight = BaseWeight * (Multiplier ? FMath::Max(0.f, *Multiplier) : 1.f);
+	}
 }
 
 void AUnitAIController::OnPossess(APawn* InPawn)
 {
 	Super::OnPossess(InPawn);
+
+	// Боец попадает в свой под сразу при возможнии: групповая активация должна
+	// работать ещё до первого хода, иначе первый же выстрел разбудит одного.
+	if (UTacticalAIDirectorSubsystem* Director = GetAIDirector())
+	{
+		Director->RegisterUnit(Cast<AUnitBase>(InPawn));
+	}
+
 
 	// Тревога — состояние конкретного бойца: новый пешка = новый пост.
 	AlertState = EUnitAlertState::Patrol;
@@ -243,7 +304,7 @@ void AUnitAIController::OnPossess(APawn* InPawn)
 	const AUnitBase* Unit = Cast<AUnitBase>(InPawn);
 	if (Unit && !Unit->AttackAbilityClass)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[AI] У %s не назначен AttackAbilityClass — атака запрещена. ")
+		UE_LOG(LogXRU1AI, Error, TEXT("[AI] У %s не назначен AttackAbilityClass — атака запрещена. ")
 			TEXT("Задай BP_GA_Attack в Class Defaults BP юнита."),
 			*GetNameSafe(InPawn));
 	}
@@ -291,6 +352,7 @@ void AUnitAIController::ExecuteUnitTurn(FSimpleDelegate OnFinished)
 	bCoverMoveDoneThisTurn = false;
 	bManeuverInProgress = false;
 	DecisionOrdinalThisTurn = 0;
+	FailedAttackTargetsThisTurn.Reset(); // новый ход — новые попытки
 	AdvanceTurnStep();
 }
 
@@ -335,10 +397,36 @@ void AUnitAIController::AdvanceTurnStep()
 	// отсутствие AP и завершившийся бой не меняют воспроизводимую последовательность.
 	++DecisionOrdinalThisTurn;
 
+	// Сценарный приказ обучения важнее utility: шаги A4/A7/B4 обязаны показать
+	// ровно один предсказуемый выстрел по заранее известному бойцу. Приказ идёт
+	// через тот же GA_Attack, поэтому урон, montage и FireCommit — настоящие.
+	if (AActor* ScriptedTarget = ScriptedAttackTarget.Get())
+	{
+		ClearScriptedAttackOrder();
+		if (UTacticsCombatStatics::IsUnitAlive(ScriptedTarget) &&
+			TryFireAtTarget(Unit, ScriptedTarget))
+		{
+			ScheduleNextStep();
+			return;
+		}
+		UE_LOG(LogXRU1AI, Error,
+			TEXT("[AI] %s: сценарный выстрел по %s не активировался — шаг обучения не закроется"),
+			*GetNameSafe(Unit), *GetNameSafe(ScriptedTarget));
+	}
+
 	// Видимая цель мгновенно поднимает red alert (перцепция могла отстать на кадр).
 	if (FindVisibleTarget())
 	{
 		AlertState = EUnitAlertState::Combat;
+	}
+	// Вскрытый под остаётся в бою, даже если конкретно этот боец сейчас никого
+	// не видит: иначе половина группы каждый ход сваливалась бы обратно в патруль.
+	else if (const UTacticalAIDirectorSubsystem* Director = GetAIDirector())
+	{
+		if (Director->IsUnitPodActivated(Unit))
+		{
+			AlertState = EUnitAlertState::Combat;
+		}
 	}
 
 	bool bStepHandled = false;
@@ -351,7 +439,18 @@ void AUnitAIController::AdvanceTurnStep()
 
 	if (!bStepHandled)
 	{
-		// Состоянию нечего делать (нет точек патруля, некуда идти) — ход окончен.
+		// Ход закончен без единого действия. Это ЧАСТО симптом дефекта (боец не
+		// знает о противнике, не смог построить путь, у него нет способностей),
+		// поэтому причина печатается всегда, а не под cvar: именно её ищут,
+		// когда «враги стоят столбом».
+		const UTacticalAIDirectorSubsystem* Director = GetAIDirector();
+		UE_LOG(LogXRU1AI, Warning,
+			TEXT("[AI] %s закончил ход БЕЗ ДЕЙСТВИЙ: alert=%d, под вскрыт=%d, AP=%d, ")
+			TEXT("видимая цель=%s, точек патруля=%d"),
+			*GetNameSafe(Unit), static_cast<int32>(AlertState),
+			(Director && Director->IsUnitPodActivated(Unit)) ? 1 : 0,
+			ActionPoints->CurrentActionPoints, *GetNameSafe(FindVisibleTarget()),
+			Unit->PatrolPoints.Num());
 		FinishUnitTurn();
 	}
 }
@@ -361,7 +460,17 @@ bool AUnitAIController::StepCombat(AUnitBase* Unit)
 	AActor* Target = FindVisibleTarget();
 	if (!Target)
 	{
-		// Цели не видно — переходим к разведке последней известной точки.
+		// Цели не видно, но под мог знать точку от союзника, попадания или шума.
+		// Идём к самому достоверному контакту вместо возврата в патруль: боец,
+		// по которому только что стреляли, обязан двигаться, а не стоять.
+		FAIContact Contact;
+		if (const UTacticalAIDirectorSubsystem* Director = GetAIDirector();
+			Director && Director->GetBestContact(Unit, Contact))
+		{
+			LastKnownThreatLocation = Contact.LastKnownLocation;
+			bHasThreatLocation = true;
+		}
+
 		AlertState = EUnitAlertState::Investigate;
 		return StepInvestigate(Unit);
 	}
@@ -379,11 +488,16 @@ bool AUnitAIController::StepCombat(AUnitBase* Unit)
 		bManeuverInProgress = false; // однократное продолжение за шаг; при успехе взводится снова
 		if (PointsLeft > 0 && FVector::Dist2D(Unit->GetActorLocation(), PendingManeuverPoint) > 75.f)
 		{
-			if (MoveWithBudget(Unit, PendingManeuverPoint, /*AcceptanceRadius=*/40.f))
+			if (MoveWithBudget(Unit, PendingManeuverPoint, /*AcceptanceRadius=*/40.f, PointsLeft))
 			{
 				bManeuverInProgress = true;
 				return true;
 			}
+			// Продолжение сорвалось: боец остался в открытом поле, и это надо
+			// видеть в логе, а не гадать «почему он не добежал».
+			UE_LOG(LogXRU1AI, Warning,
+				TEXT("[AI] %s: не смог продолжить манёвр к (%.0f, %.0f) — остался на месте"),
+				*GetNameSafe(Unit), PendingManeuverPoint.X, PendingManeuverPoint.Y);
 		}
 	}
 
@@ -392,7 +506,31 @@ bool AUnitAIController::StepCombat(AUnitBase* Unit)
 	// этого утилити-выбор неотлаживаем.
 	const FAIDecisionContext Context = BuildDecisionContext(Unit, Target);
 	const FAIDecision Decision = DecideAction(Context);
-	return ExecuteDecision(Unit, Decision);
+	if (ExecuteDecision(Unit, Decision))
+	{
+		return true;
+	}
+
+	// Лучший вариант не исполнился. Пробуем следующие по убыванию скора: у бойца
+	// с видимой целью почти всегда остаётся хотя бы выстрел, и терять из-за
+	// несостоявшейся перебежки весь ход он не должен.
+	for (const FAIDecision& Fallback : RankedDecisions)
+	{
+		if (Fallback.Kind == Decision.Kind && Fallback.Score >= Decision.Score)
+		{
+			continue; // уже пробовали именно этот вариант
+		}
+		if (TacticsDebug::IsAILogEnabled())
+		{
+			UE_LOG(LogXRU1AI, Log, TEXT("[AI] %s: основной вариант не исполнился — пробую «%s» (скор %.1f)"),
+				*GetNameSafe(Unit), *Fallback.Reason, Fallback.Score);
+		}
+		if (ExecuteDecision(Unit, Fallback))
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 FAIDecisionContext AUnitAIController::BuildDecisionContext(AUnitBase* Unit, AActor* PrimaryThreat)
@@ -449,10 +587,10 @@ uint32 AUnitAIController::BuildDecisionSeed(const AUnitBase* Unit, FName Salt) c
 
 FAIDecision AUnitAIController::DecideAction(const FAIDecisionContext& Context)
 {
-	const bool bLogAI = CVarLogAICombat.GetValueOnGameThread() != 0;
+	const bool bLogAI = TacticsDebug::IsAILogEnabled();
 	if (bLogAI)
 	{
-		UE_LOG(LogTemp, Log,
+		UE_LOG(LogXRU1AI, Log,
 			TEXT("[AI] %s: контекст Alert=%d AP=%d Threat=%s Seed=%u"),
 			*GetNameSafe(Context.Unit), static_cast<int32>(AlertState),
 			Context.ActionPointsLeft, *GetNameSafe(Context.PrimaryThreat), Context.DecisionSeed);
@@ -479,7 +617,7 @@ FAIDecision AUnitAIController::DecideAction(const FAIDecisionContext& Context)
 		{
 			if (bLogAI)
 			{
-				UE_LOG(LogTemp, Log, TEXT("[AI]   %s: выключен весом/потолком"),
+				UE_LOG(LogXRU1AI, Log, TEXT("[AI]   %s: выключен весом/потолком"),
 					*Evaluator->GetDebugName().ToString());
 			}
 			continue;
@@ -494,6 +632,7 @@ FAIDecision AUnitAIController::DecideAction(const FAIDecisionContext& Context)
 
 	FAIDecision Best;      // Kind == Skip — терминальный фолбэк, активация не зависнет
 	float BestScore = 0.f; // ноль и ниже = «вариант не предлагается»
+	RankedDecisions.Reset();
 
 	for (UAIActionEvaluator* Evaluator : Ordered)
 	{
@@ -506,7 +645,7 @@ FAIDecision AUnitAIController::DecideAction(const FAIDecisionContext& Context)
 		{
 			if (bLogAI)
 			{
-				UE_LOG(LogTemp, Log, TEXT("[AI]   %s: неприменим"),
+				UE_LOG(LogXRU1AI, Log, TEXT("[AI]   %s: неприменим"),
 					*Evaluator->GetDebugName().ToString());
 			}
 			continue;
@@ -518,31 +657,87 @@ FAIDecision AUnitAIController::DecideAction(const FAIDecisionContext& Context)
 
 		if (bLogAI)
 		{
-			UE_LOG(LogTemp, Log, TEXT("[AI]   %s: скор %.1f%s — %s"),
+			UE_LOG(LogXRU1AI, Log, TEXT("[AI]   %s: скор %.1f%s — %s"),
 				*Evaluator->GetDebugName().ToString(), Score,
 				RawScore <= 0.f ? TEXT(" (отказ)") : TEXT(""),
 				Candidate.Reason.IsEmpty() ? TEXT("—") : *Candidate.Reason);
 		}
 
-		if (RawScore > 0.f && Score > BestScore)
+		if (RawScore > 0.f)
 		{
-			BestScore = Score;
+			// Запоминаем ВСЕ пригодные варианты, а не только лучший. Исполнение
+			// может провалиться (маршрут не строится, точка занята), и тогда ход
+			// обязан продолжиться следующим предложением, а не закончиться
+			// ничем. Именно на этом бот с видимой целью и целым AP «стоял».
 			Candidate.Score = Score;
-			Best = Candidate;
+			RankedDecisions.Add(Candidate);
+			if (Score > BestScore)
+			{
+				BestScore = Score;
+				Best = Candidate;
+			}
 		}
 	}
 
+	RankedDecisions.Sort([](const FAIDecision& A, const FAIDecision& B)
+	{
+		return A.Score > B.Score;
+	});
+
 	if (bLogAI)
 	{
-		UE_LOG(LogTemp, Log, TEXT("[AI] %s: РЕШЕНИЕ — %s (скор %.1f)"),
+		UE_LOG(LogXRU1AI, Log, TEXT("[AI] %s: РЕШЕНИЕ — %s (скор %.1f)"),
 			*GetNameSafe(Context.Unit),
 			Best.Reason.IsEmpty() ? TEXT("пропуск активации") : *Best.Reason, Best.Score);
 	}
 	return Best;
 }
 
+void AUnitAIController::DrawDecisionDebug(const AUnitBase* Unit, const FAIDecision& Decision) const
+{
+#if ENABLE_DRAW_DEBUG
+	UWorld* World = GetWorld();
+	if (!Unit || !World)
+	{
+		return;
+	}
+
+	static const TCHAR* KindNames[] = { TEXT("Shoot"), TEXT("Move"), TEXT("Overwatch"), TEXT("Hunker"), TEXT("Skip") };
+	const int32 KindIndex = FMath::Clamp(static_cast<int32>(Decision.Kind), 0,
+		UE_ARRAY_COUNT(KindNames) - 1);
+
+	const FString Label = FString::Printf(TEXT("%s\n%s  score=%.1f\n%s"),
+		*Unit->GetName(), KindNames[KindIndex], Decision.Score, *Decision.Reason);
+	UTacticsDebugLibrary::DrawUnitDebugText(Unit, Label, FLinearColor(1.f, 0.8f, 0.2f));
+
+	const float Duration = TacticsDebug::GetDebugDrawDuration();
+	const FVector From = Unit->GetActorLocation();
+
+	// Красная линия — по кому стреляем, зелёная — куда идём: два самых частых
+	// вопроса при разборе хода врага.
+	if (Decision.Target)
+	{
+		DrawDebugLine(World, From, Decision.Target->GetActorLocation(),
+			FColor::Red, false, Duration, 0, 3.f);
+	}
+	if (Decision.Kind == EAIActionKind::Move)
+	{
+		DrawDebugLine(World, From, Decision.Destination, FColor::Green, false, Duration, 0, 3.f);
+		DrawDebugSphere(World, Decision.Destination, 45.f, 12,
+			Decision.bIsCoverManeuver ? FColor::Cyan : FColor::Green, false, Duration, 0, 2.f);
+	}
+#endif
+}
+
 bool AUnitAIController::ExecuteDecision(AUnitBase* Unit, const FAIDecision& Decision)
 {
+	// Визуальная отладка принятого решения: без неё «почему он побежал туда»
+	// приходится реконструировать по тексту лога, сопоставляя координаты на глаз.
+	if (TacticsDebug::IsAIDebugDrawEnabled())
+	{
+		DrawDecisionDebug(Unit, Decision);
+	}
+
 	switch (Decision.Kind)
 	{
 	case EAIActionKind::Shoot:
@@ -602,13 +797,18 @@ bool AUnitAIController::ExecuteDecision(AUnitBase* Unit, const FAIDecision& Deci
 
 bool AUnitAIController::StartManeuverTo(AUnitBase* Unit, const FVector& Point, const TCHAR* Reason)
 {
-	if (CVarLogAICombat.GetValueOnGameThread() != 0)
+	if (TacticsDebug::IsAILogEnabled())
 	{
-		UE_LOG(LogTemp, Log, TEXT("[AI] %s: решение — манёвр: %s → (%.0f, %.0f)"),
+		UE_LOG(LogXRU1AI, Log, TEXT("[AI] %s: решение — манёвр: %s → (%.0f, %.0f)"),
 			*GetNameSafe(Unit), Reason, Point.X, Point.Y);
 	}
 	bCoverMoveDoneThisTurn = true;
-	if (MoveWithBudget(Unit, Point, /*AcceptanceRadius=*/40.f))
+	// Точка укрытия выбиралась с бюджетом MoveRange * ActionPointsLeft, поэтому
+	// и планировать маршрут надо на тот же остаток AP: иначе выбранная цель
+	// заведомо недостижима за одно очко и боец замирает в открытом поле.
+	const UActionPointsComponent* ManeuverAP = Unit ? Unit->GetActionPoints() : nullptr;
+	const int32 ManeuverBudget = ManeuverAP ? FMath::Max(1, ManeuverAP->CurrentActionPoints) : 1;
+	if (MoveWithBudget(Unit, Point, /*AcceptanceRadius=*/40.f, ManeuverBudget))
 	{
 		// Точка может быть дальше 1 AP (отступление/рывок): продолжение сделает
 		// следующий шаг хода — MoveWithBudget за раз проходит максимум MoveRange.
@@ -1019,18 +1219,18 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 
 	// Почему манёвр выбран (или не выбран) — и ЧТО именно даёт выбранная точка.
 	// Без этого «осознанность» укрытия проверить нечем.
-	if (CVarLogAICombat.GetValueOnGameThread() != 0)
+	if (TacticsDebug::IsAILogEnabled())
 	{
 		if (bFound)
 		{
-			UE_LOG(LogTemp, Log, TEXT("[AI]     позиция найдена (%.1f, %.1f): %s | было: %s | ")
+			UE_LOG(LogXRU1AI, Log, TEXT("[AI]     позиция найдена (%.1f, %.1f): %s | было: %s | ")
 				TEXT("скор %.1f против базы %.1f (порог %.1f)"),
 				BestDetails.Point.X, BestDetails.Point.Y, *BestDetails.Describe(),
 				*BaselineDetails.Describe(), BestScore, BaselineScore, BaselineScore + RelocateBias);
 		}
 		else
 		{
-			UE_LOG(LogTemp, Log, TEXT("[AI]     позиция НЕ найдена: сейчас %s, скор %.1f, ")
+			UE_LOG(LogXRU1AI, Log, TEXT("[AI]     позиция НЕ найдена: сейчас %s, скор %.1f, ")
 				TEXT("порог %.1f (ничего лучше в бюджете)"),
 				*BaselineDetails.Describe(), BaselineScore, BaselineScore + RelocateBias);
 		}
@@ -1064,6 +1264,20 @@ bool AUnitAIController::TryFireAtTarget(AUnitBase* Unit, AActor* Target)
 		return false;
 	}
 
+	// ПРЕДОХРАНИТЕЛЬ ОТ ЗАЦИКЛИВАНИЯ: атака по этой цели уже не активировалась в
+	// этом ходу — повторять её бессмысленно, мир с тех пор не менялся. Утилити
+	// уходит на fallback-решения (перебежка/overwatch) вместо вечного повтора.
+	if (FailedAttackTargetsThisTurn.Contains(Target))
+	{
+		if (TacticsDebug::IsAILogEnabled())
+		{
+			UE_LOG(LogXRU1AI, Log,
+				TEXT("[AI] %s: атака по %s уже отклонялась в этом ходу — пропускаю"),
+				*GetNameSafe(Unit), *GetNameSafe(Target));
+		}
+		return false;
+	}
+
 	// Штатный путь: то же событие, что шлёт контроллер игрока. Стоимость AP,
 	// XCOM-сжигание остатка и BP-хуки выстрела живут в одном месте — GA_Attack.
 	UAbilitySystemComponent* ASC = Unit->GetAbilitySystemComponent();
@@ -1072,7 +1286,7 @@ bool AUnitAIController::TryFireAtTarget(AUnitBase* Unit, AActor* Target)
 
 	if (!bHasAttackAbility)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[AI] %s: AttackAbilityClass не назначен/не выдан; "
+		UE_LOG(LogXRU1AI, Error, TEXT("[AI] %s: AttackAbilityClass не назначен/не выдан; "
 			"прямой ResolveShot запрещён"), *GetNameSafe(Unit));
 		return false;
 	}
@@ -1088,8 +1302,17 @@ bool AUnitAIController::TryFireAtTarget(AUnitBase* Unit, AActor* Target)
 	const bool bAccepted = UGA_Attack::GetAttackActionInProgressFor(Unit, ActionId);
 	if (bAccepted)
 	{
-		UE_LOG(LogTemp, Verbose, TEXT("[AI] %s: attack accepted id=%s"),
+		UE_LOG(LogXRU1AI, Verbose, TEXT("[AI] %s: attack accepted id=%s"),
 			*GetNameSafe(Unit), *ActionId.ToString(EGuidFormats::Digits));
+	}
+	else
+	{
+		// Активация отклонена (например, из замороженной позиции нет линии
+		// огня). Цель блокируется до конца хода — см. предохранитель выше.
+		FailedAttackTargetsThisTurn.Add(Target);
+		UE_LOG(LogXRU1AI, Warning,
+			TEXT("[AI] %s: атака по %s не активировалась — цель заблокирована до конца хода"),
+			*GetNameSafe(Unit), *GetNameSafe(Target));
 	}
 	return bAccepted;
 }
@@ -1156,9 +1379,9 @@ bool AUnitAIController::StepInvestigate(AUnitBase* Unit)
 				UTacticsCombatStatics::FaceActorTowards(Unit, LastKnownThreatLocation);
 				if (TryActivateSelfAbility(Unit, Unit->OverwatchAbilityClass))
 				{
-					if (CVarLogAICombat.GetValueOnGameThread() != 0)
+					if (TacticsDebug::IsAILogEnabled())
 					{
-						UE_LOG(LogTemp, Log, TEXT("[AI] %s: разведка — встал в наблюдение ")
+						UE_LOG(LogXRU1AI, Log, TEXT("[AI] %s: разведка — встал в наблюдение ")
 							TEXT("на последнюю известную точку врага"), *GetNameSafe(Unit));
 					}
 					// Наблюдение сжигает остаток AP; шаг планируем, чтобы ход
@@ -1181,7 +1404,21 @@ bool AUnitAIController::StepPatrol(AUnitBase* Unit)
 {
 	if (Unit->PatrolPoints.Num() == 0)
 	{
-		// Пост без маршрута: стоит на месте, ход не тратим.
+		// Пост без маршрута. Раньше боец просто пропускал ход — на карте без
+		// расставленных PatrolPoints это выглядело как «половина врагов сломана»:
+		// камера подлетала к ним, и они ничего не делали.
+		// Часовой на посту держит направление под прицелом; это и полезнее, и
+		// читается как осмысленное поведение.
+		if (Unit->OverwatchAbilityClass && TryActivateSelfAbility(Unit, Unit->OverwatchAbilityClass))
+		{
+			if (TacticsDebug::IsAILogEnabled())
+			{
+				UE_LOG(LogXRU1AI, Log, TEXT("[AI] %s: пост без маршрута — встал в наблюдение"),
+					*GetNameSafe(Unit));
+			}
+			ScheduleNextStep();
+			return true;
+		}
 		return false;
 	}
 
@@ -1202,12 +1439,14 @@ bool AUnitAIController::StepPatrol(AUnitBase* Unit)
 	return MoveWithBudget(Unit, PatrolPoint->GetActorLocation(), 100.f);
 }
 
-bool AUnitAIController::MoveWithBudget(AUnitBase* Unit, const FVector& Goal, float AcceptanceRadius)
+bool AUnitAIController::MoveWithBudget(AUnitBase* Unit, const FVector& Goal, float AcceptanceRadius,
+	int32 MaxActionPoints)
 {
 	if (!Unit || !Unit->GetActionPoints())
 	{
 		return false;
 	}
+	MaxActionPoints = FMath::Max(1, MaxActionPoints);
 
 	// В бою враг использует ровно тот же occupancy-aware планировщик, что и игрок:
 	// волна заранее огибает диски союзников, а не надеется на локальный Detour Crowd.
@@ -1219,12 +1458,16 @@ bool AUnitAIController::MoveWithBudget(AUnitBase* Unit, const FVector& Goal, flo
 			? Cast<ATacticalPlayerController>(GetWorld()->GetFirstPlayerController()) : nullptr;
 		FMoveOrderPlan Plan;
 		if (!PlayerController ||
-			!PlayerController->PlanMoveForUnit(Unit, Goal, /*MaxActionPoints=*/1, Plan) ||
+			!PlayerController->PlanMoveForUnit(Unit, Goal, MaxActionPoints, Plan) ||
 			Plan.PathPoints.Num() < 2)
 		{
 			return false;
 		}
 
+		// Реальная стоимость плана: манёвр в укрытие за 2 AP теперь исполняется
+		// ОДНИМ маршрутом и оплачивается целиком, как приказ игрока. Планирование
+		// бюджетом в 1 AP оставляло бойца стоять на полпути посреди поля.
+		PendingMoveActionPointCost = FMath::Max(1, Plan.ActionPointCost);
 		bTurnMoveInProgress = true; // AP спишется в OnMoveCompleted.
 		const EPathFollowingRequestResult::Type Result = MoveAlongRoute(
 			Plan.PathPoints, FMath::Min(AcceptanceRadius, 40.f));
@@ -1260,6 +1503,7 @@ bool AUnitAIController::MoveWithBudget(AUnitBase* Unit, const FVector& Goal, flo
 	const EPathFollowingRequestResult::Type Result = MoveToLocation(BudgetedGoal, AcceptanceRadius);
 	if (Result == EPathFollowingRequestResult::RequestSuccessful)
 	{
+		PendingMoveActionPointCost = 1;
 		bTurnMoveInProgress = true; // AP спишется в OnMoveCompleted
 		Unit->NotifyUnitStateChanged();
 		return true;
@@ -1381,6 +1625,36 @@ bool AUnitAIController::RequestNextRouteLeg()
 	return false;
 }
 
+void AUnitAIController::NotifyPodActivated()
+{
+	// Под вскрыт: боец переходит в бой, даже если сам ещё никого не видит.
+	// Именно это отличает группу от четырёх независимых слепых часовых.
+	if (AlertState != EUnitAlertState::Combat)
+	{
+		AlertState = EUnitAlertState::Combat;
+		if (AUnitBase* Unit = Cast<AUnitBase>(GetPawn()))
+		{
+			Unit->NotifyUnitStateChanged();
+		}
+	}
+}
+
+UTacticalAIDirectorSubsystem* AUnitAIController::GetAIDirector() const
+{
+	const UWorld* World = GetWorld();
+	return World ? World->GetSubsystem<UTacticalAIDirectorSubsystem>() : nullptr;
+}
+
+void AUnitAIController::SetScriptedAttackOrder(AActor* Target)
+{
+	ScriptedAttackTarget = Target;
+}
+
+void AUnitAIController::ClearScriptedAttackOrder()
+{
+	ScriptedAttackTarget.Reset();
+}
+
 void AUnitAIController::StopRoute()
 {
 	RouteLegs.Reset();
@@ -1474,6 +1748,11 @@ void AUnitAIController::TryFinalizeMoveSettlement()
 	GetWorldTimerManager().ClearTimer(MoveSettlementTimerHandle);
 	PendingSettlementUnit.Reset();
 
+	// Токен приказа потребляется ровно один раз независимо от исхода: сорвавшийся
+	// маршрут не должен позже засчитаться другому перемещению.
+	const bool bWasPlayerOrderedMove = bPlayerOrderedMove;
+	bPlayerOrderedMove = false;
+
 	if (!Unit || Unit != GetPawn())
 	{
 		if (bTurnMoveInProgress)
@@ -1498,9 +1777,9 @@ void AUnitAIController::TryFinalizeMoveSettlement()
 	{
 		const float Drift = FVector::Dist2D(Unit->GetActorLocation(), ChosenManeuverPoint);
 		bHasChosenManeuverPoint = false;
-		if (Drift > ManeuverArrivalTolerance && CVarLogAICombat.GetValueOnGameThread() != 0)
+		if (Drift > ManeuverArrivalTolerance && TacticsDebug::IsAILogEnabled())
 		{
-			UE_LOG(LogTemp, Warning, TEXT("[AI] %s: встал НЕ в выбранную точку — расхождение %.0f см ")
+			UE_LOG(LogXRU1AI, Warning, TEXT("[AI] %s: встал НЕ в выбранную точку — расхождение %.0f см ")
 				TEXT("(решил (%.0f, %.0f), стоит (%.0f, %.0f)). Укрытие на месте: %d"),
 				*GetNameSafe(Unit), Drift, ChosenManeuverPoint.X, ChosenManeuverPoint.Y,
 				Unit->GetActorLocation().X, Unit->GetActorLocation().Y,
@@ -1515,6 +1794,27 @@ void AUnitAIController::TryFinalizeMoveSettlement()
 		PlayerController->NotifyUnitMoveFinished(Unit);
 	}
 
+	// ЕДИНСТВЕННАЯ точка публикации перемещения в квест: маршрут доведён, поза у
+	// стены и финальный доворот завершены, cover уже пересчитан от итогового
+	// transform. Публикуем ровно ОДИН leaf — Open ЛИБО InCover, не оба.
+	if (bWasPlayerOrderedMove)
+	{
+		Unit->PlayUnitSound(EUnitSoundEvent::MoveSettled);
+		const bool bInCover = Cover && Cover->BestCoverAround != ECoverType::None;
+		UTacticalQuestEvents::BroadcastQuestEventEx(this,
+			bInCover
+				? TacticalQuestTags::Event_Tactical_Movement_Settled_InCover
+				: TacticalQuestTags::Event_Tactical_Movement_Settled_Open,
+			Unit, Unit);
+
+		// Точка маршрута шага засчитывается ровно здесь — вместе с quest-событием,
+		// а не по факту выдачи приказа: отменённое перемещение маршрут не двигает.
+		if (UTutorialActionGateSubsystem* Gate = UTutorialActionGateSubsystem::Get(this))
+		{
+			Gate->NotifyDestinationReached(Unit->GetActorLocation());
+		}
+	}
+
 	if (!bTurnMoveInProgress)
 	{
 		return;
@@ -1523,8 +1823,9 @@ void AUnitAIController::TryFinalizeMoveSettlement()
 
 	if (UActionPointsComponent* ActionPoints = Unit->GetActionPoints())
 	{
-		ActionPoints->TrySpendActionPoint();
+		ActionPoints->TrySpendActionPoint(FMath::Max(1, PendingMoveActionPointCost));
 	}
+	PendingMoveActionPointCost = 1;
 	ScheduleNextStep();
 }
 
@@ -1608,6 +1909,20 @@ float AUnitAIController::ScoreTarget(const AUnitBase* Unit, const AActor* Candid
 		}
 	}
 
+	// 2.5) СВЕДЕНИЕ ОГНЯ: цель, по которой в этом ходу уже стрелял союзник,
+	// приоритетнее. Это отрядное поведение, и именно оно делает высокую сложность
+	// опасной: отряд добивает одного бойца вместо равномерного размазывания урона.
+	if (HitChance >= 0.f && Style.FocusFireBonus > 0.f)
+	{
+		if (const UWorld* World = GetWorld())
+		{
+			if (const UTurnManagerSubsystem* TurnManager = World->GetSubsystem<UTurnManagerSubsystem>())
+			{
+				Score += Style.FocusFireBonus * TurnManager->GetTimesTargetedThisTurn(Candidate);
+			}
+		}
+	}
+
 	// 3) ФЛАНГ: цель в укрытии, но против нас оно не работает (Ф8).
 	if (UTacticsCombatStatics::IsTargetFlankedBy(Candidate, Unit))
 	{
@@ -1643,6 +1958,27 @@ float AUnitAIController::ScoreTarget(const AUnitBase* Unit, const AActor* Candid
 
 AActor* AUnitAIController::FindVisibleTarget() const
 {
+	// Всё, что боец увидел сам, немедленно становится знанием всего пода.
+	if (Perception)
+	{
+		if (AUnitBase* SelfUnit = Cast<AUnitBase>(GetPawn()))
+		{
+			if (UTacticalAIDirectorSubsystem* Director = GetAIDirector())
+			{
+				TArray<AActor*> Seen;
+				Perception->GetCurrentlyPerceivedActors(UAISense_Sight::StaticClass(), Seen);
+				for (AActor* Actor : Seen)
+				{
+					if (UTacticsCombatStatics::AreHostile(SelfUnit, Actor) &&
+						UTacticsCombatStatics::IsUnitAlive(Actor))
+					{
+						Director->NotifyEnemySpotted(SelfUnit, Actor);
+					}
+				}
+			}
+		}
+	}
+
 	const AUnitBase* MyUnit = Cast<AUnitBase>(GetPawn());
 	if (!MyUnit || !Perception)
 	{
@@ -1652,7 +1988,28 @@ AActor* AUnitAIController::FindVisibleTarget() const
 	TArray<AActor*> Perceived;
 	Perception->GetCurrentlyPerceivedActors(UAISense_Sight::StaticClass(), Perceived);
 
-	const bool bLogAI = CVarLogAICombat.GetValueOnGameThread() != 0;
+	// К собственному зрению добавляем ОБЩИЕ контакты пода. Без этого боец знал
+	// только то, что видит прямо сейчас: противник, стрелявший с дистанции
+	// больше радиуса зрения, для него не существовал, и он пропускал ход под
+	// огнём. Права стрелять контакт не даёт — ниже это решает CanTargetActor.
+	if (const UTacticalAIDirectorSubsystem* Director = GetAIDirector())
+	{
+		TArray<FAIContact> Contacts;
+		Director->GetPodContacts(UTacticalAIDirectorSubsystem::ResolvePodId(MyUnit), Contacts);
+		for (const FAIContact& Contact : Contacts)
+		{
+			AActor* ContactActor = Contact.Target.Get();
+			// В кандидаты попадает только тот, по кому реально можно выстрелить
+			// прямо сейчас: память даёт знание, а не всеведение.
+			if (ContactActor && !Perceived.Contains(ContactActor) &&
+				UGA_Attack::CanTargetActor(MyUnit, ContactActor))
+			{
+				Perceived.Add(ContactActor);
+			}
+		}
+	}
+
+	const bool bLogAI = TacticsDebug::IsAILogEnabled();
 
 	AActor* Best = nullptr;
 	float BestScore = -FLT_MAX;
@@ -1684,7 +2041,7 @@ AActor* AUnitAIController::FindVisibleTarget() const
 						: TEXT(" [провоцирует, но ВНЕ радиуса]");
 				}
 			}
-			UE_LOG(LogTemp, Log, TEXT("[AI]   цель %s: скор %.0f (шанс %.0f%%)%s"),
+			UE_LOG(LogXRU1AI, Log, TEXT("[AI]   цель %s: скор %.0f (шанс %.0f%%)%s"),
 				*GetNameSafe(Actor), Score, UGA_Attack::ComputeAttackHitChance(MyUnit, Actor), TauntNote);
 		}
 
@@ -1714,7 +2071,26 @@ void AUnitAIController::GatherVisibleThreats(TArray<TObjectPtr<AActor>>& OutThre
 		if (UTacticsCombatStatics::AreHostile(MyPawn, Actor) &&
 			UTacticsCombatStatics::IsUnitAlive(Actor))
 		{
-			OutThreats.Add(Actor);
+			OutThreats.AddUnique(Actor);
+		}
+	}
+
+	// Скоринг позиции обязан учитывать ВСЕ известные угрозы, иначе боец прячется
+	// от одного стрелка, подставляясь под второго, о котором под уже знает.
+	if (const UTacticalAIDirectorSubsystem* Director = GetAIDirector())
+	{
+		TArray<FAIContact> Contacts;
+		Director->GetPodContacts(
+			UTacticalAIDirectorSubsystem::ResolvePodId(Cast<AUnitBase>(MyPawn)), Contacts);
+		for (const FAIContact& Contact : Contacts)
+		{
+			if (AActor* ContactActor = Contact.Target.Get())
+			{
+				if (UTacticsCombatStatics::IsUnitAlive(ContactActor))
+				{
+					OutThreats.AddUnique(ContactActor);
+				}
+			}
 		}
 	}
 }

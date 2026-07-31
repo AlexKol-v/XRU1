@@ -14,6 +14,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnCombatEnded, bool, bPlayerWon);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnTurnLimitExpired);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnTurnLimitChanged);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnEnemyUnitActivated, AActor*, Unit);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnCombatUnitsChanged);
 
 /**
  * Менеджер пошагового боя уровня. Хранит очередь юнитов и текущую фазу
@@ -33,6 +34,21 @@ public:
 	/** Начинает бой с заданными сторонами. Сбрасывает AP, ставит фазу игрока, шлёт OnTurnStarted. */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Turns")
 	void StartCombat(const TArray<AActor*>& PlayerUnits, const TArray<AActor*>& EnemyUnits);
+
+	/**
+	 * Вводит юнита в уже идущий бой (staged-голограмма туториала «проявилась»).
+	 * Сторона определяется его TacticsTeamId; повторный вызов ничего не меняет.
+	 * AP выдаются полностью, чтобы юнит отработал ближайший ход своей стороны.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Turns")
+	bool RegisterUnitInCombat(AActor* Unit);
+
+	/**
+	 * Убирает юнита из сторон боя, не убивая его: выключенная голограмма не
+	 * ходит, не считается живым врагом и не участвует в проверке исхода.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Turns")
+	bool UnregisterUnitFromCombat(AActor* Unit);
 
 	/** Завершает ход текущей стороны и передаёт ход другой (Player <-> Enemy). */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Turns")
@@ -103,6 +119,17 @@ public:
 	void NotifyUnitAttacked(const AActor* Unit);
 
 	/**
+	 * Отметить, что по цели уже стреляли в этом ходу. Нужно для сведения огня:
+	 * высокая сложность добивает одного бойца, а не размазывает урон по отряду.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Turns")
+	void NotifyUnitTargeted(const AActor* Target);
+
+	/** Сколько раз по цели уже стреляли в этом ходу. */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Turns")
+	int32 GetTimesTargetedThisTurn(const AActor* Target) const;
+
+	/**
 	 * Достигнут ли лимит атакующих для этого юнита. false, если лимит выключен
 	 * (−1), если юнит уже стрелял в этом ходу (ему добавка не запрещена) или если
 	 * он не на вражеской стороне (правило регулирует только AI).
@@ -151,6 +178,14 @@ public:
 	 */
 	UPROPERTY(BlueprintAssignable, Category = "Tactics|Turns")
 	FOnEnemyUnitActivated OnEnemyUnitActivated;
+
+	/**
+	 * Состав сторон изменился посреди боя: staged-голограмма туториала введена
+	 * или выключена. HUD пересчитывает счётчик врагов и портреты отряда, не
+	 * дожидаясь смены фазы.
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "Tactics|Turns")
+	FOnCombatUnitsChanged OnUnitsChanged;
 
 protected:
 	/** Открывает ход указанной стороны: сбрасывает её AP и шлёт OnTurnStarted. */
@@ -210,6 +245,9 @@ protected:
 	 * `TObjectKey` — ключ без удержания ссылки (юнит может погибнуть в ходу).
 	 */
 	TSet<TObjectKey<AActor>> AttackedThisTurn;
+
+	/** Сколько выстрелов пришлось по каждой цели в текущем ходу (сведение огня). */
+	TMap<TObjectKey<AActor>, int32> TargetedThisTurn;
 
 	/** Лимит атакующих за ход (−1 — выключен). Ставится GameMode по сложности. */
 	int32 MaxAttackersPerTurn = -1;

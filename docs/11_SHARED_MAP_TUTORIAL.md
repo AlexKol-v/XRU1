@@ -1,18 +1,47 @@
 # Tutorial и Mission01 на общей карте
 
-Актуально на 2026-07-29. Документ фиксирует production-архитектуру обучения
-«Полигон “Купол”» и миссии «Станция “Узел-7”» на **одном persistent World**:
-`/Game/US_Military/Levels/Showreel_Scene`.
+Актуально на 2026-07-30. Документ фиксирует production-архитектуру обучения
+«Полигон “Купол”» и миссии «Станция “Узел-7”» на **одном persistent World**.
+
+## 0. Фактические пути ассетов
+
+Ниже — реальные пути в `Content/`. Persistent-карта переехала из исходного пака
+`US_Military` в `XRU1Game/Maps`; прежнее рабочее имя `Showreel_Scene` больше не
+используется:
+
+| Что | Путь |
+|---|---|
+| Persistent World | `/Game/XRU1Game/Maps/Main_Map_Showreel` |
+| Sublevel обучения | `/Game/XRU1Game/Maps/SubLavel/SL_Showreel_Tutorial` |
+| Sublevel миссии | `/Game/XRU1Game/Maps/SubLavel/SL_Showreel_Mission01` |
+| Scenario Data Assets | `/Game/XRU1Game/Data/DA_Scenario_Tutorial`, `DA_Scenario_Mission01` |
+| Quest Definitions | `/Game/XRU1Game/Data/DA_Quest_Tutorial`, `DA_Quest_Mission01` |
+| StateTree-графы | `/Game/XRU1Game/Quests/ST_Quest_Tutorial`, `ST_Quest_Mission01` |
+| Scenario Director | `/Game/XRU1Game/Core/BP_TacticalScenarioDirector` |
+
+> Папка `SubLavel` — опечатка в имени, оставленная как есть: переименование
+> тянет за собой fixup редиректоров в `Maps/`. Runtime-ссылка идёт из
+> `DA_Scenario_*.ScenarioSublevel`, поэтому имя папки ни на что не влияет.
+
+Asset Manager сканирует на primary assets типа `Quest` **две** папки —
+`/Game/XRU1Game/Quests` и `/Game/XRU1Game/Data` (`PrimaryAssetTypesToScan` в
+`Config/DefaultGame.ini`). Quest Definition вне них в registry не попадёт:
+`MakeQuestAvailable` молча ничего не сделает, и сценарий упадёт с
+«Quest ... нельзя запустить из состояния 0». Перенос `DA_Quest_*` в новую папку
+требует правки скана и **перезапуска редактора** — registry строится на старте.
+Director явно диагностирует этот случай отдельной ошибкой в логе.
 
 Карта **не использует World Partition**. Различия между запусками хранятся в
 двух обычных streaming sublevel и двух `UTacticalScenarioDataAsset`. Создавать
-копии `Showreel_Scene`, писать gameplay в Level Blueprint или определять режим
+копии `Main_Map_Showreel`, писать gameplay в Level Blueprint или определять режим
 по имени открытого map package запрещено.
 
 Сценарные тексты и порядок A1–D3 остаются в
 [02_LORE_SCRIPT.md](02_LORE_SCRIPT.md), правила боя — в
 [01_GDD.md](01_GDD.md). Этот файл отвечает за архитектуру, Editor-настройку и
-проверку.
+проверку. Требования к взаимному расположению акторов (дистанции, укрытия,
+линии огня, бюджет AP) вынесены в
+[12_TUTORIAL_LAYOUT_SPEC.md](12_TUTORIAL_LAYOUT_SPEC.md).
 
 ## 1. Итоговая схема
 
@@ -20,7 +49,7 @@
 Hub POI
   └─ UTacticsGameInstance::StartCombatScenario(DA_Scenario_*)
        ├─ ActiveScenario = DA_Scenario_*
-       └─ OpenLevel(Showreel_Scene)
+       └─ OpenLevel(Main_Map_Showreel)
             └─ BP_TacticalScenarioDirector (persistent)
                  ├─ читает ActiveScenario
                  ├─ загружает ровно один streaming sublevel
@@ -38,7 +67,7 @@ Hub POI
 
 | Слой | За что отвечает | За что не отвечает |
 |---|---|---|
-| Persistent `Showreel_Scene` | общий арт, collision, свет, NavMesh, камера, `GM_Tactics`, один Scenario Director | состав конкретного сценария |
+| Persistent `Main_Map_Showreel` | общий арт, collision, свет, NavMesh, камера, `GM_Tactics`, один Scenario Director | состав конкретного сценария |
 | `SL_Showreel_Tutorial` | бойцы аттестации, голограммы A–D, зоны, anchors, tutorial-only FX | общие здания/свет, логика последовательности |
 | `SL_Showreel_Mission01` | отряд миссии, враги, бомба, эвакуация, mission-only FX | общие здания/свет, логика результата |
 | `DA_Scenario_*` | выбор sublevel, quest, типа сценария, fog-профиля | runtime-прогресс |
@@ -148,12 +177,118 @@ Overwatch, enemy-elimination, defuse/evac outcomes и границ
 attacks ещё требуют orchestration/payload gate из P1. Это фундамент, а не
 готовый туториал.
 
+### 3.4 Payload, реестр акторов, Action Gate и задачи обучения
+
+Закрыто кодом 2026-07-29; в редакторе это уже готовые к использованию блоки.
+
+- **Payload квест-событий.** `FQuestEventData` получил `Target` и
+  `ScenarioRunId`, а `AQuestRunnerActor` кладёт всю структуру в
+  `FStateTreeEvent::Payload`. Задача-цель теперь видит, КТО и ПО ЧЕМУ подтвердил
+  результат: [QuestTypes.h](../Plugins/STQuestSystem/Source/STQuestSystem/Public/QuestTypes.h),
+  [QuestRunnerActor.cpp](../Plugins/STQuestSystem/Source/STQuestSystem/Private/QuestRunnerActor.cpp).
+  Публикация — `UTacticalQuestEvents::BroadcastQuestEventEx(Channel, Source, Target)`;
+  `ScenarioRunId` подставляется автоматически.
+- **Реестр акторов по `AnchorId`.** `UScenarioActorIdComponent` вешается на
+  любого актора сценария, `UTacticalScenarioSubsystem` индексирует их и даёт
+  единый `SetScenarioActorActive` (скрытие + collision + tick + участие в
+  сторонах боя). `AScenarioAnchorPoint` — пустой якорь для точек камеры,
+  разрешённых точек перемещения и вершин маршрута:
+  [ScenarioActorRegistry.h](../Source/XRU1/Tactics/ScenarioActorRegistry.h).
+  Имена в World Outliner остаются диагностикой, runtime-ссылка — только `AnchorId`.
+- **Action Gate.** `UTutorialActionGateSubsystem` + `FTutorialActionPolicy`
+  (раздел 8) встроены в `CanIssueCommand`, `SelectUnit`, `TryMoveSelectedUnit`,
+  `TryAttackTarget`, `HandleAbilityTargetClick`, `RequestEndTurn` и
+  автозавершение хода: [TutorialActionGate.h](../Source/XRU1/Tactics/TutorialActionGate.h).
+  Камера и пауза не блокируются никогда.
+- **Честные emitters.** `Unit.Selected` публикуется после фактической смены
+  canonical `SelectedUnit` и только для пользовательского выбора (автовыбор XCOM
+  молчит). `Camera.Adjusted` — one-shot после порогов реального поворота **и**
+  зума (`AdjustedYawThreshold`/`AdjustedZoomThreshold` на камере).
+  `Movement.Settled.Open`/`InCover` публикует единственная финализация
+  `AUnitAIController::TryFinalizeMoveSettlement` и только для перемещения,
+  помеченного `MarkPlayerOrderedMove`.
+- **Сценарный выстрел.** `FScriptedShotOverride` меняет только числа snapshot'а
+  в `UGA_Attack::ActivateAbility`; roll, GE урона, `FireCommit`, HitReact,
+  камера и quest-события остаются общим pipeline. Приказ «стрелять именно по
+  этому бойцу» ставится `AUnitAIController::SetScriptedAttackOrder`.
+- **Такты презентации.** `UTutorialPresentationSubsystem` + `FTacticalTutorialBeat`
+  дают HUD спикера, субтитр, озвучку, фокус камеры и список подсветок:
+  [TutorialPresentation.h](../Source/XRU1/Tactics/TutorialPresentation.h).
+
+StateTree-задачи в категории **XRU1 Tutorial**
+([TacticalQuestTasks.h](../Source/XRU1/Tactics/TacticalQuestTasks.h)):
+
+| Задача | Назначение | Ключевые поля |
+|---|---|---|
+| `Tactical Objective` | цель с проверкой payload | `ObjectiveId`, `EventChannel`, `bRequireExactChannel`, `RequiredCount`, `Description`, `RequiredSourceAnchor`, `RequiredTargetAnchor`, `bRequireDistinctSources` |
+| `Apply Action Gate` | держит политику шага, пока состояние активно | `Policy` (`AllowedActions`, `AllowedUnitAnchors`, `AllowedTargetAnchors`, `AllowedDestinationAnchors`, `DestinationTolerance`, `bSequentialDestinations`, `bLockGameplayInput`, `DenialReason`) |
+| `Set Scenario Actor Active` | «проявление»/выключение staged-актора | `AnchorIds`, `bActive`, `bRestoreOnExit` |
+| `Scripted Shot` | сценарный выстрел через обычный pipeline | `ShooterAnchorId`, `TargetAnchorId`, `Shot` (шанс/урон), `Timeout` |
+| `Tutorial Beat` | реплика «Купола», субтитр, фокус камеры | `Beat` (`Speaker`, `Subtitle`, `Voice`, `FocusAnchorId`, `HighlightAnchorIds`, `Duration`) |
+
+`Tactical Objective` полностью заменяет donor-овскую `Quest Objective` в
+tactical-шагах: она умеет всё то же самое плюс payload. Donor-задачи остаются
+для совместимости, но новые шаги на них не строим.
+
+Дополнительно закрыто в правилах боя: победа зачисткой (`bAutoWinWhenEnemiesDead`)
+отключается не только при наличии бомбы, но и при наличии `AEvacZone`. Иначе
+после D2 все голограммы мертвы и бой заканчивался бы победой ДО шага D3.
+`UTurnManagerSubsystem::RegisterUnitInCombat/UnregisterUnitFromCombat` вводят и
+убирают staged-голограмму из сторон боя посреди боя, а `StartMissionCombat`
+пропускает акторов, помеченных `bStartDeactivated`.
+
 ## 4. РУЧНАЯ НАСТРОЙКА В EDITOR
 
 Нативный streaming bootstrap уже переведён на явную границу готовности:
 при наличии `ActiveScenario` `ATacticsGameMode` ждёт вызова Director и не
-сканирует persistent World по таймеру. Ниже остаётся Editor-работа — самих двух
-scenario sublevel, Scenario/Quest Data Asset и StateTree в `Content/` пока нет.
+сканирует persistent World по таймеру.
+
+**Статус на 2026-07-30.** Пункты 4.1–4.4 выполнены (см. §4.0). Остаются
+StateTree-графы (§4.5) и HUD (§9) — их редактор не отдаёт скриптам.
+
+### 4.0 Что уже сделано в Content
+
+- Оба scenario sublevel созданы, подключены к persistent как
+  **Blueprint (LevelStreamingDynamic)** и по умолчанию `bShouldBeLoaded=false`,
+  `bShouldBeVisible=false`.
+- В persistent остались только общие вещи: арт, свет, `PlayerStart`,
+  `NavMeshBoundsVolume` + `RecastNavMesh`, один `BP_TacticalScenarioDirector`.
+  Юнитов в persistent нет — иначе `StartMissionCombat` собрал бы их в стороны
+  боя обоих сценариев (`TActorIterator<AUnitBase>` обходит весь World).
+- `SL_Showreel_Tutorial` и `SL_Showreel_Mission01` заселены полным набором
+  акторов из §5.1 и §6.1; у каждого стоит `UScenarioActorIdComponent` с
+  `AnchorId`, равным имени из документа, и нужный `bStartDeactivated`.
+- `DA_Scenario_*` заполнены целиком; `DA_Quest_*` получили `QuestId`
+  (`Quest.Tutorial` / `Quest.Mission01` — нативные теги) и `QuestLogic`
+  (`ST_Quest_*`).
+- **Позиции акторов черновые.** Они выбраны автоматически по проекции на
+  NavMesh и трассировке укрытий, все точки проходимы, но постановочную
+  выразительность (ракурсы, дистанции, точность full/half cover) нужно
+  доводить глазами в редакторе. `AnchorId` при перетаскивании не теряется.
+
+### 4.0.1 Отклонение: streaming делает C++, а не BP-граф
+
+Загрузка `ScenarioSublevel` и старт сценария реализованы нативно в
+`ATacticalScenarioDirector` (`bAutoStreamScenarioSublevel`, по умолчанию
+включено). Порядок остался ровно тем, что предписан §4.3:
+
+```text
+BeginPlay → OnScenarioSelected → SetShouldBeLoaded/Visible
+ → OnLevelShown → Set Timer for Next Tick → StartConfiguredQuest → …
+```
+
+BP-граф Director больше не обязателен; хуки `OnScenarioSelected` и
+`OnScenarioReady` остаются для косметики (VFX, фокус камеры, первый gate).
+Одновременно двух загрузчиков быть не должно: либо нативный флаг, либо BP-граф.
+**Фактическое состояние проекта:** в `BP_TacticalScenarioDirector` собран
+BP-граф загрузки, поэтому `bAutoStreamScenarioSublevel` на нём **выключен**;
+C++-дефолт остаётся `true` для чистых наследников.
+
+Дополнительно у Director появилось поле `PreviewScenario`
+(`Scenario|Preview`): при прямом запуске `Main_Map_Showreel` из редактора,
+когда Hub/POI ещё не пройден и `ActiveScenario` пуст, Director принимает этот
+Data Asset через `UTacticsGameInstance::AdoptScenarioInPlace` и запускает
+сценарий без travel. Настоящий bootstrap из Hub всегда приоритетнее.
 
 ### 4.1 Подготовка после сборки C++
 
@@ -163,7 +298,7 @@ scenario sublevel, Scenario/Quest Data Asset и StateTree в `Content/` пока
    - Game Instance Class = `/Game/XRU1Game/Core/BP_TacticsGameInstance`;
    - боевой GameMode = `/Game/XRU1Game/Core/GM_Tactics`.
 4. Открыть `BP_TacticsGameInstance` и назначить:
-   - `SharedCombatLevel` = `/Game/US_Military/Levels/Showreel_Scene`;
+   - `SharedCombatLevel` = `/Game/XRU1Game/Maps/Main_Map_Showreel`;
    - существующие `HubLevel` и `MainMenuLevel` оставить без изменения.
 5. Перезапустить Editor после первого появления native gameplay tags и
    AssetManager scan. Иначе `Quest.Tutorial`/`Quest.Mission01` могут не появиться
@@ -171,11 +306,11 @@ scenario sublevel, Scenario/Quest Data Asset и StateTree в `Content/` пока
 
 ### 4.2 Создание двух streaming sublevel
 
-1. Открыть `/Game/US_Military/Levels/Showreel_Scene`.
+1. Открыть `/Game/XRU1Game/Maps/Main_Map_Showreel`.
 2. Window → Levels. Persistent level должен быть выделен жирным.
 3. Создать и сохранить два **новых scenario-specific** уровня:
-   - `/Game/XRU1Game/Maps/Scenarios/SL_Showreel_Tutorial`;
-   - `/Game/XRU1Game/Maps/Scenarios/SL_Showreel_Mission01`.
+   - `/Game/XRU1Game/Maps/SL_Showreel_Tutorial`;
+   - `/Game/XRU1Game/Maps/SL_Showreel_Mission01`.
 4. Добавить оба в Levels persistent-карты и для каждого выбрать
    **Change Streaming Method → Blueprint**.
 5. Оба новых scenario sublevel должны быть не загружены и не видимы по
@@ -211,6 +346,10 @@ Mission01/Anchors
 ```
 
 ### 4.3 Scenario Director
+
+Пункты 3–6 ниже описывают BP-вариант. С 2026-07-30 то же самое делает C++
+(см. §4.0.1), и вручную собирать граф не нужно. Раздел оставлен как контракт
+порядка вызовов.
 
 1. Создать `/Game/XRU1Game/Core/BP_TacticalScenarioDirector` от
    `ATacticalScenarioDirector`.
@@ -254,7 +393,7 @@ OnLevelShown
 
 ### 4.4 Scenario Data Assets
 
-Создать в `/Game/XRU1Game/Data/Scenarios`:
+Создать в `/Game/XRU1Game/Data`:
 
 | Поле | `DA_Scenario_Tutorial` | `DA_Scenario_Mission01` |
 |---|---|---|
@@ -277,7 +416,11 @@ legacy/UI fallback: runtime ID нового пути берётся из `Scenar
 
 ### 4.5 Quest Definition и StateTree
 
-Создать папку `/Game/XRU1Game/Quests`; только она сканируется AssetManager.
+Папка `/Game/XRU1Game/Quests` создана, оба `DA_Quest_*` заполнены и связаны со
+своими `ST_Quest_*`. **Остались сами графы StateTree** — их структуру
+(состояния, задачи, переходы) Python-скриптингом не построить:
+`UStateTreeEditorData::SubTrees` не экспонирован, а задачи хранятся во
+`FInstancedStruct`. Это единственная оставшаяся ручная работа по §5.4 и §6.2.
 
 До payload-aware task и Action Gate из P1 здесь можно собрать **skeleton**:
 имена states, Description, objective IDs и переходы. Шаги, где нужно проверить
@@ -428,18 +571,27 @@ Zones:
   QZ_B1_Sector
   QZ_B2_TankHalfCover
   Evac_Tutorial
-Anchors:
+Anchors (AScenarioAnchorPoint):
   Anchor_Camera_Tutorial
   Move_A2_01 / Move_A2_02
-  Fire_A4 / Fire_A7
+  Move_A5_Cover
+  Move_B2_01 / Move_B2_02
   Move_C2_01 / Move_C2_02
   Route_D2_Start / Route_D2_End
 ```
 
-Все голограммы, кроме активной для текущего шага, должны быть выключены для
-AI, collision, perception и fog presentation, а не только скрыты mesh-ем.
-`BaseAim=40`, базовый урон 10; A4/A7 меняют только roll/damage override в общем
-attack pipeline согласно GDD.
+**Каждому** актору из списка нужен `UScenarioActorIdComponent` с `AnchorId`,
+буквально равным имени из этого списка: StateTree и Action Gate обращаются к
+акторам только по нему. Для пустых точек ставьте готовый `AScenarioAnchorPoint`
+— компонент в нём уже есть, достаточно вписать `AnchorId`.
+
+`bStartDeactivated = true` ставится на `Holo_C_Cover`, `Holo_D_Overwatch` и
+`Unit_Tutorial_Assault`: они физически стоят на карте, но до своего шага скрыты,
+без коллизии, не тикают и не входят в стороны боя. `Holo_A_OpenField` и
+`Holo_B_Range` активны с начала — они нужны уже в секции A/B.
+
+`BaseAim=40`, базовый урон 10; A4/A7/B4 меняют только roll/damage override
+внутри общего attack pipeline согласно GDD.
 
 ### 5.2 Дополнительные leaf-события
 
@@ -457,9 +609,98 @@ Quest.Event.Tactical.Scenario.Failed
 
 Emitters для `Zone.Entered`, Hunker, Enemy.Eliminated, Player.Started и всех
 Scenario-границ уже подключены. Не подменять каналы широким `Objective.*`:
-иначе разные механики начнут засчитывать друг друга. До payload-aware задач
-Action Gate обязан гарантировать нужного unit/target, но это временная
-страховка, не финальная верификация.
+иначе разные механики начнут засчитывать друг друга. Проверку конкретного
+unit/target теперь делает сама `Tactical Objective` через payload; Action Gate
+отвечает за то, что игрок физически не может сделать неверное действие.
+
+### 5.3 Правила сборки состояний StateTree
+
+Три инварианта редактора, из которых следует вся раскладка ниже.
+
+1. **Состояние завершается, когда завершены ВСЕ его задачи — но только если у
+   состояния выставлено `Tasks Completion = All`.** Дефолт UE 5.7 — `Any`, и с
+   ним состояние закрывается по первой же завершившейся задаче. `Apply Action
+   Gate` возвращает `Succeeded` прямо в `EnterState`, поэтому при `Any` всё
+   дерево пролетает за один кадр, quest уходит в `Completed`, а в логе видно
+   `Quest ... завершился до открытия Action Gate`. **`All` ставится вручную на
+   каждом состоянии.** Любая `Failed` немедленно валит состояние в любом режиме.
+   Отсюда: несколько `Tactical Objective` в одном состоянии дают логическое «И»,
+   и это единственный корректный способ собрать A1 (выбор **и** камера) и A8
+   (атака **и** уничтожение цели).
+2. **`Apply Action Gate` и `Set Scenario Actor Active` возвращают `Succeeded`
+   сразу.** Они не удерживают состояние: политика и активация живут до
+   `ExitState`, который вызывается в любом случае. Поэтому «Consider for
+   completion» у них трогать не нужно, а состояние из ОДНОЙ только gate-задачи
+   бессмысленно — оно завершится мгновенно.
+3. **Сценарный выстрел арминг-задачей `Scripted Shot` нужно ставить в состояние,
+   активное ещё в ФАЗУ ИГРОКА.** Задача только выдаёт приказ AI-контроллеру;
+   сам выстрел происходит в ближайшую активацию голограммы. Если поставить её в
+   состояние, которое включается уже во время хода врага, голограмма может успеть
+   отработать раньше приказа, и шаг подвиснет до `Timeout`.
+
+Общий скелет боевого шага:
+
+```text
+State XX_Name
+  ├─ Apply Action Gate          (что сейчас разрешено; Succeeded сразу)
+  ├─ Tactical Objective         (что считаем подтверждённым результатом)
+  └─ [Scripted Shot / Beat]     (если шаг режиссируется)
+  Transition: On State Succeeded → следующее состояние
+```
+
+На корне дерева — глобальный переход
+`On Event Quest.Event.Tactical.Scenario.Failed → Tree Failed`.
+Последнее состояние — `WaitResult` с нативной `Quest Wait Outcome`
+(`SuccessChannel = ...Scenario.Succeeded`, `FailureChannel = ...Scenario.Failed`,
+`bRequireExactChannel = true` в обоих полях).
+
+### 5.4 Точная конфигурация A1–D3
+
+Префикс `Quest.Event.Tactical.` и `Quest.Objective.` опущен. Все
+`Tactical Objective` идут с `bRequireExactChannel = true`. В `Allowed Actions`
+`Camera` можно не указывать: gate её не блокирует никогда.
+
+| Состояние | Задачи и настройки |
+|---|---|
+| `A1_SelectAndCamera` | **Gate**: Actions `[Select]`, UnitAnchors `[Unit_Tutorial_Medic]`, Reason «Выберите Медика».<br>**Objective 1**: Id `Tutorial.A1.SelectMedic`, канал `Unit.Selected`, SourceAnchor `Unit_Tutorial_Medic`, Count 1.<br>**Objective 2**: Id `Tutorial.A1.CameraAdjusted`, канал `Camera.Adjusted`, Count 1. |
+| `A2_MoveOpen` | **Gate**: Actions `[Move]`, UnitAnchors `[Unit_Tutorial_Medic]`, DestinationAnchors `[Move_A2_01, Move_A2_02]`, Tolerance 300.<br>**Objective**: Id `Tutorial.A2`, канал `Movement.Settled.Open`, SourceAnchor `Unit_Tutorial_Medic`, Count **2**, DistinctSources **false** (это один и тот же боец дважды). |
+| `A3_EndTurn` | **Gate**: Actions `[EndTurn]`.<br>**Objective**: Id `Tutorial.A3`, канал `Turn.Ended`, Count 1.<br>**Scripted Shot**: Shooter `Holo_A_OpenField`, Target `Unit_Tutorial_Medic`, HitChance **100**, Damage **30**, Timeout 45. Арминг здесь — по инварианту 3. Состояние завершится, когда ход передан **и** выстрел разрешён. |
+| `A4_ExposedHit` | **Gate**: `bLockGameplayInput = true`.<br>**Objective**: Id `Tutorial.A4`, канал `Turn.Player.Started`, Count 1. |
+| `A5_FullCover` | **Gate**: Actions `[Move]`, UnitAnchors `[Unit_Tutorial_Medic]`, DestinationAnchors `[Move_A5_Cover]`.<br>**Objective**: Id `Tutorial.A5`, канал `Movement.Settled.InCover`, SourceAnchor `Unit_Tutorial_Medic`, Count 1. |
+| `A6_SelfHeal` | **Gate**: Actions `[ClassAbility]`, UnitAnchors `[Unit_Tutorial_Medic]`, TargetAnchors `[Unit_Tutorial_Medic]`.<br>**Objective**: Id `Tutorial.A6`, канал `Ability.Heal.Normal`, SourceAnchor и TargetAnchor `Unit_Tutorial_Medic`, Count 1. |
+| `A7_CoverMiss` | **Gate**: Actions `[EndTurn]`.<br>**Scripted Shot**: Shooter `Holo_A_OpenField`, Target `Unit_Tutorial_Medic`, HitChance **0**, Damage 0, Timeout 45.<br>**Objective**: Id `Tutorial.A7`, канал `Turn.Player.Started`, Count 1. |
+| `A8_ReturnFire` | **Gate**: Actions `[Attack]`, UnitAnchors `[Unit_Tutorial_Medic]`, TargetAnchors `[Holo_A_OpenField]`.<br>**Objective 1**: Id `Tutorial.A8`, канал `Combat.Attack.Normal`, Source `Unit_Tutorial_Medic`, Target `Holo_A_OpenField`.<br>**Objective 2**: `ObjectiveId` **пустой**, канал `Combat.Enemy.Eliminated`, Target `Holo_A_OpenField`. Оба события приходят одной пачкой, и обе задачи одного состояния их видят. |
+| `A9_ReviveAssault` | **Set Scenario Actor Active**: AnchorIds `[Unit_Tutorial_Assault]`, bActive true (Downed ставит флаг `bStartDowned` на его `UScenarioActorIdComponent`, BP-хук не нужен).<br>**Gate**: Actions `[Move, ClassAbility, EndTurn]`, UnitAnchors `[Unit_Tutorial_Medic]`, TargetAnchors `[Unit_Tutorial_Assault]`.<br>**Objective**: Id `Tutorial.A9`, канал `Ability.Heal.Revive`, Source `Unit_Tutorial_Medic`, Target `Unit_Tutorial_Assault`.<br>`EndTurn` обязателен: A8 — атака, а она сжигает активацию Медика, поэтому подъём физически возможен только со следующего хода. |
+| `B1_EnterSector` | **Gate**: Actions `[Select, Move]`, UnitAnchors `[Unit_Tutorial_Tank, Unit_Tutorial_Sniper]`.<br>**Objective**: Id `Tutorial.B1`, канал `Zone.Entered`, TargetAnchor `QZ_B1_Sector`, Count **2**, **DistinctSources = true**. |
+| `B2_TankAdvance` | **Gate**: Actions `[Move]`, UnitAnchors `[Unit_Tutorial_Tank]`, DestinationAnchors `[Move_B2_01, Move_B2_02]`.<br>**Objective**: Id `Tutorial.B2`, канал `Movement.Settled.InCover`, Source `Unit_Tutorial_Tank`, Count 1. |
+| `B3_Taunt` | **Gate**: Actions `[ClassAbility]`, UnitAnchors `[Unit_Tutorial_Tank]`.<br>**Objective**: Id `Tutorial.B3`, канал `Ability.Taunt.Activated`, Source `Unit_Tutorial_Tank`. |
+| `B4_AbsorbShot` | **Gate**: Actions `[EndTurn]`.<br>**Scripted Shot**: Shooter `Holo_B_Range`, Target `Unit_Tutorial_Tank`, HitChance 100, Damage 30 (провокация уполовинит урон своим GE — не занижайте его здесь вручную).<br>**Objective**: Id `Tutorial.B4`, канал `Turn.Player.Started`. |
+| `B5_SquadsightKill` | **Gate**: Actions `[Select, Attack]`, UnitAnchors `[Unit_Tutorial_Sniper]`, TargetAnchors `[Holo_B_Range]` (Move не разрешаем — Оса стоит).<br>**Objective 1**: канал `Combat.Attack.Squadsight`, Source `Unit_Tutorial_Sniper`, Target `Holo_B_Range`.<br>**Objective 2**: канал `Combat.Enemy.Eliminated`, Target `Holo_B_Range`. |
+| `C1_Brief` | **Set Scenario Actor Active**: `[Holo_C_Cover]`, bActive true.<br>**Gate**: `bLockGameplayInput = true`.<br>**Tutorial Beat**: Speaker «Купол», Subtitle из `02_LORE_SCRIPT.md`, FocusAnchorId `Holo_C_Cover`, Duration 5. |
+| `C2_RunAndGun` | Родительское состояние с **Gate**: Actions `[Move, ClassAbility, Attack]`, UnitAnchors `[Unit_Tutorial_Assault]`, TargetAnchors `[Holo_C_Cover]`, DestinationAnchors `[Move_C2_01, Move_C2_02]`. Дети последовательно:<br>`C2_Activate` — Objective Id `Tutorial.C2.Activate`, канал `Ability.RunAndGun.Activated`, Source `Unit_Tutorial_Assault`.<br>`C2_Move` — Objective Id `Tutorial.C2.Move01`, канал `Movement.Settled.Open`, Source `Unit_Tutorial_Assault`, Count **2**.<br>`C2_Attack` — Objective Id `Tutorial.C2.Attack`, канал `Combat.Attack.Normal`, Source `Unit_Tutorial_Assault`, Target `Holo_C_Cover` + вторая Objective на `Combat.Enemy.Eliminated`. |
+| `D1_PrepareAmbush` | **Gate**: Actions `[Select, Overwatch, Hunker, EndTurn]`.<br>**Objective 1**: Id `Tutorial.D1.Overwatch01`, канал `Ability.Overwatch.Activated`, Count **2**, **DistinctSources = true**.<br>**Objective 2**: Id `Tutorial.D1.Hunker01`, канал `Ability.Hunker.Activated`, Count **2**, **DistinctSources = true**.<br>**Objective 3**: Id `Tutorial.D1.EndTurn`, канал `Turn.Ended`, Count 1.<br>Отдельные Id `...Overwatch02`/`...Hunker02` больше не нужны: «двое разных» считает одна задача. |
+| `D2_ReactionKill` | **Set Scenario Actor Active**: `[Holo_D_Overwatch]`, bActive true.<br>**Gate**: `bLockGameplayInput = true`.<br>**Objective 1**: Id `Tutorial.D2`, канал `Combat.Attack.Overwatch`, Target `Holo_D_Overwatch`.<br>**Objective 2**: канал `Combat.Enemy.Eliminated`, Target `Holo_D_Overwatch`. |
+| `D3_Evacuate` | **Set Scenario Actor Active**: `[Evac_Tutorial]`, bActive true (либо активация зоны из BP).<br>**Gate**: Actions `[Select, Move, Interact]`.<br>**Objective**: Id `Tutorial.D3`, канал `Objective.Evac.Unit`, Count **4**, **DistinctSources = true**. |
+| `WaitResult` | **Quest Wait Outcome**: Success `Scenario.Succeeded`, Failure `Scenario.Failed`, exact в обоих. |
+
+Пояснения к неочевидным местам:
+
+- **Пустой `ObjectiveId` = скрытое условие.** Задача с пустым Id считает события
+  и удерживает состояние, но не попадает в снимок прогресса и в трекер HUD.
+  Так оформляются «уничтожение цели», «эвакуация подтверждена» и прочие
+  постусловия, которые не должны показываться игроку отдельной строкой.
+- **Почему `DistinctSources = false` в A2 и C2_Move.** Там один и тот же боец
+  делает два перемещения; включённый флаг засчитал бы только первое.
+- **Почему в A8/B5/C2/D2 две задачи в одном состоянии.** Смертельный выстрел
+  публикует `Combat.Attack.*` и `Combat.Enemy.Eliminated` в одном кадре. Два
+  последовательных состояния второй тег потеряли бы; две задачи одного состояния
+  видят одну и ту же пачку событий.
+- **Почему у B5 нет `Move` в gate.** Шаг проверяет именно Squadsight: если Оса
+  подойдёт и получит свою LOS, канал будет `Combat.Attack.Normal`, и шаг не
+  закроется. Запрет движения делает ошибку невозможной, а не «непонятной».
+- **Почему A3 и A7 разрешают `EndTurn`.** Иначе автозавершение хода при нулевых
+  AP тоже заблокировано (оно проходит через тот же gate), и сценарный выстрел
+  никогда не состоится.
 
 ## 6. Mission01 на том же persistent World
 
@@ -597,9 +838,15 @@ StateTree описывает **что ждём**, но не должен сам 
   Overwatch, Hunker, Interact;
 - допустимые units/roles;
 - допустимые target actors;
-- разрешённые destination anchors/zone;
-- требуемый порядок и максимум повторов;
-- текст причины отказа для HUD.
+- разрешённые destination anchors/zone; пройденная точка гаснет и повторно не
+  разрешается, `bSequentialDestinations` открывает точки строго по одной;
+- в шаге с destination anchors приказ перемещения дороже 1 AP отклоняется:
+  рывок «через точку» давал одно `Settled` вместо двух и вечные 1/2;
+- текст причины отказа для HUD (оверлей показывает его 3 секунды).
+
+Видимая подсветка равна проверке по построению: декали-маркеры открытых точек
+рисуются радиусом `DestinationTolerance` той же политики (материал — в
+`DA_TacticalHUDStyle`).
 
 Правила интеграции:
 
@@ -613,6 +860,25 @@ StateTree описывает **что ждём**, но не должен сам 
 6. При retry/travel gate очищается до загрузки нового sublevel.
 
 ## 9. HUD и tutorial presentation
+
+### 9.0 Нативный трекер уже есть (2026-07-30)
+
+`STutorialHintOverlay` ([TutorialHintOverlay.h](../Source/XRU1/Tactics/TutorialHintOverlay.h))
+— Slate-оверлей без WBP, создаётся `ATacticalPlayerController` автоматически.
+Показывает: имя tracked quest, все активные цели с Description и счётчиком
+`(x/y)`, последний отказ Action Gate (3 секунды, оранжевым). Цели с пустым
+Description (скрытые условия) не показываются; если у шага нет ни одного
+Description, выводится DenialReason политики. Description целей секции A
+заполнены. WBP_QuestTracker из §9.1 остаётся production-заменой — при его
+появлении оверлей отключить в контроллере.
+
+Позиция, размеры шрифтов и ширина переноса настраиваются в
+`DA_TacticalHUDStyle` → категория «07. Обучение | Подсказки» (без пересборки).
+
+Там же — `TutorialDestinationMarkerMaterial`: контроллер при каждой смене
+политики шага рисует декали-маркеры на всех `AllowedDestinationAnchors`
+(радиус = `DestinationTolerance` политики), перестраивает зону хода и
+пересчитывает серость кнопок. Дефолтный материал — `M_SelectionRing`.
 
 ### 9.1 Ручной минимум
 
@@ -670,8 +936,9 @@ Level Blueprint и не дублировать в actor names.
       quest runtime и получает новый `ScenarioRunId`; WorldSubsystem, actors,
       TurnManager и HUD создаются заново.
 - [x] Добавить монотонный `ScenarioRunId`/generation в GameInstance и Director.
-- [ ] Передавать `ScenarioRunId` в async action/fog/quest context и игнорировать
-      late callbacks старого запуска после travel.
+- [x] Передавать `ScenarioRunId` в quest context: он лежит в `FQuestEventData`,
+      а `Tactical Objective` отбрасывает события чужого запуска. Fog/async
+      action-контексты — остаток задачи.
 - [x] `ResetQuestRuntime` очищает `Active/Completed/Failed`, objectives, owner,
       runner и tracking; `RetryMission()` повторно вызывает
       `StartCombatScenario(ActiveScenario)`. Уже выданные plugin rewards не
@@ -686,32 +953,34 @@ Level Blueprint и не дублировать в actor names.
 
 - [x] Встроить `BroadcastQuestEvent` в confirmed turn, player combat/class
       abilities, enemy elimination, defuse/evac и scenario callbacks из §7.
-- [ ] Подключить selection/camera/move и scripted-enemy emitters к action-token/
-      payload-aware orchestration; не добавлять параллельные BP-send.
+- [x] Подключить selection/camera/move и scripted-enemy emitters к action-token/
+      payload-aware orchestration; параллельных BP-send нет.
 - [x] Добавить leaf tags из §5.2. Уже подключены Zone, player turn,
       player combat/class abilities, kill, objectives и scenario result.
       Открыты только selection, camera, movement и scripted-enemy emitters.
 - [x] Ввести единый `MoveSettlement` gate в controller: cover/HUD, списание AI
       AP и следующий шаг происходят только после route arrival, cover-hug step
       и финального turn-in-place.
-- [ ] Публиковать quest move-event из этой единственной финализации после
-      проверки action token; выбирать только `Movement.Settled.Open` либо
+- [x] Публиковать quest move-event из этой единственной финализации после
+      проверки action token; выбирается только `Movement.Settled.Open` либо
       `Movement.Settled.InCover`, не оба.
 - [x] Нормализовать event taxonomy в parent/child и закрепить правило «один
       outcome → один leaf»; generic listeners используют `MatchesTag`, а не
       второй broadcast.
-- [ ] Расширить событие/StateTree task так, чтобы проверять unit, target, zone,
-      hit/damage и `ScenarioRunId`. Сейчас `AQuestRunnerActor` отбрасывает
-      `FQuestEventData.Source` и пересылает в StateTree только tag.
-- [ ] Реализовать Action Gate из раздела 8 и общий API для input/HUD.
-- [ ] Добавить StateTree tasks: применить gate, показать beat, активировать
+- [x] Расширить событие/StateTree task так, чтобы проверять unit, target и
+      `ScenarioRunId`: runner кладёт `FQuestEventData` в `FStateTreeEvent::Payload`,
+      а `Tactical Objective` фильтрует по `AnchorId` источника и цели.
+      Проверка конкретного hit/damage остаётся за Scripted Shot и Action Gate.
+- [x] Реализовать Action Gate из раздела 8 и общий API для input/HUD.
+- [x] Добавить StateTree tasks: применить gate, показать beat, активировать
       staged actor, выполнить scripted shot через обычный attack pipeline,
-      дождаться confirmed turn/result.
+      дождаться confirmed turn/result — категория **XRU1 Tutorial**.
 - [x] Добавить `Quest Wait Outcome`, который различает terminal success/failure;
       обычную Objective Group для исхода сценария не использовать.
-- [ ] Добавить scenario actor registry по стабильным `AnchorId`; имена World
-      Outliner использовать для диагностики, не как runtime API.
-- [ ] Форс A4/A7 задавать через `FShotContext`, не прямым damage/ResolveShot из BP.
+- [x] Добавить scenario actor registry по стабильным `AnchorId`; имена World
+      Outliner используются только для диагностики.
+- [x] Форс A4/A7/B4 задаётся через `FScriptedShotOverride` в snapshot'е
+      `UGA_Attack`, а не прямым damage/ResolveShot из BP.
 
 ### P2 — UI, save и полировка
 
@@ -770,6 +1039,17 @@ Level Blueprint и не дублировать в actor names.
 | Direct PIE persistent map без ActiveScenario | Director закономерно не знает, что загрузить | тестировать из Hub; позднее editor-only PreviewScenario |
 
 ## 13. Тест-матрица
+
+### 13.0 Черновые позиции акторов (проверить глазами)
+
+- [ ] A5: стена X≈4625 действительно между `Holo_A_OpenField` и `Move_A5_Cover`,
+      cover считается Full.
+- [ ] A2/A4: с `Move_A2_02` видно `Holo_A_OpenField` (LOS не перекрыт стеной).
+- [ ] B2: `Move_B2_02` даёт Half против `Holo_B_Range`.
+- [ ] B5: `Unit_Tutorial_Sniper` со стартовой позиции не имеет прямого LOS до
+      `Holo_B_Range`, но Танк — имеет (иначе шаг закроется как `Attack.Normal`).
+- [ ] Юниты не проваливаются и не висят: у всех Z поверхности + 88.
+- [ ] Mission01: бомба доступна с навмеша, evac-зона у южного края.
 
 ### 13.1 Bootstrap и streaming
 
@@ -835,7 +1115,7 @@ Level Blueprint и не дублировать в actor names.
       late event в следующем World.
 - [ ] Tutorial victory пишет `Tutorial` один раз и разблокирует Mission01.
 - [ ] Повторное прохождение не дублирует `CompletedMissions`.
-- [ ] Один и тот же `Showreel_Scene` после Tutorial корректно стартует Mission01,
+- [ ] Один и тот же `Main_Map_Showreel` после Tutorial корректно стартует Mission01,
       не наследуя explored fog или staged actors.
 - [ ] Packaged Development build содержит persistent, оба sublevel, оба Scenario
       Data Asset, оба Quest Definition и оба StateTree.

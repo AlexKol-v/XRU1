@@ -1,8 +1,12 @@
 #include "TacticsCombatStatics.h"
+#include "XRU1Log.h"
+#include "GA_Attack.h"
 #include "TacticsGameplayTags.h"
 #include "CoverDetectionComponent.h"
 #include "CoverTuningDataAsset.h"
 #include "TacticsGameInstance.h"
+#include "TacticalAIDirectorSubsystem.h"
+#include "ScenarioActorRegistry.h"
 #include "TurnManagerSubsystem.h"
 #include "UnitBase.h"
 #include "UnitAIController.h"
@@ -36,6 +40,87 @@ static TAutoConsoleVariable<int32> CVarLOSDebug(
 	0,
 	TEXT("1 — логировать/рисовать огневые позиции и стойку при расчёте линии огня."),
 	ECVF_Default);
+
+bool UTacticsCombatStatics::IsCoverDebugEnabled()
+{
+	static IConsoleVariable* CoverDebug =
+		IConsoleManager::Get().FindConsoleVariable(TEXT("xru1.Cover.Debug"));
+	return CoverDebug && CoverDebug->GetInt() != 0;
+}
+
+/**
+ * `xru1.LOS.Explain` — двусторонний разбор видимости в PIE: выбранный боец ↔
+ * юнит под курсором (либо ближайший враг). Печатает статус цели в ОБЕ стороны
+ * и число точек каждой стороны. Инвариант: статусы Valid обязаны совпадать —
+ * расхождение означает сломанную симметрию Ф5 и это баг, который нужно чинить
+ * в HasLineOfSightFromLocation, а не обходами.
+ */
+static FAutoConsoleCommandWithWorldAndArgs GLOSExplainCommand(
+	TEXT("xru1.LOS.Explain"),
+	TEXT("Разбор линии огня выбранный боец <-> цель под курсором в обе стороны."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>&, UWorld* World)
+{
+	const ATacticalPlayerController* PC = World
+		? Cast<ATacticalPlayerController>(World->GetFirstPlayerController()) : nullptr;
+	AUnitBase* A = PC ? PC->GetSelectedUnit() : nullptr;
+	AUnitBase* B = PC ? PC->GetHoveredUnit() : nullptr;
+	if (!B && A)
+	{
+		// Без ховера — ближайший живой противник.
+		float BestDistSq = TNumericLimits<float>::Max();
+		if (const UTurnManagerSubsystem* Turns = World->GetSubsystem<UTurnManagerSubsystem>())
+		{
+			for (AActor* Enemy : Turns->GetOpposingUnits(A))
+			{
+				const float DistSq = FVector::DistSquared(
+					A->GetActorLocation(), Enemy->GetActorLocation());
+				if (UTacticsCombatStatics::IsUnitAlive(Enemy) && DistSq < BestDistSq)
+				{
+					BestDistSq = DistSq;
+					B = Cast<AUnitBase>(Enemy);
+				}
+			}
+		}
+	}
+	if (!A || !B)
+	{
+		UE_LOG(LogXRU1Combat, Display,
+			TEXT("[LOS.Explain] нужен выбранный боец и цель (ховер или ближайший враг)"));
+		return;
+	}
+
+	const float EyeOffset = UTacticsCombatStatics::GetCoverTuning(World)->EyeHeightOffset;
+	auto Describe = [World, EyeOffset](AUnitBase* From, AUnitBase* To)
+	{
+		const EAttackTargetStatus Status = UGA_Attack::GetTargetStatus(From, To);
+		TArray<FVector, TInlineAllocator<4>> FirePoints;
+		UTacticsCombatStatics::GetFiringPositions(World, From,
+			From->GetActorLocation() + FVector(0.f, 0.f, EyeOffset),
+			To->GetActorLocation(), FirePoints);
+		TArray<FVector, TInlineAllocator<4>> Exposed;
+		UTacticsCombatStatics::GetTargetExposedPoints(World, To,
+			From->GetActorLocation() + FVector(0.f, 0.f, EyeOffset), Exposed);
+		UE_LOG(LogXRU1Combat, Display,
+			TEXT("[LOS.Explain] %s -> %s: статус=%d (0=Valid 2=Dead 3=OutOfRange 4=NoLOS), ")
+			TEXT("огневых точек=%d, exposed-точек цели=%d, дистанция=%.0f"),
+			*From->GetName(), *To->GetName(), static_cast<int32>(Status),
+			FirePoints.Num(), Exposed.Num(),
+			FVector::Dist(From->GetActorLocation(), To->GetActorLocation()));
+		return Status;
+	};
+
+	const EAttackTargetStatus AB = Describe(A, B);
+	const EAttackTargetStatus BA = Describe(B, A);
+	if ((AB == EAttackTargetStatus::Valid) != (BA == EAttackTargetStatus::Valid))
+	{
+		UE_LOG(LogXRU1Combat, Error,
+			TEXT("[LOS.Explain] АСИММЕТРИЯ: %s видит %s = %d, обратно = %d — это баг Ф5"),
+			*A->GetName(), *B->GetName(),
+			AB == EAttackTargetStatus::Valid ? 1 : 0,
+			BA == EAttackTargetStatus::Valid ? 1 : 0);
+	}
+}));
 
 const FCollisionObjectQueryParams& UTacticsCombatStatics::GetShotGeometryObjects()
 {
@@ -218,6 +303,32 @@ bool UTacticsCombatStatics::ResolveShotMechanics(AActor* Shooter, AActor* Target
 		}
 	}
 
+	// ПОПАДАНИЕ поднимает под цели безусловно. Раньше единственным способом
+	// разбудить врага был шум, который меряется от позиции СТРЕЛКА, — поэтому
+	// бойца, обстреливаемого с дистанции больше радиуса шума, никто не будил, и
+	// он продолжал стоять на посту под огнём.
+	if (bHit)
+	{
+		if (UWorld* DamageWorld = Shooter->GetWorld())
+		{
+			if (UTacticalAIDirectorSubsystem* Director =
+				DamageWorld->GetSubsystem<UTacticalAIDirectorSubsystem>())
+			{
+				if (AUnitBase* VictimUnit = Cast<AUnitBase>(Target))
+				{
+					if (IsUnitAlive(VictimUnit) || IsUnitDowned(VictimUnit))
+					{
+						Director->NotifyUnitDamaged(VictimUnit, Shooter);
+					}
+					else
+					{
+						Director->NotifyUnitKilled(VictimUnit, Shooter);
+					}
+				}
+			}
+		}
+	}
+
 	// Выстрел слышно: враги стрелка поблизости поднимают тревогу (XCOM yellow alert).
 	NotifyCombatNoise(Shooter, ShotOrigin);
 
@@ -228,8 +339,8 @@ bool UTacticsCombatStatics::ResolveShotMechanics(AActor* Shooter, AActor* Target
 		!IsUnitDowned(Target) &&
 		UTacticalQuestEvents::IsPlayerSideUnit(Shooter, Shooter))
 	{
-		UTacticalQuestEvents::BroadcastQuestEvent(Shooter,
-			TacticalQuestTags::Event_Tactical_Combat_Enemy_Eliminated, Shooter);
+		UTacticalQuestEvents::BroadcastQuestEventEx(Shooter,
+			TacticalQuestTags::Event_Tactical_Combat_Enemy_Eliminated, Shooter, Target);
 	}
 
 	return bHit;
@@ -557,19 +668,31 @@ bool UTacticsCombatStatics::HasLineOfSightFromLocation(const UWorld* World, cons
 		TargetLocation - FVector(0.f, 0.f, 20.f)
 	};
 
-	// БЫСТРЫЙ ПУТЬ — ПРЯМАЯ видимость из ЦЕНТРА глаз к точкам цели (глаза/корпус).
+	// Точки стрелка — ТОТ ЖЕ набор (глаза и корпус). Видимость обязана быть
+	// симметричной (Ф5): «A видит B» ⟺ «B видит A». С односторонним набором
+	// (только глаза стрелка) пара «глаза→корпус» не имела зеркала: на склоне
+	// боец выше видел бойца ниже через низкую стену, а обратная проверка
+	// проваливалась — AI честно отказывался стрелять в того, кто его обстреливал.
+	const FVector SourcePoints[2] = {
+		EyeLocation,
+		EyeLocation - FVector(0.f, 0.f, Tuning->EyeHeightOffset + 20.f)
+	};
+
+	// БЫСТРЫЙ ПУТЬ — ПРЯМАЯ видимость между точками пар (глаза/корпус) × (глаза/корпус).
 	// Никаких step-out: выглядывание вбок — это механика УКРЫТИЯ и живёт только в
 	// запасном пути через GetFiringPositions (гейтед фактом укрытия). Так юнит в
 	// открытом поле видит/виден строго по прямой (по замечанию игрока), а не
 	// «из-за угла, стоя без укрытия».
-	for (const FVector& Point : TargetPoints)
+	for (const FVector& From : SourcePoints)
 	{
-		if (SphereClear(EyeLocation, Point))
+		for (const FVector& Point : TargetPoints)
 		{
-			return true;
+			if (SphereClear(From, Point))
+			{
+				return true;
+			}
 		}
 	}
-
 	// ЗАПАСНОЙ ПУТЬ (только если быстрый не прошёл и есть стрелок): огневые
 	// позиции у краёв укрытия стрелка. Надмножество быстрого пути, поэтому
 	// запуск после неудачи безопасен и стоит лишь когда прямой видимости нет.
@@ -580,15 +703,18 @@ bool UTacticsCombatStatics::HasLineOfSightFromLocation(const UWorld* World, cons
 
 	TArray<FVector, TInlineAllocator<4>> PositionsA;
 	GetFiringPositions(World, Shooter, EyeLocation, TargetLocation, PositionsA);
+	// Корпусная точка стрелка — зеркало корпуса цели из GetTargetExposedPoints.
+	// Без неё наборы направлений различались: «Медик.peek → враг.корпус» видел,
+	// а «враг.глаза → Медик.peek/корпус» — нет, и AI не мог ответить тому, кто
+	// его обстреливает. Симметрия обязана держаться ПО ПОСТРОЕНИЮ:
+	// {центр, peek…, корпус} × {центр, peek…, корпус}.
+	PositionsA.Add(EyeLocation - FVector(0.f, 0.f, Tuning->EyeHeightOffset + 20.f));
 
-	// Ф5 — симметрия: цель тоже высовывается из-за своего края. ТА ЖЕ функция с
-	// переставленными аргументами (§III.2), отдельной логики для цели нет.
-	// Укрытие цели при этом считается от её НАСТОЯЩЕЙ позиции (в ComputeHitChance),
-	// а не отсюда — peek нужен только для луча (§II.6 п.5).
+	// Ф5 — симметрия: цель тоже высовывается из-за своего края (XCOM peek-тайл).
+	// Набор точек цели — ТОЛЬКО из GetTargetExposedPoints: он общий с выбором
+	// стойки и commit-валидацией, расходиться им нельзя.
 	TArray<FVector, TInlineAllocator<4>> PositionsB;
-	GetFiringPositions(World, Target, TargetPoints[0], EyeLocation, PositionsB);
-	// Точка КОРПУСА цели (нужна для целей на уступе, легко теряется при переборе пар).
-	PositionsB.Add(TargetPoints[1]);
+	GetTargetExposedPoints(World, Target, EyeLocation, PositionsB);
 
 	bool bVisible = false;
 	int32 WinAIdx = -1;
@@ -635,7 +761,7 @@ bool UTacticsCombatStatics::HasLineOfSightFromLocation(const UWorld* World, cons
 			DrawDebugLine(DbgWorld, PositionsA[WinAIdx], PositionsB[WinBIdx],
 				FColor::Green, false, DbgDur, 0, 3.f);
 		}
-		UE_LOG(LogTemp, Log,
+		UE_LOG(LogXRU1Combat, Log,
 			TEXT("[LOS] %s -> %s: shooterPos=%d targetPos=%d visible=%d winA=%d winB=%d"),
 			*GetNameSafe(Shooter), *GetNameSafe(Target), PositionsA.Num(), PositionsB.Num(),
 			bVisible ? 1 : 0, WinAIdx, WinBIdx);
@@ -654,14 +780,12 @@ bool UTacticsCombatStatics::HasLineOfSightFromFrozenOrigin(const UWorld* World,
 	}
 
 	const UCoverTuningDataAsset* Tuning = GetCoverTuning(World);
-	const FVector TargetLocation = Target->GetActorLocation();
-	const FVector TargetEye = TargetLocation + FVector(0.f, 0.f, Tuning->EyeHeightOffset);
 
 	// Источник намеренно один: stale callback или StepOut не могут незаметно
-	// выбрать новую позицию стрелка после подтверждения действия.
+	// выбрать новую позицию стрелка после подтверждения действия. Точки цели —
+	// общий набор GetTargetExposedPoints (тот же, что при решении и заморозке).
 	TArray<FVector, TInlineAllocator<4>> TargetPoints;
-	GetFiringPositions(World, Target, TargetEye, FiringEyeLocation, TargetPoints);
-	TargetPoints.Add(TargetLocation - FVector(0.f, 0.f, 20.f));
+	GetTargetExposedPoints(World, Target, FiringEyeLocation, TargetPoints);
 
 	const FCollisionObjectQueryParams& ObjectParams = GetShotGeometryObjects();
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(FrozenFireCommitLOS), /*bTraceComplex=*/false);
@@ -678,6 +802,26 @@ bool UTacticsCombatStatics::HasLineOfSightFromFrozenOrigin(const UWorld* World,
 	return false;
 }
 
+void UTacticsCombatStatics::GetTargetExposedPoints(const UWorld* World, const AActor* Target,
+	const FVector& FromEye, TArray<FVector, TInlineAllocator<4>>& OutPoints)
+{
+	OutPoints.Reset();
+	if (!World || !Target)
+	{
+		return;
+	}
+	const UCoverTuningDataAsset* Tuning = GetCoverTuning(World);
+	const FVector TargetLocation = Target->GetActorLocation();
+	const FVector TargetEye = TargetLocation + FVector(0.f, 0.f, Tuning->EyeHeightOffset);
+
+	// Пики цели — ТА ЖЕ функция, что строит огневые позиции стрелка (§III.2),
+	// с переставленными аргументами: отдельной логики для цели нет.
+	GetFiringPositions(World, Target, TargetEye, FromEye, OutPoints);
+	// Точка КОРПУСА (цель на уступе/за низкой стеной видна по корпусу; легко
+	// теряется при переборе пар — поэтому добавляется здесь, а не звонящими).
+	OutPoints.Add(TargetLocation - FVector(0.f, 0.f, 20.f));
+}
+
 void UTacticsCombatStatics::GetViableFiringPositions(const AActor* Shooter, const AActor* Target,
 	TArray<FVector, TInlineAllocator<4>>& OutPositions)
 {
@@ -691,10 +835,12 @@ void UTacticsCombatStatics::GetViableFiringPositions(const AActor* Shooter, cons
 	const UCoverTuningDataAsset* Tuning = GetCoverTuning(World);
 	const FVector EyeLocation = Shooter->GetActorLocation() + FVector(0.f, 0.f, Tuning->EyeHeightOffset);
 	const FVector TargetLocation = Target->GetActorLocation();
-	const FVector TargetPoints[2] = {
-		TargetLocation + FVector(0.f, 0.f, Tuning->EyeHeightOffset),
-		TargetLocation - FVector(0.f, 0.f, 20.f)
-	};
+
+	// Точки цели — общий набор (центр + пики + корпус): раньше здесь были только
+	// глаза/корпус, и у цели в полном укрытии НИ ОДНА позиция не проходила —
+	// GetCoverAgainst откатывался на «pos=1» от центра и врал про фланг.
+	TArray<FVector, TInlineAllocator<4>> TargetPoints;
+	GetTargetExposedPoints(World, Target, EyeLocation, TargetPoints);
 
 	const FCollisionObjectQueryParams& ObjectParams = GetShotGeometryObjects();
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(ViableFiringPos), /*bTraceComplex=*/false);
@@ -732,10 +878,13 @@ EFiringStance UTacticsCombatStatics::GetFiringStance(const AActor* Shooter, cons
 	OutFiringEyeLocation = EyeLocation; // фолбэк — центр глаз, если LOS нет вообще
 
 	const FVector TargetLocation = Target->GetActorLocation();
-	const FVector TargetPoints[2] = {
-		TargetLocation + FVector(0.f, 0.f, Tuning->EyeHeightOffset),
-		TargetLocation - FVector(0.f, 0.f, 20.f)
-	};
+
+	// Точки цели — общий набор GetTargetExposedPoints. Прежние «глаза/корпус»
+	// не видели цель, выглядывающую из-за полного укрытия: стойка не находила
+	// НИ ОДНОЙ позиции, молча падала в Open с центральным глазом — и commit
+	// честно отклонял слепое решение. Отсюда вечный цикл выстрела AI.
+	TArray<FVector, TInlineAllocator<4>> TargetPoints;
+	GetTargetExposedPoints(World, Target, EyeLocation, TargetPoints);
 
 	const FCollisionObjectQueryParams& ObjectParams = GetShotGeometryObjects();
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(FiringStance), /*bTraceComplex=*/false);
@@ -821,7 +970,7 @@ EFiringStance UTacticsCombatStatics::GetFiringStance(const AActor* Shooter, cons
 	if (CVarLOSDebug.GetValueOnAnyThread() > 0)
 	{
 		static const TCHAR* StanceNames[] = { TEXT("Open"), TEXT("OverCover"), TEXT("StepOut") };
-		UE_LOG(LogTemp, Log, TEXT("[LOS] Stance %s -> %s: positions=%d stance=%s"),
+		UE_LOG(LogXRU1Combat, Log, TEXT("[LOS] Stance %s -> %s: positions=%d stance=%s"),
 			*GetNameSafe(Shooter), *GetNameSafe(Target), Positions.Num(),
 			StanceNames[static_cast<uint8>(Stance)]);
 	}
@@ -982,6 +1131,18 @@ void UTacticsCombatStatics::NotifyCombatNoise(AActor* Instigator, const FVector&
 		return;
 	}
 
+	// Шум маршрутизируется через директора: он и поднимает бойцов, и кладёт
+	// точку в ОБЩУЮ память пода, а не только дёргает отдельный контроллер.
+	if (UWorld* MutableWorld = Instigator->GetWorld())
+	{
+		if (UTacticalAIDirectorSubsystem* Director =
+			MutableWorld->GetSubsystem<UTacticalAIDirectorSubsystem>())
+		{
+			Director->NotifyCombatNoise(Instigator, Location, Radius);
+			return;
+		}
+	}
+
 	for (AActor* Enemy : TurnManager->GetOpposingUnits(Instigator))
 	{
 		if (!Enemy || FVector::Dist(Enemy->GetActorLocation(), Location) > Radius)
@@ -1131,6 +1292,13 @@ void UTacticsCombatStatics::GetUnitObstacles(UWorld* World, const AActor* Ignore
 	{
 		AUnitBase* Unit = *It;
 		if (Unit == Ignored || !IsUnitAlive(Unit))
+		{
+			continue;
+		}
+		// Staged-актор сценария физически стоит на карте, но до своего шага он
+		// скрыт и без коллизии. Занимать клетку в превью перемещения он не должен:
+		// игрок видел бы «дырку» в зоне хода вокруг невидимого юнита.
+		if (!UTacticalScenarioSubsystem::IsActorScenarioActive(Unit))
 		{
 			continue;
 		}

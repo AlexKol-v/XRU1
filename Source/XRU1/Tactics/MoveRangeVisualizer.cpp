@@ -1,4 +1,5 @@
 #include "MoveRangeVisualizer.h"
+#include "XRU1Log.h"
 #include "UnitBase.h"
 #include "ActionPointsComponent.h"
 #include "TacticsCombatStatics.h"
@@ -85,7 +86,7 @@ bool AMoveRangeVisualizer::ShowForUnit(AUnitBase* Unit)
 			ReachableSamples += Sample.bReachable ? 1 : 0;
 		}
 		const double Now = FPlatformTime::Seconds();
-		UE_LOG(LogTemp, Log,
+		UE_LOG(LogXRU1Combat, Log,
 			TEXT("[MoveRange] CellSize=%.0f сетка=%dx%d (%d сэмплов, достижимо %d): волна %.2f мс + контур %.2f мс = %.2f мс"),
 			CellSize, FieldSamplesPerSide, FieldSamplesPerSide, Field.Num(), ReachableSamples,
 			(FieldDoneTime - BuildStartTime) * 1000., (Now - FieldDoneTime) * 1000.,

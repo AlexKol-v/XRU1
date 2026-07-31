@@ -1,9 +1,18 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "XRU1.h"
+#include "XRU1Log.h"
 #include "Modules/ModuleManager.h"
 
 IMPLEMENT_PRIMARY_GAME_MODULE( FDefaultGameModuleImpl, XRU1, "XRU1" );
 
 DEFINE_LOG_CATEGORY(LogXRU1)
+
+DEFINE_LOG_CATEGORY(LogXRU1Combat);
+DEFINE_LOG_CATEGORY(LogXRU1AI);
+DEFINE_LOG_CATEGORY(LogXRU1Turns);
+DEFINE_LOG_CATEGORY(LogXRU1Scenario);
+DEFINE_LOG_CATEGORY(LogXRU1Quest);
+DEFINE_LOG_CATEGORY(LogXRU1Audio);
+DEFINE_LOG_CATEGORY(LogXRU1UI);
  

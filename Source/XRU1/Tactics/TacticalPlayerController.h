@@ -85,7 +85,11 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Tactics|Control")
 	AUnitBase* GetSelectedUnit() const { return SelectedUnit; }
 
-	/** Выбирает юнита (или снимает выбор при nullptr). Зовётся и из HUD (клик по портрету). */
+	/**
+	 * Выбирает юнита (или снимает выбор при nullptr). Зовётся и из HUD (клик по
+	 * портрету). Это ПОЛЬЗОВАТЕЛЬСКИЙ выбор: он проходит Action Gate обучения и
+	 * публикует `Unit.Selected` после фактической смены выбранного бойца.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Control")
 	void SelectUnit(AUnitBase* Unit);
 
@@ -148,6 +152,25 @@ public:
 	/** Пауза (Esc): пуш экрана паузы на слой Menu. */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Control")
 	void RequestPause();
+
+	/**
+	 * Команда отклонена. Игрок обязан получить обратную связь: «ничего не
+	 * произошло» неотличимо от зависшей игры, и именно этим обычно читается
+	 * закрытый Action Gate обучения.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Control")
+	void NotifyCommandDenied();
+
+	// --- Подсказки обучения (данные для STutorialHintOverlay) -----------------
+
+	/** DisplayName активного tracked quest; пусто — трекер скрыт. */
+	FText GetTutorialQuestTitle() const;
+
+	/** Активные цели с Description и прогрессом; фолбэк — DenialReason политики. */
+	FText GetTutorialObjectiveLines() const;
+
+	/** Причина последнего отказа gate; живёт 3 секунды. */
+	FText GetTutorialDenialText() const;
 
 	/**
 	 * Сообщить UI, что набор доступных действий мог измениться извне (открылась
@@ -306,6 +329,7 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void SetupInputComponent() override;
 	virtual void PlayerTick(float DeltaTime) override;
 
@@ -318,6 +342,27 @@ protected:
 	void HandleCameraZoom(const FInputActionValue& Value);
 
 	// --- Логика приказов -------------------------------------------------------
+
+	/**
+	 * Общая реализация смены выбора. bPlayerInitiated отличает клик/хоткей от
+	 * автовыбора XCOM: только пользовательский выбор проходит Action Gate и
+	 * публикует quest-событие, иначе шаг A1 закрывался бы сам собой.
+	 */
+	void SelectUnitInternal(AUnitBase* Unit, bool bPlayerInitiated);
+
+	/** Новая политика шага могла запретить автоматический выбор бойца. */
+	UFUNCTION()
+	void HandleTutorialPolicyChanged();
+
+	/** Точка маршрута шага пройдена — перерисовать маркеры, не трогая выбор. */
+	UFUNCTION()
+	void HandleTutorialDestinationsChanged();
+
+	/** Декали-маркеры разрешённых точек перемещения активного шага обучения. */
+	void RefreshTutorialDestinationMarkers();
+
+	/** Разрешает ли Action Gate сделать этого бойца выбранным. */
+	bool IsUnitSelectableByGate(const AUnitBase* Unit) const;
 
 	/** Приказ перемещения в точку (валидация бюджета пути, списание AP). */
 	void TryMoveSelectedUnit(const FVector& Goal);
@@ -490,6 +535,22 @@ protected:
 	 */
 	UPROPERTY(EditDefaultsOnly, Category = "Tactics|Control")
 	bool bAutoSelectUnits = true;
+
+	/**
+	 * Текущего бойца выбрал игрок, а не автоматика. Шаг обучения «выбери такого-то»
+	 * отличает одно от другого: автовыбор не должен закрывать его за игрока.
+	 */
+	bool bSelectionByPlayer = false;
+
+	/** Slate-оверлей подсказок обучения (без WBP). */
+	TSharedPtr<class STutorialHintOverlay> TutorialHintOverlay;
+
+	/** Живые декали-маркеры точек назначения текущего шага. */
+	TArray<TWeakObjectPtr<class UDecalComponent>> TutorialDestinationMarkers;
+
+	/** Последний отказ Action Gate — оверлей показывает его 3 секунды. */
+	FText LastDenialReason;
+	float LastDenialTimeSeconds = -100.f;
 
 	/**
 	 * Автоматически завершать ход игрока, когда AP не осталось НИ У КОГО из

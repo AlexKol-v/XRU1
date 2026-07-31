@@ -75,6 +75,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cover|Defense", meta = (ClampMin = "1", ClampMax = "4"))
 	float HunkerDownMultiplier = 2.f;
 
+
 	// --- LOS и выглядывание ---
 	/** Высота глаз над ActorLocation (центр капсулы) ≈148 см над полом. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cover|LOS")

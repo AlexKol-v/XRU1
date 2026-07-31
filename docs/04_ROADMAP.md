@@ -25,7 +25,7 @@
 
 ## 2. Текущий этап — два сценария одной карты
 
-Целевая карта: `/Game/US_Military/Levels/Showreel_Scene`.
+Целевая карта: `/Game/XRU1Game/Maps/Main_Map_Showreel`.
 
 Фактическая база карты:
 
@@ -45,23 +45,57 @@
       turn/player combat/class abilities/objectives/scenario result.
 - [x] Exact-match для одиночных/group objectives, terminal
       `Quest Wait Outcome` и config-теги `Quest.Objective.*`.
-- [ ] Оставить общий арт/NavMesh/light/camera bounds в persistent
-      `Showreel_Scene`; создать `SL_Showreel_Tutorial` и
-      `SL_Showreel_Mission01`.
-- [ ] Создать `DA_Scenario_Tutorial` и `DA_Scenario_Mission01`; оба открывают
-      `SharedCombatLevel`, но выбирают разные sublevel/quest/fog profile.
-- [ ] Создать `BP_TacticalScenarioDirector`, загрузить ровно один sublevel и
-      после `On Level Loaded` вызвать `StartConfiguredQuest`.
-- [ ] Создать `ST_Quest_Tutorial` и `DA_Quest_Tutorial`;
-      собрать A1–A9, B1–B5, C1–C2, D1–D3 без Level Blueprint.
-- [ ] Подключить события только в authoritative completion hooks и сделать
-      отдельный action gate текущего шага.
-- [ ] Расставить squad, staged holograms, tactical quest zones, bomb/evac и
-      mission spawners по соответствующим sublevels.
+- [x] Payload квест-событий (`Source`/`Target`/`ScenarioRunId`) доезжает до
+      StateTree; `Tactical Objective` фильтрует по `AnchorId` и умеет
+      «N разных источников».
+- [x] Реестр акторов сценария по `AnchorId` и единый `SetScenarioActorActive`.
+- [x] Action Gate (`UTutorialActionGateSubsystem`) встроен в команды, выбор,
+      перемещение, атаку, способности, End Turn и автозавершение хода.
+- [x] Emitters `Unit.Selected`, `Camera.Adjusted`, `Movement.Settled.Open/InCover`
+      публикуются из подтверждённых точек.
+- [x] Сценарный выстрел A4/A7/B4 через общий attack pipeline
+      (`FScriptedShotOverride` + `SetScriptedAttackOrder`).
+- [x] StateTree-задачи обучения: gate, tactical objective, staged actor, scripted
+      shot, tutorial beat.
+- [x] Победа зачисткой отключается при наличии evac-зоны (иначе туториал
+      заканчивался бы после D2, не дойдя до D3).
+- [x] Создан persistent `Main_Map_Showreel` и оба scenario sublevel; общий
+      арт/NavMesh/light остаются в persistent.
+- [x] Созданы `DA_Scenario_Tutorial`/`DA_Scenario_Mission01`,
+      `DA_Quest_*`/`ST_Quest_*` и `BP_TacticalScenarioDirector` со
+      streaming-загрузкой и `StartConfiguredQuest`.
+- [x] `DA_Quest_*` получили `QuestId` (`Quest.Tutorial`/`Quest.Mission01`) и
+      `QuestLogic` → `ST_Quest_*`.
+- [x] Streaming обоих scenario sublevel переведён на Blueprint/Dynamic и выключен
+      по умолчанию; загрузку и старт делает нативный `ATacticalScenarioDirector`
+      (`bAutoStreamScenarioSublevel`), BP-граф больше не обязателен.
+- [x] Добавлен `PreviewScenario` у Director + `AdoptScenarioInPlace` у
+      GameInstance — прямой PIE общей карты без Hub/POI.
+- [x] `SL_Showreel_Tutorial` заселён: squad, голограммы A–D, зоны, якоря, evac;
+      у каждого `UScenarioActorIdComponent` с `AnchorId` и `bStartDeactivated`.
+- [x] `SL_Showreel_Mission01` заселён: отряд, 6 врагов, бомба, эвакуация, spawn-якоря.
+- [x] `NavMeshBoundsVolume` перенесён в persistent (лежал в sublevel и исчезал
+      вместе с ним), Paths пересобраны.
+- [x] **Секция A обучения пройдена end-to-end (2026-07-31)**: A1–A9 в PIE от
+      выбора Медика до подъёма Клина; `ST_Quest_Tutorial` собран для секции A
+      (states/gates/objectives + Description для HUD), расстановка секции A
+      выверена пользователем в редакторе.
+- [x] Попутно закрыты найденные прогоном баги: `Tasks Completion=All` (дефолт
+      `Any` пролетал всё дерево за кадр), профиль `ScenarioTrigger`
+      (зона давала укрытие/резала LOS/дырявила навмеш), потерянные one-shot
+      события до входа шага (перевзвод камеры/сброс выбора), Slate-трекер целей
+      и маркеры точек, «AP>1 через точку», симметрия LOS Ф5
+      ([13_LOS_TARGETING.md](13_LOS_TARGETING.md)), привязка scripted-форса к
+      цели, quest registry: скан AssetManager расширен на `/Data`.
+- [ ] Довести позиции сценарных акторов секций B–D глазами (ракурсы, дистанции,
+      точность full/half cover) — чек-лист §13.0; B-актёры сейчас вне арены.
+- [ ] Собрать в `ST_Quest_Tutorial` секции B–D (B1–D3) по
+      [11_SHARED_MAP_TUTORIAL.md](11_SHARED_MAP_TUTORIAL.md) §5.4.
+- [ ] Заполнить `ST_Quest_Mission01` по §6.2.
 - [ ] Исправить `NavData RegistrationFailed_AgentNotValid` и пересобрать Paths.
 - [ ] Найти и убрать `SpawnActor` с пустым Class; исправить/заменить `MM_Sky` SM6.
 - [ ] Сделать два сквозных PIE-прогона как два чистых запуска одного persistent
-      map package `Showreel_Scene`, включая retry/abort и отсутствие состояния
+      map package `Main_Map_Showreel`, включая retry/abort и отсутствие состояния
       предыдущего runtime World.
 
 DoD: оба POI открывают один persistent World; одновременно существует только
@@ -77,7 +111,14 @@ DoD: оба POI открывают один persistent World; одновреме
       donor real-time StateTree/BT не переносить.
 - [x] Убрать зависимость розыгрышей от `GFrameCounter`.
 - [x] Добавить `UAIBehaviorProfileDataAsset` для общего тюнинга.
-- [ ] После C++ сборки создать `DA_AI_Marauder_Default`, назначить его enemy controller.
+- [x] Поведенческие оси сложности (`FAIStyleTuning`): множители веса оценщиков,
+      готовность фланкировать, сведение огня, добивание раненых.
+- [x] Назначение профиля по сложности из GameMode; перцепция перенастраивается
+      при смене профиля.
+- [x] Диагностика: `xru1.AI.DebugDraw`, категория `LogXRU1AI`, `xru1.Debug.List`.
+- [ ] Создать `DA_AI_Easy`/`DA_AI_Medium`/`DA_AI_Hard` по таблице из
+      [agents/BRIEF_AI_Refactor.md](agents/BRIEF_AI_Refactor.md) §3 и назначить
+      их в `BP_TacticsGameInstance.AIProfilesByDifficulty`.
 - [ ] Прогнать фиксированную матрицу из [08_AI.md](08_AI.md) §6 на
       Tutorial/Mission01 layout и сохранить baseline-логи.
 - [ ] Ввести `FAIContactMemory`: источник/тип/достоверность/возраст контакта.
@@ -126,6 +167,24 @@ DoD: неизвестный враг не раскрывается ни геом
 DoD: каждая способность используется в туториале, имеет один источник расхода
 AP/зарядов и не конкурирует с другим `Ability.TacticalAction`.
 
+## 5.5. Звук и настройки
+
+Каркас закрыт кодом 2026-07-30; открыт только контент.
+
+- [x] Иерархия SoundClass/SoundMix и применение громкостей через подсистему.
+- [x] `UUnitAudioDataAsset`: выстрел, реакция, смерть, способности, шаги по
+      поверхностям; единый `AUnitBase::PlayUnitSound` в подтверждённых точках.
+- [x] `UAnimNotify_UnitFootstep` с выбором звука по физматериалу.
+- [x] Громкости и настройки изображения в слоте кампании, рабочий backend
+      экрана настроек, применение при загрузке слота.
+- [ ] Создать в редакторе `DA_TacticsAudio`, SoundMix `SM_UserVolumes` и пять
+      SoundClass (Master → Music/Sfx/UI/Voice).
+- [ ] Найти и импортировать звуки: выстрелы четырёх стволов, шаги по бетону/
+      траве/металлу, боль/смерть, интерфейс, смена фазы.
+- [ ] Заполнить `DA_UnitAudio_*` для четырёх классов и мародёра.
+- [ ] Расставить `XRU1 Footstep` notify в анимациях ходьбы/бега.
+- [ ] Музыка и голос «Купола» по GDD/сценарию.
+
 ## 6. HUD и экраны
 
 Подробности — [09_UI_HUD.md](09_UI_HUD.md).
@@ -152,7 +211,7 @@ DoD: весь обязательный бой управляется мышью 
 - [ ] Победа, поражение по таймеру и поражение отряда корректно завершаются.
 - [ ] Настройки громкости/Scalability реально применяются.
 - [ ] Очистить временные логи и debug draw; оставить cvar-диагностику.
-- [ ] Packaging maps: MainMenu, Hub, Showreel_Scene и оба scenario sublevel.
+- [ ] Packaging maps: MainMenu, Hub, Main_Map_Showreel и оба scenario sublevel.
 - [ ] Development build → проверка → Shipping build → чистая машина/папка.
 - [ ] Финальная сверка с учебным заданием и тег `v1.0-demo`.
 

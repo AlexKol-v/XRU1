@@ -208,6 +208,14 @@ UAIEval_CloseDistance::UAIEval_CloseDistance()
 
 bool UAIEval_CloseDistance::IsApplicable(const FAIDecisionContext& Context) const
 {
+	// Есть выстрел — сближаться незачем. Правило XCOM: бегут те, кому стрелять
+	// НЕЧЕМ. Без этого условия боец с целью в прицеле выбирал перебежку (20)
+	// вместо выстрела (15), перебежка не строилась, и ход уходил в никуда.
+	if (Context.bCanShootNow && !Context.bAttackThrottled)
+	{
+		return false;
+	}
+
 	return Context.PrimaryThreat && Context.Unit && Context.ActionPointsLeft >= 1;
 }
 

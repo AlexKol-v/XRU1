@@ -66,3 +66,35 @@ enum class EAttackTargetStatus : uint8
 	OutOfRange     UMETA(DisplayName = "Слишком далеко"),
 	NoLineOfSight  UMETA(DisplayName = "Нет линии огня")
 };
+
+/**
+ * Форс исхода ОДНОГО выстрела для сценарного шага обучения (A4 «попадание на
+ * 30», A7 «промах», B4 «урон уполовинен провокацией»).
+ *
+ * Это не подмена урона мимо системы: override меняет только входные числа уже
+ * зафиксированного FTacticalFireActionContext, а roll, GE, HitReact, камера и
+ * quest-события остаются общим attack pipeline.
+ */
+USTRUCT(BlueprintType)
+struct FScriptedShotOverride
+{
+	GENERATED_BODY()
+
+	/** Итоговый шанс попадания, %. 100 — гарантированное попадание, 0 — промах. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactics|Scripted",
+		meta = (ClampMin = "0", ClampMax = "100"))
+	float HitChancePercent = 100.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactics|Scripted")
+	bool bOverrideHitChance = true;
+
+	/** Базовый урон до укрытия/провокации. Разброс ±10% общего pipeline сохраняется. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactics|Scripted",
+		meta = (ClampMin = "0"))
+	float Damage = 30.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactics|Scripted")
+	bool bOverrideDamage = true;
+
+	bool IsMeaningful() const { return bOverrideHitChance || bOverrideDamage; }
+};

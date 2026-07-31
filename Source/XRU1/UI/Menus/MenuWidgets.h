@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "CommonActivatableWidget.h"
+#include "TacticsAudioTypes.h"
 #include "TacticsTypes.h"
 #include "MenuWidgets.generated.h"
 
@@ -90,11 +91,41 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Menu") void RequestQuit();
 };
 
-/** Экран настроек (звук/графика/управление). Каркас — поля дозаполняются позже. */
+/**
+ * Экран настроек звука и изображения.
+ *
+ * Виджет НЕ хранит состояние: он читает и пишет слот кампании, а применением
+ * занимаются подсистема звука и UGameUserSettings. Иначе ползунок и реальная
+ * громкость неизбежно разъезжаются после выхода в меню и обратно.
+ */
 UCLASS(Abstract, Blueprintable)
 class XRU1_API USettingsMenuWidget : public UMenuScreenBase
 {
 	GENERATED_BODY()
+
+public:
+	/** Текущие громкости из слота кампании (для инициализации ползунков). */
+	UFUNCTION(BlueprintPure, Category = "Menu|Settings")
+	FTacticsAudioSettings GetAudioSettings() const;
+
+	/** Текущие настройки изображения из слота кампании. */
+	UFUNCTION(BlueprintPure, Category = "Menu|Settings")
+	FTacticsVideoSettings GetVideoSettings() const;
+
+	/**
+	 * Применяет громкости немедленно (игрок должен слышать результат, двигая
+	 * ползунок) и сохраняет их в слот.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Menu|Settings")
+	void ApplyAudioSettings(const FTacticsAudioSettings& NewSettings, bool bSaveToSlot = true);
+
+	/** Применяет качество/разрешение через UGameUserSettings и сохраняет в слот. */
+	UFUNCTION(BlueprintCallable, Category = "Menu|Settings")
+	void ApplyVideoSettings(const FTacticsVideoSettings& NewSettings, bool bSaveToSlot = true);
+
+	/** Возвращает и применяет значения по умолчанию. */
+	UFUNCTION(BlueprintCallable, Category = "Menu|Settings")
+	void ResetToDefaults();
 };
 
 /** Экран «Об авторе». Текстовые поля задаёт дизайнер в BP. */

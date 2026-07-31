@@ -13,12 +13,12 @@
 | Abilities | `/Game/XRU1Game/Tactics/Abilities` |
 | UI и Data Assets | `/Game/XRU1Game/UI`, `/Game/XRU1Game/Data` |
 | AI profiles | `/Game/XRU1Game/AI/Profiles` |
-| Quests/StateTrees/scenarios | `/Game/XRU1Game/Quests`, `/Game/XRU1Game/Data/Scenarios` |
+| Quests/StateTrees/scenarios | `/Game/XRU1Game/Quests`, `/Game/XRU1Game/Data` |
 | Проектные карты | `/Game/XRU1Game/Maps` |
-| Общая карта Tutorial/Mission01 | `/Game/US_Military/Levels/Showreel_Scene` |
+| Общая карта Tutorial/Mission01 | `/Game/XRU1Game/Maps/Main_Map_Showreel` |
 
 Сторонние паки не перестраивать без необходимости. Новые проектные ассеты
-класть в `XRU1Game`; карта `Showreel_Scene` пока остаётся внутри исходного пака,
+класть в `XRU1Game`; карта `Main_Map_Showreel` лежит в `XRU1Game/Maps`,
 чтобы не ломать её зависимости. Перед финальной сдачей можно сделать дубликат
 в `XRU1Game/Maps` через Editor с Fix Up Redirectors.
 
@@ -43,7 +43,7 @@
 Не размещать `BP_TacticalCameraPawn` вручную: его создаёт `GM_Tactics` как
 Default Pawn в точке `PlayerStart`.
 
-## 3. `Showreel_Scene`: текущее состояние и камера
+## 3. `Main_Map_Showreel`: текущее состояние и камера
 
 Проверено через UnrealClaude MCP 2026-07-29:
 

@@ -73,3 +73,12 @@ void ATDCombatant::TickShieldDecay(float DeltaSeconds)
 float ATDCombatant::GetHealth()    const { return Attributes ? Attributes->GetHealth()    : 0.f; }
 float ATDCombatant::GetMaxHealth() const { return Attributes ? Attributes->GetMaxHealth() : 0.f; }
 float ATDCombatant::GetShield()    const { return Attributes ? Attributes->GetShield()    : 0.f; }
+
+void ATDCombatant::SetOverheadHUDVisible(bool bVisible)
+{
+    if (HUDWidgetComponent)
+    {
+        HUDWidgetComponent->SetHiddenInGame(!bVisible);
+        HUDWidgetComponent->SetVisibility(bVisible);
+    }
+}

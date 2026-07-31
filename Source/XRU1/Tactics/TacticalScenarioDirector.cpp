@@ -1,13 +1,20 @@
 #include "TacticalScenarioDirector.h"
+#include "XRU1Log.h"
 
+#include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "QuestDefinition.h"
+#include "ScenarioActorRegistry.h"
 #include "QuestSubsystem.h"
 #include "TacticalQuestEvents.h"
 #include "TacticalScenarioDataAsset.h"
 #include "TacticsGameInstance.h"
 #include "TacticsGameMode.h"
+#include "TutorialActionGate.h"
 #include "EngineUtils.h"
+#include "Engine/LevelStreaming.h"
+#include "Engine/World.h"
+#include "Misc/PackageName.h"
 
 ATacticalScenarioDirector::ATacticalScenarioDirector()
 {
@@ -18,21 +25,126 @@ void ATacticalScenarioDirector::BeginPlay()
 {
 	Super::BeginPlay();
 
-	const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>();
+	UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>();
 	ActiveScenario = GameInstance ? GameInstance->GetActiveScenario() : nullptr;
+
+	// Прямой запуск общей карты (PIE без Hub/POI): берём preview-сценарий, чтобы
+	// разработчик мог проверять шаги, не проходя кампанию. Настоящий bootstrap
+	// всегда приоритетнее — ActiveScenario здесь уже был бы задан.
+	if (!ActiveScenario && !PreviewScenario.IsNull() && GameInstance)
+	{
+		if (UTacticalScenarioDataAsset* Preview = PreviewScenario.LoadSynchronous();
+			Preview && GameInstance->AdoptScenarioInPlace(Preview))
+		{
+			ActiveScenario = GameInstance->GetActiveScenario();
+			UE_LOG(LogXRU1Scenario, Warning,
+				TEXT("[Scenario] Прямой запуск карты: принят PreviewScenario %s (не путь кампании)"),
+				*Preview->ScenarioId.ToString());
+		}
+	}
+
 	ScenarioRunId = GameInstance ? GameInstance->GetActiveScenarioRunId() : 0;
 	if (!ActiveScenario)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[Scenario] Общая боевая карта открыта без ActiveScenario"));
+		UE_LOG(LogXRU1Scenario, Error, TEXT("[Scenario] Общая боевая карта открыта без ActiveScenario"));
 		return;
 	}
 	if (!IsCurrentScenarioRun())
 	{
-		UE_LOG(LogTemp, Error, TEXT("[Scenario] Для одного run должен существовать ровно один Director"));
+		UE_LOG(LogXRU1Scenario, Error, TEXT("[Scenario] Для одного run должен существовать ровно один Director"));
 		return;
 	}
 
 	OnScenarioSelected(ActiveScenario);
+
+	if (bAutoStreamScenarioSublevel)
+	{
+		BeginScenarioStreaming();
+	}
+}
+
+void ATacticalScenarioDirector::BeginScenarioStreaming()
+{
+	UWorld* World = GetWorld();
+	if (!World || !ActiveScenario || ActiveScenario->ScenarioSublevel.IsNull())
+	{
+		UE_LOG(LogXRU1Scenario, Error, TEXT("[Scenario] У сценария не задан ScenarioSublevel"));
+		return;
+	}
+
+	const FString SublevelPackage = ActiveScenario->ScenarioSublevel.ToSoftObjectPath().GetLongPackageName();
+
+	// В PIE пакет streaming level переименован в UEDPIE_<n>_<Имя>, поэтому
+	// сравнивать длинные имена нельзя: сценарий ссылается на исходный ассет.
+	// Сводим обе стороны к короткому имени без PIE-префикса.
+	auto NormalizeLevelName = [](const FString& PackageName)
+	{
+		return UWorld::RemovePIEPrefix(FPackageName::GetShortName(PackageName));
+	};
+	const FString WantedName = NormalizeLevelName(SublevelPackage);
+
+	ULevelStreaming* Target = nullptr;
+	for (ULevelStreaming* Streaming : World->GetStreamingLevels())
+	{
+		if (Streaming &&
+			NormalizeLevelName(Streaming->GetWorldAssetPackageName()) == WantedName)
+		{
+			Target = Streaming;
+			break;
+		}
+	}
+	if (!Target)
+	{
+		UE_LOG(LogXRU1Scenario, Error,
+			TEXT("[Scenario] Sublevel %s не добавлен в persistent-карту через Window → Levels"),
+			*SublevelPackage);
+		return;
+	}
+
+	ScenarioStreamingLevel = Target;
+
+	// Уровень мог остаться видимым после работы в редакторе — тогда OnLevelShown
+	// уже не придёт, и ждать его означало бы зависнуть до конца сессии.
+	if (Target->IsLevelVisible())
+	{
+		StreamingTimerHandle = GetWorldTimerManager().SetTimerForNextTick(
+			this, &ATacticalScenarioDirector::StartScenarioAfterStream);
+		return;
+	}
+
+	Target->OnLevelShown.AddDynamic(this, &ATacticalScenarioDirector::HandleScenarioLevelShown);
+	Target->SetShouldBeLoaded(true);
+	Target->SetShouldBeVisible(true);
+}
+
+void ATacticalScenarioDirector::HandleScenarioLevelShown()
+{
+	if (ULevelStreaming* Streaming = ScenarioStreamingLevel.Get())
+	{
+		Streaming->OnLevelShown.RemoveDynamic(this, &ATacticalScenarioDirector::HandleScenarioLevelShown);
+	}
+
+	// Актор уровня существует, но его BeginPlay в этом кадре ещё мог не пройти:
+	// реестр AnchorId и стороны боя собираем ровно на следующем tick.
+	StreamingTimerHandle = GetWorldTimerManager().SetTimerForNextTick(
+		this, &ATacticalScenarioDirector::StartScenarioAfterStream);
+}
+
+void ATacticalScenarioDirector::StartScenarioAfterStream()
+{
+	if (bScenarioStartRequested || !IsCurrentScenarioRun())
+	{
+		return;
+	}
+	bScenarioStartRequested = true;
+
+	if (!StartConfiguredQuest())
+	{
+		UE_LOG(LogXRU1Scenario, Error,
+			TEXT("[Scenario] StartConfiguredQuest отклонил запуск сценария %s: "
+				"проверь QuestId/QuestLogic в Quest Definition и состояние quest instance"),
+			*ActiveScenario->ScenarioId.ToString());
+	}
 }
 
 bool ATacticalScenarioDirector::IsCurrentScenarioRun() const
@@ -74,7 +186,24 @@ bool ATacticalScenarioDirector::StartConfiguredQuest(AActor* QuestOwner)
 		QuestOwner = PlayerController ? PlayerController->GetPawn() : nullptr;
 	}
 
+	PlaceCameraAtScenarioAnchor();
+
 	ActiveQuestId = Definition->QuestId;
+
+	// Quest живёт в реестре AssetManager, а не по ссылке из Data Asset: если
+	// DA_Quest_* лежит вне просканированных папок (DefaultGame.ini,
+	// PrimaryAssetTypesToScan «Quest»), MakeQuestAvailable молча ничего не
+	// делает, и сценарий падает с невнятным «нельзя запустить из состояния 0».
+	if (!Quests->GetQuestDefinition(ActiveQuestId))
+	{
+		UE_LOG(LogXRU1Scenario, Error,
+			TEXT("[Scenario] Quest %s отсутствует в реестре AssetManager. Ассет %s лежит вне ")
+			TEXT("папок скана PrimaryAssetTypesToScan (Config/DefaultGame.ini) — перенесите его ")
+			TEXT("в просканированную папку или добавьте новую в Directories и перезапустите редактор"),
+			*ActiveQuestId.ToString(), *GetNameSafe(Definition));
+		return false;
+	}
+
 	if (Quests->GetQuestState(ActiveQuestId) == EQuestState::Inactive)
 	{
 		Quests->MakeQuestAvailable(ActiveQuestId, QuestOwner);
@@ -99,7 +228,7 @@ bool ATacticalScenarioDirector::StartConfiguredQuest(AActor* QuestOwner)
 	}
 	if (State != EQuestState::Available)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[Scenario] Quest %s нельзя запустить из состояния %d"),
+		UE_LOG(LogXRU1Scenario, Error, TEXT("[Scenario] Quest %s нельзя запустить из состояния %d"),
 			*ActiveQuestId.ToString(), static_cast<int32>(State));
 		return false;
 	}
@@ -112,7 +241,7 @@ bool ATacticalScenarioDirector::StartConfiguredQuest(AActor* QuestOwner)
 		ATacticsGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<ATacticsGameMode>() : nullptr;
 		if (!GameMode || !GameMode->StartScenarioCombat())
 		{
-			UE_LOG(LogTemp, Error, TEXT("[Scenario] Quest запущен, но GameMode не смог стартовать бой"));
+			UE_LOG(LogXRU1Scenario, Error, TEXT("[Scenario] Quest запущен, но GameMode не смог стартовать бой"));
 			return false;
 		}
 
@@ -123,6 +252,35 @@ bool ATacticalScenarioDirector::StartConfiguredQuest(AActor* QuestOwner)
 			this, &ATacticalScenarioDirector::BroadcastReadyEvent);
 	}
 	return bStarted;
+}
+
+void ATacticalScenarioDirector::PlaceCameraAtScenarioAnchor()
+{
+	if (bInitialCameraPlaced || !ActiveScenario ||
+		ActiveScenario->InitialCameraAnchorId.IsNone())
+	{
+		return;
+	}
+
+	AActor* CameraAnchor = UTacticalScenarioSubsystem::FindScenarioActorInWorld(
+		this, ActiveScenario->InitialCameraAnchorId);
+	APlayerController* PlayerController = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
+	APawn* CameraPawn = PlayerController ? PlayerController->GetPawn() : nullptr;
+	if (!CameraAnchor || !CameraPawn)
+	{
+		UE_LOG(LogXRU1Scenario, Warning,
+			TEXT("[Scenario] Камера не поставлена на якорь %s: %s"),
+			*ActiveScenario->InitialCameraAnchorId.ToString(),
+			!CameraAnchor ? TEXT("якорь не найден в registry") : TEXT("нет camera pawn"));
+		return;
+	}
+
+	// Высоту оставляем родную: camera pawn сам держит свой ригель по земле,
+	// якорь задаёт только точку интереса сценария в плане.
+	FVector NewLocation = CameraAnchor->GetActorLocation();
+	NewLocation.Z = CameraPawn->GetActorLocation().Z;
+	CameraPawn->SetActorLocation(NewLocation);
+	bInitialCameraPlaced = true;
 }
 
 void ATacticalScenarioDirector::BroadcastReadyEvent()
@@ -136,7 +294,7 @@ void ATacticalScenarioDirector::BroadcastReadyEvent()
 	UQuestSubsystem* Quests = GameInstance ? GameInstance->GetSubsystem<UQuestSubsystem>() : nullptr;
 	if (!Quests || Quests->GetQuestState(ActiveQuestId) != EQuestState::Active)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[Scenario] Quest %s завершился до Scenario.Ready; input не открыт"),
+		UE_LOG(LogXRU1Scenario, Error, TEXT("[Scenario] Quest %s завершился до Scenario.Ready; input не открыт"),
 			*ActiveQuestId.ToString());
 		return;
 	}
@@ -152,7 +310,7 @@ void ATacticalScenarioDirector::BroadcastReadyEvent()
 	}
 	else
 	{
-		UE_LOG(LogTemp, Error, TEXT("[Scenario] Не удалось опубликовать Scenario.Ready"));
+		UE_LOG(LogXRU1Scenario, Error, TEXT("[Scenario] Не удалось опубликовать Scenario.Ready"));
 	}
 }
 
@@ -166,7 +324,7 @@ void ATacticalScenarioDirector::OpenScenarioReadyGate()
 	UQuestSubsystem* Quests = GameInstance ? GameInstance->GetSubsystem<UQuestSubsystem>() : nullptr;
 	if (!Quests || Quests->GetQuestState(ActiveQuestId) != EQuestState::Active)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[Scenario] Quest %s завершился до открытия Action Gate"),
+		UE_LOG(LogXRU1Scenario, Error, TEXT("[Scenario] Quest %s завершился до открытия Action Gate"),
 			*ActiveQuestId.ToString());
 		return;
 	}
@@ -263,7 +421,7 @@ void ATacticalScenarioDirector::CompletePendingFinalization()
 		{
 			bFinalizationPending = false;
 			FinalizationStage = 0;
-			UE_LOG(LogTemp, Error, TEXT("[Scenario] Quest %s покинул Active с неожиданным state %d"),
+			UE_LOG(LogXRU1Scenario, Error, TEXT("[Scenario] Quest %s покинул Active с неожиданным state %d"),
 				*ActiveQuestId.ToString(), static_cast<int32>(CurrentState));
 			return;
 		}
@@ -278,7 +436,7 @@ void ATacticalScenarioDirector::CompletePendingFinalization()
 	{
 		bFinalizationPending = false;
 		FinalizationStage = 0;
-		UE_LOG(LogTemp, Error, TEXT("[Scenario] Quest %s покинул Active с неожиданным state %d"),
+		UE_LOG(LogXRU1Scenario, Error, TEXT("[Scenario] Quest %s покинул Active с неожиданным state %d"),
 			*ActiveQuestId.ToString(), static_cast<int32>(CurrentState));
 		return;
 	}
@@ -300,7 +458,7 @@ void ATacticalScenarioDirector::CompletePendingFinalization()
 	FinalizationStage = 0;
 	if (!bScenarioFinalized)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[Scenario] Quest %s не перешёл в ожидаемый terminal state"),
+		UE_LOG(LogXRU1Scenario, Error, TEXT("[Scenario] Quest %s не перешёл в ожидаемый terminal state"),
 			*ActiveQuestId.ToString());
 	}
 }
@@ -309,8 +467,24 @@ void ATacticalScenarioDirector::EndPlay(const EEndPlayReason::Type EndPlayReason
 {
 	GetWorldTimerManager().ClearTimer(FinalizationTimerHandle);
 	GetWorldTimerManager().ClearTimer(ReadyEventTimerHandle);
+	GetWorldTimerManager().ClearTimer(StreamingTimerHandle);
+	if (ULevelStreaming* Streaming = ScenarioStreamingLevel.Get())
+	{
+		Streaming->OnLevelShown.RemoveDynamic(this, &ATacticalScenarioDirector::HandleScenarioLevelShown);
+	}
+	ScenarioStreamingLevel.Reset();
 	bFinalizationPending = false;
 	bReadyEventPending = false;
+
+	// Политика шага живёт в WorldSubsystem, но снять её надо явно: выход в Hub
+	// посреди закрытого gate не должен оставить ввод заблокированным.
+	if (UWorld* World = GetWorld())
+	{
+		if (UTutorialActionGateSubsystem* Gate = World->GetSubsystem<UTutorialActionGateSubsystem>())
+		{
+			Gate->ClearAllPolicies();
+		}
+	}
 
 	// Runner принадлежит World, а instance — GameInstance. При abort/reload нельзя
 	// оставлять Active-instance без runner: возвращаем его в Available.
