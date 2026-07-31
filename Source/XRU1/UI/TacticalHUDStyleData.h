@@ -163,6 +163,15 @@ public:
 		TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(
 			TEXT("/Game/XRU1Game/Materials/M_SelectionRing.M_SelectionRing")));
 
+	/**
+	 * Декаль подсветки прямоугольной зоны шага (ATacticalQuestZone.SetHighlighted):
+	 * синяя рамка со скруглёнными углами по габаритам бокса зоны.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "07. Обучение|Подсказки")
+	TSoftObjectPtr<UMaterialInterface> TutorialZoneMarkerMaterial =
+		TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(
+			TEXT("/Game/XRU1Game/Materials/M_TutorialZoneFrame.M_TutorialZoneFrame")));
+
 	// --- Кнопки действий (ActionsPanel + EndTurn) ----------------------------
 
 	/** Размер иконки внутри кнопок панели действий. */

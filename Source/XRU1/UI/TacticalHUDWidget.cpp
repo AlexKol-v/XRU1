@@ -472,6 +472,9 @@ void UTacticalHUDWidget::UpdateTargetPanel(AUnitBase* Hovered)
 		case EAttackTargetStatus::OutOfRange:
 			HitChanceText->SetText(INVTEXT("Слишком далеко"));
 			break;
+		case EAttackTargetStatus::OutOfSight:
+			HitChanceText->SetText(INVTEXT("Цель вне обзора"));
+			break;
 		default:
 			HitChanceText->SetText(INVTEXT("Нет линии огня"));
 			break;
@@ -632,6 +635,10 @@ void UTacticalHUDWidget::NativeConstruct()
 	{
 		TurnManager->OnTurnStarted.AddDynamic(this, &UTacticalHUDWidget::HandleTurnStarted);
 		TurnManager->OnCombatEnded.AddDynamic(this, &UTacticalHUDWidget::HandleCombatEnded);
+		// Состав сторон меняется посреди боя (staged-бойцы туториала): панель
+		// отряда и подписки на state обязаны пересобраться, иначе новые бойцы
+		// не получают карточек, а убранные продолжают «гореть».
+		TurnManager->OnUnitsChanged.AddDynamic(this, &UTacticalHUDWidget::HandleCombatUnitsChanged);
 		TurnManager->OnTurnLimitChanged.AddDynamic(this, &UTacticalHUDWidget::HandleTurnLimitChanged);
 
 		// Первичная инициализация индикаторов (бой мог начаться до создания HUD;
@@ -702,6 +709,7 @@ void UTacticalHUDWidget::NativeDestruct()
 		TurnManager->OnTurnStarted.RemoveDynamic(this, &UTacticalHUDWidget::HandleTurnStarted);
 		TurnManager->OnCombatEnded.RemoveDynamic(this, &UTacticalHUDWidget::HandleCombatEnded);
 		TurnManager->OnTurnLimitChanged.RemoveDynamic(this, &UTacticalHUDWidget::HandleTurnLimitChanged);
+		TurnManager->OnUnitsChanged.RemoveDynamic(this, &UTacticalHUDWidget::HandleCombatUnitsChanged);
 	}
 	if (ATacticalPlayerController* Controller = GetTacticalController())
 	{
@@ -783,6 +791,90 @@ void UTacticalHUDWidget::HandleHoveredUnitChanged(AUnitBase* Hovered)
 {
 	OnHoveredUnitChanged(Hovered);
 	UpdateTargetPanel(Hovered);
+}
+
+void UTacticalHUDWidget::HandleCombatUnitsChanged()
+{
+	// Новые бойцы: подписаться на их state (AddUniqueDynamic — дубли безопасны),
+	// пересобрать карточки под новый состав и обновить всё остальное.
+	SubscribeToUnitStates();
+	RebuildSquadPanel();
+	HandleUnitStateChanged();
+}
+
+void UTacticalHUDWidget::RebuildSquadPanel()
+{
+	// Класс карточки известен только из уже построенной BP панели: пустая панель
+	// означает, что Construct ещё не отработал — он сам построит актуальный состав.
+	// Класс кэшируется: если состав временно опустеет, следующий ребилд не должен
+	// остаться без образца.
+	if (!SquadPanel)
+	{
+		return;
+	}
+	if (const UUserWidget* Sample = SquadPanel->GetChildrenCount() > 0
+			? Cast<UUserWidget>(SquadPanel->GetChildAt(0)) : nullptr)
+	{
+		CachedPortraitClass = Sample->GetClass();
+	}
+	UClass* CardClass = CachedPortraitClass;
+	if (!CardClass)
+	{
+		return;
+	}
+	const TArray<AUnitBase*> Squad = GetSquad();
+
+	// Состав не менялся — панель не трогаем: пересоздание карточек сбрасывает
+	// их внутренние анимации и стоит мусора на каждом событии state.
+	if (SquadPanel->GetChildrenCount() == Squad.Num())
+	{
+		bool bSame = true;
+		for (int32 Index = 0; Index < Squad.Num(); ++Index)
+		{
+			bool bResolved = false;
+			if (GetPortraitUnit(Cast<UUserWidget>(SquadPanel->GetChildAt(Index)), bResolved)
+					!= Squad[Index] || !bResolved)
+			{
+				bSame = false;
+				break;
+			}
+		}
+		if (bSame)
+		{
+			return;
+		}
+	}
+
+	const FObjectProperty* UnitProperty =
+		FindFProperty<FObjectProperty>(CardClass, TEXT("Unit"));
+	if (!UnitProperty)
+	{
+		// Без свойства «Unit» новая карточка не узнает своего бойца — оставляем
+		// панель BP как есть (fail-open, тот же контракт, что у GetPortraitUnit).
+		return;
+	}
+
+	SquadPanel->ClearChildren();
+	for (AUnitBase* Unit : Squad)
+	{
+		UUserWidget* Card = CreateWidget<UUserWidget>(GetOwningPlayer(), CardClass);
+		if (!Card)
+		{
+			continue;
+		}
+		// Unit проставляется ДО добавления в дерево: Construct карточки читает его
+		// так же, как при CreateWidget с ExposeOnSpawn-пином в BP.
+		UnitProperty->SetObjectPropertyValue_InContainer(Card, Unit);
+		SquadPanel->AddChild(Card);
+	}
+	UE_LOG(LogTemp, Display, TEXT("[HUD] Панель отряда пересобрана: %d карточек"), Squad.Num());
+
+	ApplyPortraitCardLayout();
+	EnsureButtonsDontStealFocus();
+	if (const ATacticalPlayerController* Controller = GetTacticalController())
+	{
+		UpdateSquadCardVisibility(Controller->GetSelectedUnit());
+	}
 }
 
 void UTacticalHUDWidget::HandleUnitStateChanged()

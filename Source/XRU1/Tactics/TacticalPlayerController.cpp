@@ -712,6 +712,9 @@ void ATacticalPlayerController::SelectUnitInternal(AUnitBase* Unit, bool bPlayer
 
 	// Навмеш статичен, занятость — дисками: зона строится сразу, без задержек.
 	RefreshMoveRange();
+	// Маркеры точек шага зависят от выбранного бойца (личные точки маршрута):
+	// Танк видит свою, Оса — свои, без выбора показывается весь набор.
+	RefreshTutorialDestinationMarkers();
 	OnSelectedUnitChanged.Broadcast(SelectedUnit);
 
 	// Квест-событие публикуется ПОСЛЕ фактической смены canonical SelectedUnit и
@@ -802,25 +805,51 @@ void ATacticalPlayerController::SelectNextUnit()
 void ATacticalPlayerController::HandleTutorialPolicyChanged()
 {
 	const UTutorialActionGateSubsystem* Gate = UTutorialActionGateSubsystem::Get(this);
-	if (!Gate || !Gate->IsGateActive())
+	const bool bNowLock = Gate && Gate->IsGateActive() &&
+		Gate->GetActivePolicy().bLockGameplayInput;
+	if (Gate && Gate->IsGateActive())
 	{
-		return;
+		// Порог «осмотритесь» шага A1 отсчитывается от начала шага: всё, что игрок
+		// накрутил камерой во время стриминга и до применения политики, не считается.
+		if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+		{
+			Camera->ReArmCameraAdjustedEvent();
+		}
+
+		if (Gate->RequiresExplicitUnitSelection() && SelectedUnit)
+		{
+			// Шаг ждёт выбор именно от игрока — снимаем ЛЮБОЙ уже сделанный выбор.
+			// Даже если бойца успел выбрать сам игрок, его событие ушло ДО входа шага
+			// и никем не услышано, а клик по уже выбранному события не публикует.
+			SelectUnitInternal(nullptr, /*bPlayerInitiated=*/false);
+		}
 	}
 
-	// Порог «осмотритесь» шага A1 отсчитывается от начала шага: всё, что игрок
-	// накрутил камерой во время стриминга и до применения политики, не считается.
-	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+	// Конец постановки (lock → не-lock): камера возвращается игроку. Во время
+	// lock-шагов автовозвраты подавлены, поэтому этот переход — единственное
+	// место, где взгляд штатно отдаётся обратно (Beat нового шага, если он есть,
+	// выполнится позже и поставит свой фокус поверх).
+	if (bTutorialPolicyWasLock && !bNowLock)
 	{
-		Camera->ReArmCameraAdjustedEvent();
+		if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+		{
+			Camera->ClearFollowTarget();
+		}
+		if (SelectedUnit)
+		{
+			if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+			{
+				Camera->FocusOnActor(SelectedUnit);
+			}
+		}
+		else
+		{
+			FocusCameraOnSquad();
+		}
 	}
-
-	if (Gate->RequiresExplicitUnitSelection() && SelectedUnit)
-	{
-		// Шаг ждёт выбор именно от игрока — снимаем ЛЮБОЙ уже сделанный выбор.
-		// Даже если бойца успел выбрать сам игрок, его событие ушло ДО входа шага
-		// и никем не услышано, а клик по уже выбранному события не публикует.
-		SelectUnitInternal(nullptr, /*bPlayerInitiated=*/false);
-	}
+	bTutorialPolicyWasLock = bNowLock;
+	// Полное снятие политики раннего выхода не получает: маркеры и зона хода
+	// обязаны очиститься/перестроиться и в этом случае.
 
 	// Новая политика меняет и доступные действия, и допустимые точки: зона хода
 	// была спрятана шагом без Move и сама не перестроится (её обновления привязаны
@@ -855,8 +884,9 @@ void ATacticalPlayerController::RefreshTutorialDestinationMarkers()
 		return;
 	}
 	// Только те точки, куда шаг разрешает идти ПРЯМО СЕЙЧАС: пройденные гаснут,
-	// а при последовательном маршруте открыта ровно одна следующая.
-	const TArray<FName> OpenAnchors = Gate->GetOpenDestinationAnchors();
+	// при последовательном маршруте открыта ровно одна следующая, а выбранный
+	// боец видит лишь свои личные и общие точки (чужие маркеры — шум).
+	const TArray<FName> OpenAnchors = Gate->GetOpenDestinationAnchors(SelectedUnit);
 	if (OpenAnchors.IsEmpty())
 	{
 		return;
@@ -1234,7 +1264,7 @@ void ATacticalPlayerController::TryMoveSelectedUnit(const FVector& Goal)
 	// стоит до PlanMoveTo: отказ не должен ни строить путь, ни трогать камеру.
 	if (const UTutorialActionGateSubsystem* Gate = UTutorialActionGateSubsystem::Get(this))
 	{
-		if (!Gate->IsDestinationAllowed(Goal))
+		if (!Gate->IsDestinationAllowed(Goal, SelectedUnit))
 		{
 			NotifyCommandDenied();
 			return;
@@ -1363,7 +1393,42 @@ void ATacticalPlayerController::HandleAbilityTargetClick(AActor* ClickedActor)
 		!AbilityCDO->IsValidTargetActor(ActingUnit, ClickedActor) ||
 		(Gate && !Gate->IsTargetAllowed(ClickedActor)))
 	{
-		// Невалидный клик не закрывает targeting: игрок может выбрать другую цель.
+		// Невалидный клик не закрывает targeting: игрок может выбрать другую
+		// цель. Но «ничего не произошло» неотличимо от зависания — причина
+		// отказа обязана дойти до игрока (оверлей, 3 секунды + звук отказа).
+		if (AUnitBase* ClickedUnit = Cast<AUnitBase>(ClickedActor))
+		{
+			FText Reason;
+			const float Range = AbilityCDO ? AbilityCDO->GetTargetingRange() : 0.f;
+			if (Gate && !Gate->IsTargetAllowed(ClickedUnit))
+			{
+				Reason = Gate->GetDenialReason();
+			}
+			else if (Range > 0.f && ActingUnit &&
+				FVector::Dist(ActingUnit->GetActorLocation(),
+					ClickedUnit->GetActorLocation()) > Range)
+			{
+				Reason = FText::Format(
+					INVTEXT("Слишком далеко: подойдите вплотную (радиус {0} м)"),
+					FText::AsNumber(FMath::RoundToInt(Range / 100.f)));
+			}
+			else if (!UTacticsCombatStatics::IsUnitDowned(ClickedUnit) &&
+				ClickedUnit->GetHealth() >= ClickedUnit->GetMaxHealth() - KINDA_SMALL_NUMBER)
+			{
+				Reason = INVTEXT("Боец не ранен");
+			}
+			else
+			{
+				Reason = INVTEXT("Эту цель выбрать нельзя");
+			}
+			LastDenialReason = Reason;
+			LastDenialTimeSeconds = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
+			if (UTacticsAudioSubsystem* Audio = GetGameInstance()
+				? GetGameInstance()->GetSubsystem<UTacticsAudioSubsystem>() : nullptr)
+			{
+				Audio->PlayUIDenied();
+			}
+		}
 		UE_LOG(LogXRU1Combat, Display,
 			TEXT("[Ability] Цель %s отклонена: cdo=%d target-механика=%d gate=%d"),
 			*GetNameSafe(ClickedActor), AbilityCDO ? 1 : 0,
@@ -1475,15 +1540,90 @@ void ATacticalPlayerController::ExitTargetingMode(EPlayerTargetingMode OldMode)
 			}
 		}
 	}
-	// Ability-режим побочных эффектов, требующих отката, не имеет
-	// (подсветка/камера у него не менялись) — но ветка есть для симметрии.
+	if (OldMode == EPlayerTargetingMode::Ability)
+	{
+		ClearAbilityTargetingVisuals();
+	}
 }
 
-void ATacticalPlayerController::EnterTargetingMode(EPlayerTargetingMode /*NewMode*/)
+void ATacticalPlayerController::EnterTargetingMode(EPlayerTargetingMode NewMode)
 {
 	// Побочные эффекты входа задаются точечно там, где известен контекст:
-	// цель атаки берёт BeginAttackTargeting (нужен список целей). Метод оставлен
-	// точкой расширения — новое состояние добавит сюда свой вход.
+	// цель атаки берёт BeginAttackTargeting (нужен список целей).
+	if (NewMode == EPlayerTargetingMode::Ability)
+	{
+		BeginAbilityTargetingVisuals();
+	}
+}
+
+void ATacticalPlayerController::BeginAbilityTargetingVisuals()
+{
+	const UTacticalAbility* AbilityCDO = SelectedUnit && SelectedUnit->ClassAbilityClass
+		? SelectedUnit->ClassAbilityClass->GetDefaultObject<UTacticalAbility>()
+		: nullptr;
+	if (!AbilityCDO)
+	{
+		return;
+	}
+
+	// Круг дальности способности вокруг бойца — игрок видит, кого достаёт,
+	// ДО клика (подсказка радиуса аптечки, как в XCOM).
+	const float Range = AbilityCDO->GetTargetingRange();
+	const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>();
+	const UTacticalHUDStyleData* Theme = GameInstance ? GameInstance->GetUITheme() : nullptr;
+	UMaterialInterface* RingMaterial = Theme
+		? Theme->TutorialDestinationMarkerMaterial.LoadSynchronous() : nullptr;
+	if (Range > 0.f && RingMaterial)
+	{
+		AbilityRangeDecal = UGameplayStatics::SpawnDecalAtLocation(
+			this, RingMaterial, FVector(200.f, Range, Range),
+			SelectedUnit->GetActorLocation(), FRotator(-90.f, 0.f, 0.f), 0.f);
+		if (AbilityRangeDecal.IsValid())
+		{
+			AbilityRangeDecal->SetFadeScreenSize(0.f);
+		}
+	}
+
+	// Подсветка валидных целей кольцом выбора: медик сразу видит, кого может
+	// лечить/поднять. Gate обучения сужает список так же, как сузит и клик.
+	const UTutorialActionGateSubsystem* Gate = UTutorialActionGateSubsystem::Get(this);
+	const UTurnManagerSubsystem* TurnManager =
+		GetWorld() ? GetWorld()->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
+	if (!TurnManager)
+	{
+		return;
+	}
+	for (AActor* Ally : TurnManager->GetSideUnits(SelectedUnit))
+	{
+		AUnitBase* AllyUnit = Cast<AUnitBase>(Ally);
+		if (!AllyUnit || AllyUnit == SelectedUnit ||
+			!AbilityCDO->IsValidTargetActor(SelectedUnit, AllyUnit) ||
+			(Gate && !Gate->IsTargetAllowed(AllyUnit)))
+		{
+			continue;
+		}
+		AllyUnit->SetSelectionHighlight(true);
+		AbilityHighlightedTargets.Add(AllyUnit);
+	}
+}
+
+void ATacticalPlayerController::ClearAbilityTargetingVisuals()
+{
+	if (AbilityRangeDecal.IsValid())
+	{
+		AbilityRangeDecal->DestroyComponent();
+	}
+	AbilityRangeDecal.Reset();
+
+	for (const TWeakObjectPtr<AUnitBase>& Target : AbilityHighlightedTargets)
+	{
+		// Выбранного бойца не гасим: его кольцо принадлежит выбору, а не режиму.
+		if (Target.IsValid() && Target.Get() != SelectedUnit)
+		{
+			Target->SetSelectionHighlight(false);
+		}
+	}
+	AbilityHighlightedTargets.Reset();
 }
 
 // --- Прицеливание по-XCOM'овски ----------------------------------------------------
@@ -1966,32 +2106,58 @@ void ATacticalPlayerController::HandleTurnStarted(ETurnPhase Phase)
 		Camera->AbandonShotFraming();
 	}
 
-	// Смена фазы: камера бросает сопровождение (нового скажет следующий делегат).
-	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
-	{
-		Camera->ClearFollowTarget();
+	// Во время постановки (bLockGameplayInput) камерой владеет режиссура шага:
+	// Beat сфокусировал точку, по которой сейчас бежит staged-боец, и мгновенная
+	// смена фаз (пустой ход врага) не должна утаскивать взгляд обратно на отряд.
+	const UTutorialActionGateSubsystem* TutorialGate = UTutorialActionGateSubsystem::Get(this);
+	const bool bScriptedSequence = TutorialGate && TutorialGate->IsGateActive() &&
+		TutorialGate->GetActivePolicy().bLockGameplayInput;
 
-		// Начало нашего хода: вернуть камеру к выбранному бойцу или к отряду.
-		if (Phase == ETurnPhase::Player && bInitialSquadFocusDone)
+	// Сценарий уже поставил стартовый ракурс (InitialCameraAnchorId) — первый
+	// автофокус на отряд его перезаписывал бы, поэтому этот один раз пропускаем.
+	if (Phase == ETurnPhase::Player && (bScenarioCameraPlaced || bScriptedSequence))
+	{
+		bScenarioCameraPlaced = false;
+		bInitialSquadFocusDone = true;
+		// Follow не трогаем при scripted-шаге: камера может сопровождать бегущего
+		// staged-бойца, и мгновенная смена фаз не должна отцеплять её на полпути.
+		if (!bScriptedSequence)
 		{
-			if (SelectedUnit)
+			if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
 			{
-				Camera->FocusOnActor(SelectedUnit);
-			}
-			else
-			{
-				FocusCameraOnSquad();
+				Camera->ClearFollowTarget();
 			}
 		}
 	}
-
-	if (Phase == ETurnPhase::Player && !bInitialSquadFocusDone)
+	else
 	{
-		// Старт боя: камеру ставим на центр отряда МГНОВЕННО (без полёта через
-		// карту). Выбор бойца — ниже, общим автоселектом (или игроком вручную,
-		// если bAutoSelectUnits выключен).
-		FocusCameraOnSquad(/*bInstant=*/true);
-		bInitialSquadFocusDone = true;
+		// Смена фазы: камера бросает сопровождение (нового скажет следующий делегат).
+		if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+		{
+			Camera->ClearFollowTarget();
+
+			// Начало нашего хода: вернуть камеру к выбранному бойцу или к отряду.
+			if (Phase == ETurnPhase::Player && bInitialSquadFocusDone)
+			{
+				if (SelectedUnit)
+				{
+					Camera->FocusOnActor(SelectedUnit);
+				}
+				else
+				{
+					FocusCameraOnSquad();
+				}
+			}
+		}
+
+		if (Phase == ETurnPhase::Player && !bInitialSquadFocusDone)
+		{
+			// Старт боя: камеру ставим на центр отряда МГНОВЕННО (без полёта через
+			// карту). Выбор бойца — ниже, общим автоселектом (или игроком вручную,
+			// если bAutoSelectUnits выключен).
+			FocusCameraOnSquad(/*bInstant=*/true);
+			bInitialSquadFocusDone = true;
+		}
 	}
 
 	// Автоселект (XCOM 2): ход игрока всегда начинается с бойца, который МОЖЕТ
@@ -1999,7 +2165,7 @@ void ATacticalPlayerController::HandleTurnStarted(ETurnPhase Phase)
 	// упавший тяжело раненым в ход врага иначе остался бы выбранным, и новый ход
 	// начинался бы с мёртвой панели действий (IsUnitAlive ложна и для Downed,
 	// и для эвакуированных).
-	if (Phase == ETurnPhase::Player && bAutoSelectUnits &&
+	if (Phase == ETurnPhase::Player && bAutoSelectUnits && !bScriptedSequence &&
 		(!SelectedUnit || !UTacticsCombatStatics::IsUnitAlive(SelectedUnit)))
 	{
 		SelectNextAvailableUnit();

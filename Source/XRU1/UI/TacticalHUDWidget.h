@@ -209,6 +209,10 @@ private:
 	UFUNCTION()
 	void HandleUnitStateChanged();
 
+	/** Состав боя изменился (staged-бойцы вошли/вышли) — пересобрать панель. */
+	UFUNCTION()
+	void HandleCombatUnitsChanged();
+
 	/** Локальное укрытие юнита изменилось — обновить cover badge карточки. */
 	UFUNCTION()
 	void HandleUnitCoverStateChanged(ECoverType NewCover);
@@ -270,6 +274,17 @@ private:
 
 	/** XCOM-стиль: скрыть карточки всех, кроме выбранного (см. bShowOnlySelectedCard). */
 	void UpdateSquadCardVisibility(AUnitBase* Selected);
+
+	/**
+	 * Пересобрать карточки отряда под ТЕКУЩИЙ состав. BP строит панель один раз
+	 * на Construct; staged-бойцы туториала входят в бой позже, и их карточки
+	 * иначе не появились бы вовсе. Класс карточки берётся у уже созданной BP.
+	 */
+	void RebuildSquadPanel();
+
+	/** Класс карточки отряда, увиденный у панели BP (образец для пересборки). */
+	UPROPERTY(Transient)
+	TObjectPtr<UClass> CachedPortraitClass;
 
 	/** Юниты обеих сторон, на чей OnUnitStateChanged мы подписаны (для отписки). */
 	TArray<TWeakObjectPtr<AUnitBase>> StateSubscribedUnits;

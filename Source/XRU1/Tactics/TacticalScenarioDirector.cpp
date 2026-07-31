@@ -6,6 +6,7 @@
 #include "QuestDefinition.h"
 #include "ScenarioActorRegistry.h"
 #include "QuestSubsystem.h"
+#include "TacticalPlayerController.h"
 #include "TacticalQuestEvents.h"
 #include "TacticalScenarioDataAsset.h"
 #include "TacticsGameInstance.h"
@@ -281,6 +282,13 @@ void ATacticalScenarioDirector::PlaceCameraAtScenarioAnchor()
 	NewLocation.Z = CameraPawn->GetActorLocation().Z;
 	CameraPawn->SetActorLocation(NewLocation);
 	bInitialCameraPlaced = true;
+
+	// Автофокус старта боя («центр отряда») не должен перебить сценарный ракурс.
+	if (ATacticalPlayerController* TacticalController =
+			Cast<ATacticalPlayerController>(PlayerController))
+	{
+		TacticalController->NotifyScenarioCameraPlaced();
+	}
 }
 
 void ATacticalScenarioDirector::BroadcastReadyEvent()

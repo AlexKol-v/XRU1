@@ -120,9 +120,15 @@ public:
 	virtual bool IsValidTargetActor_Implementation(
 		AUnitBase* SourceUnit, AActor* TargetActor) const override;
 
-	/** Радиус применения (см). */
+	virtual float GetTargetingRange_Implementation() const override { return HealRange; }
+
+	/**
+	 * Радиус применения (см) — «вплотную», как аптечка XCOM 2 (соседняя клетка):
+	 * прежние 600 см позволяли поднимать бойца с полукарты и обесценивали
+	 * позиционирование медика.
+	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Tactics|Heal", meta = (ClampMin = "0"))
-	float HealRange = 600.f;
+	float HealRange = 200.f;
 
 	/** Лечение живого союзника (HP). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Tactics|Heal", meta = (ClampMin = "0"))

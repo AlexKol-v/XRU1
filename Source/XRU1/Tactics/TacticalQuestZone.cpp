@@ -1,8 +1,11 @@
 #include "TacticalQuestZone.h"
 
 #include "Components/BoxComponent.h"
+#include "Components/DecalComponent.h"
+#include "TacticalHUDStyleData.h"
 #include "TacticalQuestEvents.h"
 #include "TacticsCombatStatics.h"
+#include "TacticsGameInstance.h"
 #include "TurnManagerSubsystem.h"
 #include "UnitBase.h"
 
@@ -38,6 +41,40 @@ void ATacticalQuestZone::BeginPlay()
 {
 	Super::BeginPlay();
 	TriggerBox->OnComponentBeginOverlap.AddDynamic(this, &ATacticalQuestZone::HandleBeginOverlap);
+}
+
+void ATacticalQuestZone::SetHighlighted(bool bNewHighlighted)
+{
+	if (!bNewHighlighted)
+	{
+		if (HighlightDecal)
+		{
+			HighlightDecal->SetVisibility(false);
+		}
+		return;
+	}
+
+	if (!HighlightDecal)
+	{
+		const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>();
+		const UTacticalHUDStyleData* Theme = GameInstance ? GameInstance->GetUITheme() : nullptr;
+		UMaterialInterface* Material = Theme
+			? Theme->TutorialZoneMarkerMaterial.LoadSynchronous() : nullptr;
+		if (!Material)
+		{
+			return; // тема не задана — подсветка опциональна
+		}
+		HighlightDecal = NewObject<UDecalComponent>(this, TEXT("ZoneHighlight"));
+		HighlightDecal->SetupAttachment(TriggerBox);
+		HighlightDecal->RegisterComponent();
+		HighlightDecal->SetDecalMaterial(Material);
+		// Декаль проецируется вниз; X — глубина проекции, Y/Z — половины прямоугольника.
+		const FVector Extent = TriggerBox->GetScaledBoxExtent();
+		HighlightDecal->DecalSize = FVector(300.f, Extent.Y, Extent.X);
+		HighlightDecal->SetRelativeRotation(FRotator(-90.f, 0.f, 0.f));
+		HighlightDecal->SetFadeScreenSize(0.f);
+	}
+	HighlightDecal->SetVisibility(true);
 }
 
 void ATacticalQuestZone::HandleBeginOverlap(

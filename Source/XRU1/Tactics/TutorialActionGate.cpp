@@ -106,6 +106,17 @@ bool UTutorialActionGateSubsystem::IsActionAllowed(ETutorialAction Action, const
 		return true;
 	}
 
+	// «Сначала займи позицию»: боец с непройденными точками шага не может
+	// стрелять и применять способности — постановка следующего шага считает,
+	// что он стоит именно там (Провокация из чистого поля ломала B4).
+	if (ActivePolicy.bRequirePositionBeforeActions && Unit &&
+		Action != ETutorialAction::Select && Action != ETutorialAction::Move &&
+		ActivePolicy.AllowedDestinationAnchors.Num() > 0 &&
+		GetOpenDestinationAnchors(Unit).Num() > 0)
+	{
+		return false;
+	}
+
 	return MatchesAnchorList(ActivePolicy.AllowedUnitAnchors, Unit);
 }
 
@@ -122,25 +133,36 @@ bool UTutorialActionGateSubsystem::IsTargetAllowed(const AActor* Target) const
 	return MatchesAnchorList(ActivePolicy.AllowedTargetAnchors, Target);
 }
 
-TArray<FName> UTutorialActionGateSubsystem::GetOpenDestinationAnchors() const
+TArray<FName> UTutorialActionGateSubsystem::GetOpenDestinationAnchors(const AActor* ForUnit) const
 {
 	TArray<FName> Open;
 	if (!bPolicyActive)
 	{
 		return Open;
 	}
+	const FName UnitAnchor = ForUnit
+		? UTacticalScenarioSubsystem::GetScenarioAnchorId(ForUnit) : NAME_None;
+	// Последовательность считается ПО владельцу: у каждого бойца свой маршрут,
+	// и «следующая точка Осы» не должна ждать, пока Танк займёт свою.
+	TSet<FName> OwnersAlreadyOpen;
 	for (const FName& AnchorId : ActivePolicy.AllowedDestinationAnchors)
 	{
+		const FName* Owner = ActivePolicy.DestinationOwners.Find(AnchorId);
+		const FName OwnerAnchor = Owner ? *Owner : NAME_None;
+		if (ForUnit && !OwnerAnchor.IsNone() && OwnerAnchor != UnitAnchor)
+		{
+			continue; // личная точка другого бойца
+		}
 		if (ConsumedDestinations.Contains(AnchorId))
 		{
 			continue;
 		}
-		Open.Add(AnchorId);
-		// Последовательный маршрут: открыта ровно одна следующая точка.
-		if (ActivePolicy.bSequentialDestinations)
+		if (ActivePolicy.bSequentialDestinations && OwnersAlreadyOpen.Contains(OwnerAnchor))
 		{
-			break;
+			continue; // у этого владельца уже открыта более ранняя точка маршрута
 		}
+		OwnersAlreadyOpen.Add(OwnerAnchor);
+		Open.Add(AnchorId);
 	}
 	return Open;
 }
@@ -178,7 +200,8 @@ FName UTutorialActionGateSubsystem::FindNearestAllowedAnchor(
 	return Best;
 }
 
-bool UTutorialActionGateSubsystem::IsDestinationAllowed(const FVector& Destination) const
+bool UTutorialActionGateSubsystem::IsDestinationAllowed(
+	const FVector& Destination, const AActor* Unit) const
 {
 	if (!bPolicyActive || ActivePolicy.AllowedDestinationAnchors.Num() == 0)
 	{
@@ -186,14 +209,17 @@ bool UTutorialActionGateSubsystem::IsDestinationAllowed(const FVector& Destinati
 	}
 
 	const float Tolerance = FMath::Max(50.f, ActivePolicy.DestinationTolerance);
-	const TArray<FName> Open = GetOpenDestinationAnchors();
+	// Ближайший якорь ищется среди ВСЕХ точек шага: клик возле чужой точки
+	// должен получить отказ, а не «перепрыгнуть» на дальнюю свою.
+	const TArray<FName> Open = GetOpenDestinationAnchors(Unit);
 
 	float Distance = 0.f;
 	const FName Nearest = FindNearestAllowedAnchor(Destination, Distance);
 	return Nearest != NAME_None && Distance <= Tolerance && Open.Contains(Nearest);
 }
 
-void UTutorialActionGateSubsystem::NotifyDestinationReached(const FVector& Location)
+void UTutorialActionGateSubsystem::NotifyDestinationReached(
+	const FVector& Location, const AActor* Unit)
 {
 	if (!bPolicyActive || ActivePolicy.AllowedDestinationAnchors.Num() == 0)
 	{
@@ -204,7 +230,8 @@ void UTutorialActionGateSubsystem::NotifyDestinationReached(const FVector& Locat
 	const FName Nearest = FindNearestAllowedAnchor(Location, Distance);
 	if (Nearest == NAME_None ||
 		Distance > FMath::Max(50.f, ActivePolicy.DestinationTolerance) ||
-		ConsumedDestinations.Contains(Nearest))
+		ConsumedDestinations.Contains(Nearest) ||
+		!GetOpenDestinationAnchors(Unit).Contains(Nearest))
 	{
 		return;
 	}

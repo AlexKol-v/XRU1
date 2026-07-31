@@ -52,6 +52,14 @@ struct XRU1_API FTutorialActionPolicy
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tutorial")
 	TArray<FName> AllowedDestinationAnchors;
 
+	/**
+	 * Владелец точки: якорь точки → якорь бойца, которому она предназначена.
+	 * Точка без записи — общая. Танк не может занять точку Осы, а маркеры
+	 * показывают выбранному бойцу только его маршрут.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tutorial")
+	TMap<FName, FName> DestinationOwners;
+
 	/** Радиус приёмки точки назначения вокруг якоря, см. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tutorial", meta = (ClampMin = "50"))
 	float DestinationTolerance = 300.f;
@@ -70,6 +78,15 @@ struct XRU1_API FTutorialActionPolicy
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tutorial")
 	bool bLockGameplayInput = false;
+
+	/**
+	 * «Сначала займи позицию»: пока у бойца остаются открытые точки шага (его
+	 * личные или общие), способности и атака ему запрещены — только Move/Select/
+	 * EndTurn. Танк, нажавший Провокацию посреди поля, ломал постановку B4:
+	 * голограмма не видела его с точки выстрела.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tutorial")
+	bool bRequirePositionBeforeActions = true;
 
 	/** Короткая причина отказа для HUD («Сейчас действует только Медик»). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tutorial")
@@ -152,21 +169,25 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Tutorial|Gate")
 	bool IsTargetAllowed(const AActor* Target) const;
 
-	/** Разрешена ли точка назначения перемещения. */
+	/** Разрешена ли точка назначения перемещения ЭТОМУ бойцу (nullptr — любому). */
 	UFUNCTION(BlueprintPure, Category = "Tutorial|Gate")
-	bool IsDestinationAllowed(const FVector& Destination) const;
+	bool IsDestinationAllowed(const FVector& Destination, const AActor* Unit) const;
 
-	/** AnchorId точек, куда сейчас разрешено идти — для маркеров HUD. */
+	/**
+	 * AnchorId точек, куда сейчас разрешено идти — для маркеров HUD.
+	 * ForUnit сужает список до его личных и общих точек; nullptr — все открытые.
+	 */
 	UFUNCTION(BlueprintPure, Category = "Tutorial|Gate")
-	TArray<FName> GetOpenDestinationAnchors() const;
+	TArray<FName> GetOpenDestinationAnchors(const AActor* ForUnit) const;
 
 	/**
 	 * Боец подтверждённо встал в одну из разрешённых точек — она «израсходована».
 	 * Зовёт единственная финализация перемещения, та же, что публикует
-	 * Movement.Settled.*: до неё точка не считается пройденной.
+	 * Movement.Settled.*: до неё точка не считается пройденной. Чужая точка
+	 * приходом мимо проходящего бойца не гасится.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Tutorial|Gate")
-	void NotifyDestinationReached(const FVector& Location);
+	void NotifyDestinationReached(const FVector& Location, const AActor* Unit);
 
 	/** Удобный статический доступ из контроллера/HUD/задач. */
 	static UTutorialActionGateSubsystem* Get(const UObject* WorldContextObject);

@@ -1,6 +1,7 @@
 #include "TurnManagerSubsystem.h"
 #include "XRU1Log.h"
 #include "ActionPointsComponent.h"
+#include "CoverDetectionComponent.h"
 #include "TacticsCombatStatics.h"
 #include "TacticalAIDirectorSubsystem.h"
 #include "TacticsAudioSubsystem.h"
@@ -63,6 +64,15 @@ bool UTurnManagerSubsystem::RegisterUnitInCombat(AActor* Unit)
 	if (UActionPointsComponent* ActionPoints = Unit->FindComponentByClass<UActionPointsComponent>())
 	{
 		ActionPoints->ResetForNewTurn();
+	}
+
+	// Пересчёт укрытия на входе в бой: BeginPlay юнита из стримящегося sublevel
+	// мог отработать раньше готовности коллизии соседей, а staged-боец включается
+	// на позиции, где он ни разу не «прижимался». Без валидного ActiveCover не
+	// строятся ни peek-точки у краёв, ни step-up над полуукрытием.
+	if (UCoverDetectionComponent* Cover = TacticalUnit->GetCoverDetection())
+	{
+		Cover->EvaluateSurroundings();
 	}
 	OnUnitsChanged.Broadcast();
 	return true;

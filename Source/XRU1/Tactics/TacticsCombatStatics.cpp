@@ -102,11 +102,35 @@ static FAutoConsoleCommandWithWorldAndArgs GLOSExplainCommand(
 		UTacticsCombatStatics::GetTargetExposedPoints(World, To,
 			From->GetActorLocation() + FVector(0.f, 0.f, EyeOffset), Exposed);
 		UE_LOG(LogXRU1Combat, Display,
-			TEXT("[LOS.Explain] %s -> %s: статус=%d (0=Valid 2=Dead 3=OutOfRange 4=NoLOS), ")
+			TEXT("[LOS.Explain] %s -> %s: статус=%d (0=Valid 2=Dead 3=OutOfRange 4=NoLOS 5=OutOfSight), ")
 			TEXT("огневых точек=%d, exposed-точек цели=%d, дистанция=%.0f"),
 			*From->GetName(), *To->GetName(), static_cast<int32>(Status),
 			FirePoints.Num(), Exposed.Num(),
 			FVector::Dist(From->GetActorLocation(), To->GetActorLocation()));
+
+		// Разбор укрытия стрелка: без зафиксированной ActiveCover-стены peek и
+		// step-up не строятся вовсе — это первое, что надо видеть в разборе.
+		if (const UCoverDetectionComponent* Cover = From->GetCoverDetection())
+		{
+			UE_LOG(LogXRU1Combat, Display,
+				TEXT("[LOS.Explain]   %s: bestCover=%d activeWall=%s(id=%lld) край=%s"),
+				*From->GetName(), static_cast<int32>(Cover->BestCoverAround),
+				Cover->ActiveCoverWallId != 0 ? TEXT("зафиксирована") : TEXT("НЕТ"),
+				Cover->ActiveCoverWallId,
+				Cover->HasPeekEdge() ? TEXT("есть") : TEXT("нет"));
+		}
+		// Состав огневых точек: центр всегда №0; точка с той же XY выше центра —
+		// step-up (стрельба поверх полуукрытия); остальные — боковые peek.
+		const FVector FromEye = From->GetActorLocation() + FVector(0.f, 0.f, EyeOffset);
+		for (int32 i = 0; i < FirePoints.Num(); ++i)
+		{
+			const TCHAR* Kind = i == 0 ? TEXT("центр")
+				: FVector::Dist2D(FirePoints[i], FromEye) < 1.f ? TEXT("step-up")
+				: TEXT("peek");
+			UE_LOG(LogXRU1Combat, Display,
+				TEXT("[LOS.Explain]   огневая №%d (%s): (%.0f, %.0f, %.0f)"),
+				i, Kind, FirePoints[i].X, FirePoints[i].Y, FirePoints[i].Z);
+		}
 		return Status;
 	};
 
@@ -426,6 +450,16 @@ void UTacticsCombatStatics::GetFiringPositions(const UWorld* World, const AActor
 	{
 		if (!Cover || Cover->ActiveCoverWallId == 0 || Cover->ActiveCoverNormal.IsNearlyZero())
 		{
+			// Диагностика «у бота нет точек пика»: юнит фактически видит укрытие
+			// (BestCoverAround), но активная стена не зафиксирована — peek и
+			// step-up строить не от чего. Это всегда ошибка settle-цепочки.
+			if (CVarLOSDebug.GetValueOnAnyThread() > 0 && Cover &&
+				Cover->BestCoverAround != ECoverType::None)
+			{
+				UE_LOG(LogXRU1Combat, Warning,
+					TEXT("[LOS] FirePoints %s: ActiveCover НЕ зафиксирован (wallId=0) при bestCover=%d — только центр, peek/step-up не строятся"),
+					*GetNameSafe(Unit), static_cast<int32>(Cover->BestCoverAround));
+			}
 			return; // открытое поле: только центр, никаких виртуальных ±lean-root
 		}
 
@@ -442,6 +476,35 @@ void UTacticsCombatStatics::GetFiringPositions(const UWorld* World, const AActor
 			OtherLocation - AnchorRoot, Tangent);
 		const float FirstSign = AlongWall < -2.f ? -1.f : 1.f;
 		const float SideSigns[2] = {FirstSign, -FirstSign};
+
+		// XCOM step-up: из-за ПОЛУукрытия стреляют ПОВЕРХ. Глаза формально выше
+		// полустены, но свип толщиной LosSphereRadius у самого гребня цепляет её —
+		// поэтому вторая огневая точка приподнимается над гребнем (та же XY).
+		// Симметрия Ф5 сохраняется сама: exposed-набор цели строит эта же функция.
+		// Тип активной стены — из ЕДИНОГО источника правды: SelectedCandidate
+		// последнего EvaluateSurroundings и есть активная стена, его тип лежит в
+		// BestCoverAround. Контрольный перетрейс от якоря давал второй источник:
+		// на углу мешков тонкий луч не подтверждал только что выбранную стену,
+		// и step-up пропадал у бойца, честно стоящего за полуукрытием.
+		const ECoverType ActiveWallType = Cover->BestCoverAround;
+		bool bStepUpAdded = false;
+		if (ActiveWallType == ECoverType::Half && Tuning->OverCoverStepUpOffset > 0.f)
+		{
+			const FVector OverTop = EyeLocation
+				+ FVector(0.f, 0.f, Tuning->OverCoverStepUpOffset);
+			FHitResult UpHit;
+			const bool bUpBlocked = World->SweepSingleByObjectType(UpHit,
+				EyeLocation, OverTop, FQuat::Identity, GetShotGeometryObjects(),
+				FCollisionShape::MakeSphere(Tuning->LosSphereRadius),
+				FCollisionQueryParams(SCENE_QUERY_STAT(OverCoverStepUp), false));
+			if (!bUpBlocked)
+			{
+				// Сразу после центра: GetFiringStance опознаёт её по той же XY
+				// и классифицирует как OverCover, а не боковой StepOut.
+				OutEyePositions.Insert(OverTop, 1);
+				bStepUpAdded = true;
+			}
+		}
 
 		TArray<FVector> Obstacles;
 		GetUnitObstacles(const_cast<UWorld*>(World), Unit, Obstacles);
@@ -517,6 +580,20 @@ void UTacticsCombatStatics::GetFiringPositions(const UWorld* World, const AActor
 				}
 				break; // по этой стороне активный край уже найден
 			}
+		}
+
+		// Полный след состава огневых точек: тип активной стены и что реально
+		// построилось. По этой строке сразу видно «почему у бота нет пика».
+		if (CVarLOSDebug.GetValueOnAnyThread() > 0)
+		{
+			UE_LOG(LogXRU1Combat, Log,
+				TEXT("[LOS] FirePoints %s: n=%d (центр%s, боковых peek=%d), активная стена=%s (id=%lld), bestCover=%d"),
+				*GetNameSafe(Unit), OutEyePositions.Num(),
+				bStepUpAdded ? TEXT("+step-up") : TEXT(""),
+				OutEyePositions.Num() - (bStepUpAdded ? 2 : 1),
+				ActiveWallType == ECoverType::Full ? TEXT("Full")
+					: ActiveWallType == ECoverType::Half ? TEXT("Half") : TEXT("None?"),
+				Cover->ActiveCoverWallId, static_cast<int32>(Cover->BestCoverAround));
 		}
 		return;
 	}
@@ -917,7 +994,11 @@ EFiringStance UTacticsCombatStatics::GetFiringStance(const AActor* Shooter, cons
 			continue;
 		}
 
-		if (i == 0)
+		// Step-up точка (стрельба поверх полуукрытия) стоит на той же XY, что и
+		// центр — это НЕ боковой шаг: стойка для неё считается по тем же правилам
+		// «своего укрытия в сторону цели», что и для центра.
+		const bool bIsStepUp = i > 0 && FVector::Dist2D(Positions[i], EyeLocation) < 1.f;
+		if (i == 0 || bIsStepUp)
 		{
 			// ⚠️ ЗДЕСЬ НЕЛЬЗЯ звать GetCoverAgainst — это бесконечная рекурсия:
 			// GetCoverAgainst сам спрашивает GetFiringStance, чтобы узнать,

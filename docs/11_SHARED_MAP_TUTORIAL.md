@@ -221,10 +221,17 @@ StateTree-задачи в категории **XRU1 Tutorial**
 | Задача | Назначение | Ключевые поля |
 |---|---|---|
 | `Tactical Objective` | цель с проверкой payload | `ObjectiveId`, `EventChannel`, `bRequireExactChannel`, `RequiredCount`, `Description`, `RequiredSourceAnchor`, `RequiredTargetAnchor`, `bRequireDistinctSources` |
-| `Apply Action Gate` | держит политику шага, пока состояние активно | `Policy` (`AllowedActions`, `AllowedUnitAnchors`, `AllowedTargetAnchors`, `AllowedDestinationAnchors`, `DestinationTolerance`, `bSequentialDestinations`, `bLockGameplayInput`, `DenialReason`) |
+| `Apply Action Gate` | держит политику шага, пока состояние активно | `Policy` (`AllowedActions`, `AllowedUnitAnchors`, `AllowedTargetAnchors`, `AllowedDestinationAnchors`, `DestinationOwners`, `DestinationTolerance`, `bSequentialDestinations`, `bLockGameplayInput`, `DenialReason`) |
 | `Set Scenario Actor Active` | «проявление»/выключение staged-актора | `AnchorIds`, `bActive`, `bRestoreOnExit` |
 | `Scripted Shot` | сценарный выстрел через обычный pipeline | `ShooterAnchorId`, `TargetAnchorId`, `Shot` (шанс/урон), `Timeout` |
 | `Tutorial Beat` | реплика «Купола», субтитр, фокус камеры | `Beat` (`Speaker`, `Subtitle`, `Voice`, `FocusAnchorId`, `HighlightAnchorIds`, `Duration`) |
+| `Scripted Move` | постановочная перебежка бойца (свой/враг) к якорю вне обычного хода — **общим пайплайном перемещения**: occupancy-план + `MoveAlongRoute` + общий финиш (прижатие к укрытию, `EvaluateSurroundings`, доворот), так что cover-кэши и анимации те же, что при клике игрока; AP и quest-события движения не участвуют; прибытие = маршрут завершён И осадка закончена; камера сопровождает бегущего; невзятый сразу приказ повторяется каждые 0.5 с до `Timeout` | `UnitAnchorId`, `DestinationAnchorId`, `AcceptanceRadius`, `Timeout`, `bDrainActionPointsOnArrival`, `bCameraFollowUnit` |
+| `Force Next Shot` | форс СЛЕДУЮЩЕГО выстрела бойца игрока (учебные гарантированные попадания A8/B5) | `UnitAnchorId`, `Shot` |
+
+`Policy.DestinationOwners` (map «якорь точки → якорь бойца») закрепляет точку за
+конкретным бойцом: Танк не может занять точку Осы, маркеры показывают выбранному
+бойцу только его личные и общие точки, `bSequentialDestinations` открывает
+очередь точек НЕЗАВИСИМО по каждому владельцу.
 
 `Tactical Objective` полностью заменяет donor-овскую `Quest Objective` в
 tactical-шагах: она умеет всё то же самое плюс payload. Donor-задачи остаются
@@ -550,6 +557,76 @@ frame. До payload-aware task оставлять один exact objective на 
 проверять уничтожение actor через Action Gate/postcondition; не строить следом
 отдельный state, ожидающий уже отправленный `Enemy.Eliminated`.
 
+### 5.0 Режиссура v2 секций B–D (2026-07-31)
+
+Пользовательская правка сценария; таблицы v1 для B–D ниже (§5.4) считать
+устаревшими. Реплики — [02_LORE_SCRIPT.md](02_LORE_SCRIPT.md) §5 (v2).
+Секция A не менялась (Клин теперь активен и лежит Downed с самого старта —
+`bStartDeactivated=false`, `bStartDowned=true`; поднимается в A9 с 30 HP).
+
+| Состояние | Задачи (все Objectives — exact, все состояния — Tasks Completion=All) |
+|---|---|
+| `B0_EnterSector` | **Set Scenario Actor Active** №1: `[Unit_Tutorial_Tank, Unit_Tutorial_Sniper]`, bActive **true** — появляются к своей секции.<br>**Set Scenario Actor Active** №2: `[Unit_Tutorial_Medic, Unit_Tutorial_Assault]`, bActive **false** — секция A закончена, Медик и Клин уходят со сцены.<br>**Beat**: FocusAnchorId `Anchor_Camera_B`, реплика B0.<br>**Gate**: `[Select, Move]`, Units `[Unit_Tutorial_Tank, Unit_Tutorial_Sniper]`.<br>**Objective**: `Tutorial.B1`, канал `Zone.Entered`, Target `QZ_B1_Sector`, Count 2, Distinct **true**. |
+| `B1_EndTurn` | **Gate**: `[EndTurn]`.<br>**Objective**: канал `Turn.Ended`, Count 1. |
+| `B2a_AllyRetreat` | **Gate**: `bLockGameplayInput=true`.<br>**Set Scenario Actor Active**: `[Unit_Tutorial_Assault_B]`, bActive true.<br>**Beat**: реплика Кадета B2.<br>**Scripted Move**: Unit `Unit_Tutorial_Assault_B` (Кадет, 10 HP, до этого скрыт — включает Set Scenario Actor Active в этом же state) → `Point_B_AssaultRetreat`. |
+| `B2b_EnemyEnters` | **Gate**: lock.<br>**Set Scenario Actor Active**: `[Holo_B_Range]` (если стартует деактивированным).<br>**Scripted Move**: Unit `Holo_B_Range` → `Point_B_EnemySpot`.<br>**Objective**: канал `Turn.Player.Started`, Count 1. |
+| `B3_PairSetup` | **Gate**: `[Select, Move, ClassAbility]`, Units `[Tank, Sniper]`, Destinations `[Move_B_TankCover, Move_B_Sniper01, Move_B_Sniper02]`, **DestinationOwners**: `Move_B_TankCover→Unit_Tutorial_Tank`, `Move_B_Sniper01→Unit_Tutorial_Sniper`, `Move_B_Sniper02→Unit_Tutorial_Sniper`, `bSequentialDestinations=true` (очередь точек у каждого бойца своя: Танку — его укрытие, Осе — 01 затем 02), `DestinationTolerance=140` (диск 300 у точки Танка частично прятался за сплошной стеной от `Point_B_EnemySpot`).<br>Провокация до занятия точки отклоняется автоматически (`bRequirePositionBeforeActions`).<br>**Objective 1**: `Ability.Taunt.Activated`, Source Tank.<br>**Objective 2**: `Movement.Settled.Open`, Source Sniper, Count **2** (обе точки Осы — без укрытий рядом!).<br>**Objective 3**: `Movement.Settled.InCover`, Source Tank, Count 1. |
+| `B4_EnemyShot` | **Gate**: `[EndTurn]`.<br>**Scripted Shot**: `Holo_B_Range` → Tank, Hit 100, Damage 30 (провокация ополовинит своим GE).<br>**Objective**: `Turn.Player.Started`. |
+| `B5_SquadsightKill` | **Gate**: `[Select, Attack]`, Unit Sniper, Target Holo_B.<br>**Objective 1**: `Combat.Attack.Squadsight`, Source Sniper, Target Holo_B.<br>**Objective 2** (Id пустой): `Combat.Enemy.Eliminated`, Target Holo_B. |
+| `C0_PrepareAmbush` | **Beat**: реплика Осы «ещё один противник» (§02 C0).<br>**Set Scenario Actor Active**: `[Holo_D_Overwatch]` (его старт — дальше 2800 см от всех; патруль поведёт его позже).<br>**Gate**: `[Select, Move, Overwatch, Hunker, EndTurn]`, Units `[Tank, Unit_Tutorial_Assault_B]`, Destinations `[Move_C0_AssaultCover]`.<br>**Objective 1**: `Ability.Overwatch.Activated`, Source Tank.<br>**Objective 2**: `Movement.Settled.InCover`, Source `Unit_Tutorial_Assault_B`, Count 1.<br>**Objective 3**: `Ability.Hunker.Activated`, Source `Unit_Tutorial_Assault_B`.<br>**Objective 4**: `Turn.Ended`, Count 1. |
+| `C1_ReactionOnApproach` | **Gate**: `bLockGameplayInput=true`.<br>*Сближение делает ШТАТНЫЙ ход Holo_D: он не вскрыт, у него `PatrolPoints=[Point_D_Approach]` — патруль ведёт его в обзор Танка, Наблюдение стреляет (25 из 50 HP).* <br>**Objective 1**: `Combat.Attack.Overwatch`, Source Tank, Target Holo_D.<br>**Objective 2**: `Turn.Player.Started`, Count 1. |
+| `C2_HoldTheLine` | **Beat**: реплика C2 (оборона держит).<br>**Gate**: `[EndTurn]`.<br>**Scripted Shot** (арминг в фазу игрока — инвариант §5.3-3): Shooter `Holo_D_Overwatch`, Target `Unit_Tutorial_Assault_B`, Hit **0**, Damage 0 — промах по Глухой обороне.<br>**Objective**: `Turn.Ended`, Count 1. |
+| `C3_FlankKill` | **Beat**: реплика C3 (обход фланга).<br>**Gate**: `[Select, Move, ClassAbility, Attack]`, Unit `[Unit_Tutorial_Assault_B]`, Target `[Holo_D_Overwatch]`, Destinations `[Move_Flank_01, Move_Flank_02]`, `bSequentialDestinations`.<br>**Objective 1**: `Ability.RunAndGun.Activated`, Source `Unit_Tutorial_Assault_B`.<br>**Objective 2**: `Combat.Attack.Normal`, Source `Unit_Tutorial_Assault_B`, Target Holo_D.<br>**Objective 3** (Id пустой): `Combat.Enemy.Eliminated`, Target Holo_D. *(25 урона по оставшимся 25 HP.)* |
+| `C4_DefuseBomb` | **Set Scenario Actor Active**: `[Bomb_Tutorial]` (`RequiredActions=2` — «как в бою»).<br>**Beat**: реплика C4.<br>**Gate**: `[Select, Move, Interact, EndTurn]`, Unit `[Unit_Tutorial_Assault_B]`.<br>**Objective**: `Objective.Defuse.Completed`, Count 1 (HUD сам покажет 1/2 → 2/2). |
+| `D1_Evacuate` | **Set Scenario Actor Active**: включить `[Evac_Tutorial]` и evac-двойников дальних бойцов, выключить оригиналы (приём «отряд подтянулся»).<br>**Beat**: реплика D1.<br>**Gate**: `[Select, Move, Interact, EndTurn]`.<br>**Objective**: `Objective.Evac.Unit`, Count по числу живых, Distinct **true**. |
+| `WaitResult` | `Quest Wait Outcome` (exact Succeeded/Failed). |
+
+Вопрос Overwatch/Hunker закрыт в v2.1: урок встроен тактами C0–C2
+(Наблюдение Танка встречает подход, Глухая оборона Клина «съедает» выстрел).
+
+⚠️ Тонкость B2a/B2b: перебежки идут в ФАЗУ ВРАГА. `Scripted Move` двигает бойца
+напрямую (AP не тратятся, quest-события движения не публикуются), но Holo_B к
+началу своего хода уже должен иметь `SetScriptedAttackOrder`-приказ ЛИБО не
+иметь целей в обзоре — иначе его обычный AI-ход вклинится в постановку. Если
+голограмма начнёт «своевольничать», ставьте её активацию в B2b и держите её вне
+обзора отряда до этого шага.
+
+Новые акторы v2 (дополнить `SL_Showreel_Tutorial`):
+
+```text
+Bomb_Tutorial            (ABombObjective, RequiredActions=2 — «как в бою», bStartDeactivated)
+Point_B_AssaultRetreat   (якорь — куда отступает Клин)
+Point_B_EnemySpot        (якорь — куда выбегает Holo_B; «отмеченная точка»)
+Move_B_TankCover         (полуукрытие Танка: преграда 60–150 см, ≤120 см, между ним и Point_B_EnemySpot)
+Move_B_Sniper01/02       (две перебежки Осы; точка 02 — огневая: >2500 см от Point_B_EnemySpot, LOS ЧИСТАЯ, ≤5000)
+Anchor_Camera_B          (камера-фокус Beat'а B0)
+Move_C0_AssaultCover     (укрытие Клина под Глухую оборону: любая преграда ≤120 см)
+Point_D_Approach         (цель патруля Holo_D: в обзоре Танка ≤2500 и в его дальности ≤3000)
+Move_Flank_01/02         (обход фланга Клином; точка 02 — ВНЕ защитной дуги укрытия Holo_D)
+Holo_D_Overwatch         (на экземпляре: BaseMaxHealth=50 — реакция Танка 25 = «пол-HP»; PatrolPoints=[Point_D_Approach])
+Unit_Tutorial_Assault_B  (Кадет: BP_Unit_Assault, InitialHealth=10, bStartDeactivated;
+                          «другой штурмовик», выбегающий в B2a; ведёт секции C/D)
+Unit_*_Evac              (опц. двойники дальних бойцов у зоны эвакуации, bStartDeactivated)
+```
+
+Подсветка прямоугольной зоны шага: `Tactical Objective`, чей
+`RequiredTargetAnchor` — `ATacticalQuestZone`, автоматически включает декаль
+по габаритам её бокса (синяя рамка `M_TutorialZoneFrame`; материал/параметры —
+`DA_TacticalHUDStyle.TutorialZoneMarkerMaterial`) и гасит её на выходе из шага.
+
+Черновые позиции новых точек расставлены скриптом 2026-07-31 в валидной зоне —
+двигать свободно, AnchorId при перетаскивании сохраняется. Старые `Move_B2_01/02`
+и `Move_C2_01/02` (v1) в v2.1 не используются — можно удалить.
+
+⚠️ Тайминг пустой фазы врага: после смерти Holo_A/Holo_B живых врагов может не
+быть, тогда фаза врага возвращается мгновенно и постановочные перебежки
+(B2a/B2b) доигрываются уже под баннером «ВАШ ХОД» при закрытом вводе — states
+держатся задачами Scripted Move, порядок не ломается. В C1 сближение делает
+штатный ход Holo_D (патруль), поэтому там фаза врага полноценная.
+
+У раненых постановочных бойцов текущее HP задаётся на экземпляре полем
+`InitialHealth` (0 = полное); быстрый рантайм-инструмент — `SetHealthDirect`.
+
 ### 5.1 Actors в `SL_Showreel_Tutorial`
 
 Минимальный набор:
@@ -559,7 +636,7 @@ Units:
   Unit_Tutorial_Medic
   Unit_Tutorial_Tank
   Unit_Tutorial_Sniper
-  Unit_Tutorial_Assault        (до A9 hidden/inactive, затем Downed)
+  Unit_Tutorial_Assault        (v2: активен со старта, лежит Downed — bStartDowned)
 Holograms:
   Holo_A_OpenField
   Holo_B_Range
@@ -585,8 +662,9 @@ Anchors (AScenarioAnchorPoint):
 акторам только по нему. Для пустых точек ставьте готовый `AScenarioAnchorPoint`
 — компонент в нём уже есть, достаточно вписать `AnchorId`.
 
-`bStartDeactivated = true` ставится на `Holo_C_Cover`, `Holo_D_Overwatch` и
-`Unit_Tutorial_Assault`: они физически стоят на карте, но до своего шага скрыты,
+`bStartDeactivated = true` ставится на `Holo_C_Cover`, `Holo_D_Overwatch`,
+`Bomb_Tutorial` и evac-двойников (v2; Клин БОЛЬШЕ НЕ деактивирован — он лежит
+Downed с самого старта через `bStartDowned`): скрытые физически стоят на карте,
 без коллизии, не тикают и не входят в стороны боя. `Holo_A_OpenField` и
 `Holo_B_Range` активны с начала — они нужны уже в секции A/B.
 
@@ -840,6 +918,16 @@ StateTree описывает **что ждём**, но не должен сам 
 - допустимые target actors;
 - разрешённые destination anchors/zone; пройденная точка гаснет и повторно не
   разрешается, `bSequentialDestinations` открывает точки строго по одной;
+- `DestinationOwners` (map «точка → боец») закрепляет точку за бойцом: чужому
+  бойцу она запрещена и не подсвечивается, приход чужого её не «гасит», очередь
+  `bSequentialDestinations` считается по каждому владельцу независимо;
+- `bRequirePositionBeforeActions` (по умолчанию true): пока у бойца остаются
+  открытые точки шага, ему разрешены только Select/Move/EndTurn — способность
+  или выстрел «с полпути» ломали постановку следующего шага (Провокация из
+  чистого поля в B3 оставляла голограмму B4 без видимой цели);
+- `DestinationTolerance` — не только радиус клика, но и гарантия ПОЗИЦИИ для
+  следующих шагов: допуск должен целиком лежать в зоне, откуда постановка
+  работает (в B3 допуск 140 — диск 300 частично прятался за сплошной стеной);
 - в шаге с destination anchors приказ перемещения дороже 1 AP отклоняется:
   рывок «через точку» давал одно `Settled` вместо двух и вечные 1/2;
 - текст причины отказа для HUD (оверлей показывает его 3 секунды).
@@ -876,9 +964,16 @@ Description, выводится DenialReason политики. Description це�
 `DA_TacticalHUDStyle` → категория «07. Обучение | Подсказки» (без пересборки).
 
 Там же — `TutorialDestinationMarkerMaterial`: контроллер при каждой смене
-политики шага рисует декали-маркеры на всех `AllowedDestinationAnchors`
-(радиус = `DestinationTolerance` политики), перестраивает зону хода и
+политики шага (и при смене выбранного бойца) рисует декали-маркеры открытых
+`AllowedDestinationAnchors` — выбранный боец видит только свои личные и общие
+точки (радиус = `DestinationTolerance` политики), перестраивает зону хода и
 пересчитывает серость кнопок. Дефолтный материал — `M_SelectionRing`.
+
+Панель отряда HUD пересобирается в C++ при смене состава боя
+(`RebuildSquadPanel` в [TacticalHUDWidget.cpp](../Source/XRU1/UI/TacticalHUDWidget.cpp)):
+staged-бойцы (Танк/Оса в B0, Кадет в B2a) получают карточки, выключенные
+(Медик/Клин после A9) — теряют. BP строит панель один раз на Construct и сам
+состав не отслеживает.
 
 ### 9.1 Ручной минимум
 

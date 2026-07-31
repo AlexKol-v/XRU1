@@ -92,6 +92,8 @@ struct XRU1_API FTacticalTask_Objective : public FStateTreeTaskCommonBase
 		const FStateTreeTransitionResult& Transition) const override;
 	virtual EStateTreeRunStatus Tick(FStateTreeExecutionContext& Context,
 		const float DeltaTime) const override;
+	virtual void ExitState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
 };
 
 // --- Action Gate ---------------------------------------------------------------
@@ -273,6 +275,121 @@ struct XRU1_API FTacticalTask_TutorialBeat : public FStateTreeTaskCommonBase
 		const FStateTreeTransitionResult& Transition) const override;
 	virtual EStateTreeRunStatus Tick(FStateTreeExecutionContext& Context,
 		const float DeltaTime) const override;
+	virtual void ExitState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+};
+
+// --- Сценарное перемещение ------------------------------------------------------
+
+USTRUCT()
+struct FTacticalTask_ScriptedMoveInstanceData
+{
+	GENERATED_BODY()
+
+	/** AnchorId бойца (свой или враг), который побежит. */
+	UPROPERTY(EditAnywhere, Category = "Scripted")
+	FName UnitAnchorId;
+
+	/** AnchorId точки назначения (AScenarioAnchorPoint). */
+	UPROPERTY(EditAnywhere, Category = "Scripted")
+	FName DestinationAnchorId;
+
+	/** Радиус приёмки прибытия, см. */
+	UPROPERTY(EditAnywhere, Category = "Scripted", meta = (ClampMin = "30"))
+	float AcceptanceRadius = 120.f;
+
+	/** Провал шага, если боец не добежал за это время (сек). */
+	UPROPERTY(EditAnywhere, Category = "Scripted", meta = (ClampMin = "1"))
+	float Timeout = 30.f;
+
+	/**
+	 * Обнулить AP по прибытии: выбежавший статист («Кадет отступает») не должен
+	 * светить полными пипсами и оставаться формально боеспособным в этот ход.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Scripted")
+	bool bDrainActionPointsOnArrival = false;
+
+	/**
+	 * Камера сопровождает бегущего до прибытия. Автовозврат фокуса на отряд в
+	 * это время подавлен (режиссура владеет камерой, пока активен lock-шаг).
+	 */
+	UPROPERTY(EditAnywhere, Category = "Scripted")
+	bool bCameraFollowUnit = true;
+
+	UPROPERTY()
+	float ElapsedTime = 0.f;
+
+	UPROPERTY()
+	bool bOrderIssued = false;
+
+	UPROPERTY()
+	bool bCameraAttached = false;
+};
+
+/**
+ * Постановочная перебежка вне обычного хода: боец (союзник или враг) бежит к
+ * якорю по навигации, задача держит состояние до фактического прибытия.
+ * AP не тратятся и quest-события движения не публикуются — это режиссура
+ * («штурмовик отступает», «враг выбегает на позицию»), а не приказ игрока.
+ * Деактивированного актора сначала включает Set Scenario Actor Active.
+ */
+USTRUCT(meta = (DisplayName = "Scripted Move", Category = "XRU1 Tutorial"))
+struct XRU1_API FTacticalTask_ScriptedMove : public FStateTreeTaskCommonBase
+{
+	GENERATED_BODY()
+
+	FTacticalTask_ScriptedMove();
+
+	using FInstanceDataType = FTacticalTask_ScriptedMoveInstanceData;
+	virtual const UStruct* GetInstanceDataType() const override
+	{
+		return FInstanceDataType::StaticStruct();
+	}
+
+	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+	virtual EStateTreeRunStatus Tick(FStateTreeExecutionContext& Context,
+		const float DeltaTime) const override;
+	virtual void ExitState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+};
+
+// --- Форс следующего выстрела (гарантированные попадания игрока) ----------------
+
+USTRUCT()
+struct FTacticalTask_ForceNextShotInstanceData
+{
+	GENERATED_BODY()
+
+	/** AnchorId бойца, чей СЛЕДУЮЩИЙ выстрел форсится (обычно боец игрока). */
+	UPROPERTY(EditAnywhere, Category = "Scripted")
+	FName UnitAnchorId;
+
+	/** Числа форса: 100% — учебное «попадание гарантировано». */
+	UPROPERTY(EditAnywhere, Category = "Scripted")
+	FScriptedShotOverride Shot;
+};
+
+/**
+ * XCOM-туториал форсит ключевые выстрелы ИГРОКА: промах в A8/B5 иначе оставляет
+ * шаг без AP и без права End Turn. Задача взводит форс на входе в состояние и
+ * снимает непотраченный на выходе; сам выстрел игрок делает обычной атакой.
+ */
+USTRUCT(meta = (DisplayName = "Force Next Shot", Category = "XRU1 Tutorial"))
+struct XRU1_API FTacticalTask_ForceNextShot : public FStateTreeTaskCommonBase
+{
+	GENERATED_BODY()
+
+	FTacticalTask_ForceNextShot();
+
+	using FInstanceDataType = FTacticalTask_ForceNextShotInstanceData;
+	virtual const UStruct* GetInstanceDataType() const override
+	{
+		return FInstanceDataType::StaticStruct();
+	}
+
+	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
 	virtual void ExitState(FStateTreeExecutionContext& Context,
 		const FStateTreeTransitionResult& Transition) const override;
 };

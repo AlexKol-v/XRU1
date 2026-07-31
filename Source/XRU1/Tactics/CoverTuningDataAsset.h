@@ -89,6 +89,15 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cover|LOS", meta = (ClampMin = "0"))
 	float LosPeekOffset = 70.f;
 
+	/**
+	 * Подъём огневой точки над глазами при стрельбе ПОВЕРХ полуукрытия (XCOM
+	 * step-up, см). Глаза (пол+148) формально выше полустены, но LOS-сфера
+	 * толщиной LosSphereRadius у самого гребня цепляет её — юнит, прижатый к
+	 * мешкам, «не видел» цель, которую видел тонкий луч.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cover|LOS", meta = (ClampMin = "0"))
+	float OverCoverStepUpOffset = 40.f;
+
 	/** Шаг поиска края собственного укрытия (см). Меньше шаг — точнее найденный край (меньше «перелёта» мимо истинной границы). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cover|Peek", meta = (ClampMin = "5"))
 	float PeekEdgeStep = 15.f;

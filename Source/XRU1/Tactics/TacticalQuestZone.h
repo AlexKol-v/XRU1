@@ -23,6 +23,19 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Quest")
 	TObjectPtr<UBoxComponent> TriggerBox;
 
+	/**
+	 * Подсветка зоны на время шага, который её ждёт (декаль по размеру бокса).
+	 * Включает/выключает `Tactical Objective` c RequiredTargetAnchor этой зоны;
+	 * материал — `DA_TacticalHUDStyle.TutorialZoneMarkerMaterial`.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Quest")
+	void SetHighlighted(bool bNewHighlighted);
+
+protected:
+	/** Декаль подсветки; создаётся лениво при первом включении. */
+	UPROPERTY(Transient)
+	TObjectPtr<class UDecalComponent> HighlightDecal;
+
 	/** Точный канал Quest.Event.*, публикуемый после подтверждённого входа. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Quest", meta = (Categories = "Quest.Event"))
 	FGameplayTag EventChannel;

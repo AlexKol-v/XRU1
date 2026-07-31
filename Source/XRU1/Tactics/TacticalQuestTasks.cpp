@@ -1,14 +1,23 @@
 #include "TacticalQuestTasks.h"
 #include "XRU1Log.h"
 
+#include "ActionPointsComponent.h"
+#include "Animation/AnimInstance.h"
+#include "Animation/AnimMontage.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Engine/World.h"
 #include "GA_Attack.h"
+#include "Navigation/PathFollowingComponent.h"
 #include "QuestRunnerActor.h"
 #include "QuestTypes.h"
 #include "ScenarioActorRegistry.h"
 #include "StateTreeEvents.h"
 #include "StateTreeExecutionContext.h"
+#include "MoveRangeVisualizer.h"
+#include "TacticalCameraPawn.h"
+#include "TacticalPlayerController.h"
 #include "TacticalQuestEvents.h"
+#include "TacticalQuestZone.h"
 #include "UnitAIController.h"
 #include "UnitBase.h"
 
@@ -98,8 +107,35 @@ EStateTreeRunStatus FTacticalTask_Objective::EnterState(
 		*Inst.RequiredSourceAnchor.ToString(), *Inst.RequiredTargetAnchor.ToString(),
 		Inst.ScenarioRunId);
 
+	// Цель-зона подсвечивается на время шага: игрок видит, КУДА бежать,
+	// без отдельной задачи в дереве.
+	if (UTacticalScenarioSubsystem* Registry =
+			TacticalQuestTasks_Internal::GetScenarioRegistry(Context))
+	{
+		if (ATacticalQuestZone* Zone = Cast<ATacticalQuestZone>(
+				Registry->FindScenarioActor(Inst.RequiredTargetAnchor)))
+		{
+			Zone->SetHighlighted(true);
+		}
+	}
+
 	ReportTacticalObjective(Context, Inst);
 	return EStateTreeRunStatus::Running;
+}
+
+void FTacticalTask_Objective::ExitState(
+	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
+{
+	const FInstanceDataType& Inst = Context.GetInstanceData(*this);
+	if (UTacticalScenarioSubsystem* Registry =
+			TacticalQuestTasks_Internal::GetScenarioRegistry(Context))
+	{
+		if (ATacticalQuestZone* Zone = Cast<ATacticalQuestZone>(
+				Registry->FindScenarioActor(Inst.RequiredTargetAnchor)))
+		{
+			Zone->SetHighlighted(false);
+		}
+	}
 }
 
 EStateTreeRunStatus FTacticalTask_Objective::Tick(
@@ -409,5 +445,272 @@ void FTacticalTask_TutorialBeat::ExitState(
 		? World->GetSubsystem<UTutorialPresentationSubsystem>() : nullptr)
 	{
 		Presentation->FinishBeat();
+	}
+}
+
+// --- FTacticalTask_ScriptedMove -------------------------------------------------
+
+namespace
+{
+	/**
+	 * Выдать постановочную пробежку ОБЩИМ пайплайном перемещения: тот же
+	 * occupancy-aware план и тот же MoveAlongRoute, что у клика игрока, а значит
+	 * и общий финиш — прижатие к укрытию, EvaluateSurroundings, доворот.
+	 * AP и quest-события не участвуют: bTurnMoveInProgress/bPlayerOrderedMove
+	 * этим путём не взводятся. Прямой MoveToLocation остаётся только фолбэком —
+	 * он оставлял юнита с cover-кэшем от СТАРОЙ позиции (два источника правды).
+	 */
+	bool TryIssueScriptedRunOrder(AUnitBase* Unit, const AActor* Destination)
+	{
+		AUnitAIController* AI = Unit
+			? Cast<AUnitAIController>(Unit->GetController()) : nullptr;
+		if (!AI || !Destination)
+		{
+			return false;
+		}
+
+		UWorld* World = Unit->GetWorld();
+		ATacticalPlayerController* PlayerController = World
+			? Cast<ATacticalPlayerController>(World->GetFirstPlayerController()) : nullptr;
+		FMoveOrderPlan Plan;
+		if (PlayerController && PlayerController->PlanMoveForUnit(Unit,
+				Destination->GetActorLocation(), /*MaxActionPoints=*/9, Plan) &&
+			Plan.PathPoints.Num() >= 2)
+		{
+			if (AI->MoveAlongRoute(Plan.PathPoints, 20.f) ==
+				EPathFollowingRequestResult::RequestSuccessful)
+			{
+				return true;
+			}
+		}
+
+		// Цель вне общего плана (изолированный навмеш и т.п.) — прямой запрос.
+		const EPathFollowingRequestResult::Type Result = AI->MoveToLocation(
+			Destination->GetActorLocation(), 20.f,
+			/*bStopOnOverlap=*/false, /*bUsePathfinding=*/true);
+		return Result == EPathFollowingRequestResult::RequestSuccessful ||
+			Result == EPathFollowingRequestResult::AlreadyAtGoal;
+	}
+}
+
+FTacticalTask_ScriptedMove::FTacticalTask_ScriptedMove()
+{
+	bShouldCallTick = true;
+}
+
+EStateTreeRunStatus FTacticalTask_ScriptedMove::EnterState(
+	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
+{
+	FInstanceDataType& Inst = Context.GetInstanceData(*this);
+	Inst.ElapsedTime = 0.f;
+	Inst.bOrderIssued = false;
+	Inst.bCameraAttached = false;
+
+	UTacticalScenarioSubsystem* Registry =
+		TacticalQuestTasks_Internal::GetScenarioRegistry(Context);
+	AUnitBase* Unit = Registry
+		? Cast<AUnitBase>(Registry->FindScenarioActor(Inst.UnitAnchorId)) : nullptr;
+	const AActor* Destination = Registry
+		? Registry->FindScenarioActor(Inst.DestinationAnchorId) : nullptr;
+	if (!Unit || !Destination)
+	{
+		UE_LOG(LogXRU1Quest, Error,
+			TEXT("[Tutorial] Scripted Move: не найден боец %s или точка %s"),
+			*Inst.UnitAnchorId.ToString(), *Inst.DestinationAnchorId.ToString());
+		return EStateTreeRunStatus::Failed;
+	}
+
+	// «Выбегает из тумана» почти всегда означает деактивированного staged-актора:
+	// включаем сами — у выключенного не тикает movement, и приказ бежать молча
+	// висел бы до таймаута.
+	if (!UTacticalScenarioSubsystem::IsActorScenarioActive(Unit))
+	{
+		Registry->SetActorScenarioActive(Unit, true);
+		UE_LOG(LogXRU1Quest, Display,
+			TEXT("[Tutorial] Scripted Move: %s был деактивирован — включён автоматически"),
+			*Inst.UnitAnchorId.ToString());
+	}
+
+	// Приказ может не приняться с первого раза: только что включённый боец ещё
+	// «оседает» (settlement guard в MoveAlongRoute) или контроллер спавнится.
+	// Это не провал шага — Tick повторяет выдачу, Timeout общий.
+	Inst.bOrderIssued = TryIssueScriptedRunOrder(Unit, Destination);
+	if (!Inst.bOrderIssued)
+	{
+		UE_LOG(LogXRU1Quest, Display,
+			TEXT("[Tutorial] Scripted Move: приказ %s → %s не принят сразу — повторю"),
+			*Inst.UnitAnchorId.ToString(), *Inst.DestinationAnchorId.ToString());
+	}
+
+	// Камера сопровождает бегущего: игрок видит перебежку, а не пустую точку.
+	// Возврат фокуса на отряд в это время подавлен (lock-шаг владеет камерой).
+	if (Inst.bCameraFollowUnit)
+	{
+		if (const UWorld* World = TacticalQuestTasks_Internal::GetWorld(Context))
+		{
+			const APlayerController* PlayerController = World->GetFirstPlayerController();
+			if (ATacticalCameraPawn* Camera = PlayerController
+					? Cast<ATacticalCameraPawn>(PlayerController->GetPawn()) : nullptr)
+			{
+				Camera->SetFollowTarget(Unit);
+				Inst.bCameraAttached = true;
+			}
+		}
+	}
+	return EStateTreeRunStatus::Running;
+}
+
+EStateTreeRunStatus FTacticalTask_ScriptedMove::Tick(
+	FStateTreeExecutionContext& Context, const float DeltaTime) const
+{
+	FInstanceDataType& Inst = Context.GetInstanceData(*this);
+	Inst.ElapsedTime += DeltaTime;
+
+	UTacticalScenarioSubsystem* Registry =
+		TacticalQuestTasks_Internal::GetScenarioRegistry(Context);
+	const AUnitBase* Unit = Registry
+		? Cast<AUnitBase>(Registry->FindScenarioActor(Inst.UnitAnchorId)) : nullptr;
+	const AActor* Destination = Registry
+		? Registry->FindScenarioActor(Inst.DestinationAnchorId) : nullptr;
+	if (!Unit || !Destination)
+	{
+		return EStateTreeRunStatus::Failed;
+	}
+
+	// Диагностика «скольжения»: раз в секунду печатаем скорость и состояние
+	// анимации. Ключевые подозреваемые: не тикающий меш-компонент и застрявший
+	// full-body монтаж (он перекрывает локомоцию — пешка едет в замершей позе).
+	if (FMath::FloorToInt(Inst.ElapsedTime) != FMath::FloorToInt(Inst.ElapsedTime - DeltaTime))
+	{
+		const USkeletalMeshComponent* Mesh = Unit->GetMesh();
+		const UAnimInstance* Anim = Mesh ? Mesh->GetAnimInstance() : nullptr;
+		const UAnimMontage* Montage = Anim ? Anim->GetCurrentActiveMontage() : nullptr;
+		UE_LOG(LogXRU1Quest, Display,
+			TEXT("[Tutorial] Scripted Move %s: vel=%.0f animClass=%s meshTick=%d pause=%d visTick=%d montage=%s globalRate=%.2f"),
+			*Inst.UnitAnchorId.ToString(),
+			Unit->GetVelocity().Size2D(),
+			Anim ? *Anim->GetClass()->GetName() : TEXT("НЕТ"),
+			Mesh && Mesh->IsComponentTickEnabled() ? 1 : 0,
+			Mesh && Mesh->bPauseAnims ? 1 : 0,
+			Mesh ? static_cast<int32>(Mesh->VisibilityBasedAnimTickOption) : -1,
+			Montage ? *Montage->GetName() : TEXT("-"),
+			Mesh ? Mesh->GlobalAnimRateScale : -1.f);
+	}
+
+	// Приказ ещё не принят (боец оседал/контроллер спавнился) — повторяем
+	// каждые полсекунды, пока не примется или не истечёт Timeout.
+	if (!Inst.bOrderIssued &&
+		FMath::FloorToInt(Inst.ElapsedTime * 2.f) != FMath::FloorToInt((Inst.ElapsedTime - DeltaTime) * 2.f))
+	{
+		Inst.bOrderIssued = TryIssueScriptedRunOrder(
+			const_cast<AUnitBase*>(Unit), Destination);
+	}
+
+	const AAIController* Controller = Cast<AAIController>(Unit->GetController());
+	const bool bMoveIdle = !Controller ||
+		Controller->GetMoveStatus() != EPathFollowingStatus::Moving;
+	// Прибытие = маршрут завершён И осадка (подшаг к стене, доворот) закончена:
+	// раньше задача выходила до прижатия, и укрытие оставалось от старой позиции.
+	if (Inst.bOrderIssued && bMoveIdle && !Unit->IsMoveSettlementInProgress() &&
+		FVector::Dist2D(Unit->GetActorLocation(), Destination->GetActorLocation())
+		<= Inst.AcceptanceRadius)
+	{
+		if (Inst.bDrainActionPointsOnArrival)
+		{
+			if (UActionPointsComponent* ActionPoints =
+					const_cast<AUnitBase*>(Unit)->GetActionPoints())
+			{
+				ActionPoints->SpendAllRemaining();
+			}
+		}
+		return EStateTreeRunStatus::Succeeded;
+	}
+
+	if (Inst.ElapsedTime >= Inst.Timeout)
+	{
+		UE_LOG(LogXRU1Quest, Error,
+			TEXT("[Tutorial] Scripted Move: %s не добежал до %s за %.1f с"),
+			*GetNameSafe(Unit), *Inst.DestinationAnchorId.ToString(), Inst.Timeout);
+		return EStateTreeRunStatus::Failed;
+	}
+	return EStateTreeRunStatus::Running;
+}
+
+void FTacticalTask_ScriptedMove::ExitState(
+	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
+{
+	// Камера и остановка НЕ прячутся за bOrderIssued: follow цепляется на входе
+	// независимо от принятия приказа, и не отпущенный при раннем выходе follow
+	// оставался бы на бойце навсегда.
+	FInstanceDataType& Inst = Context.GetInstanceData(*this);
+	// Недобежавшего останавливаем: чужой шаг не должен получить бегущего бойца.
+	UTacticalScenarioSubsystem* Registry =
+		TacticalQuestTasks_Internal::GetScenarioRegistry(Context);
+	AUnitBase* Unit = Registry
+		? Cast<AUnitBase>(Registry->FindScenarioActor(Inst.UnitAnchorId)) : nullptr;
+	if (AAIController* Controller = Unit ? Cast<AAIController>(Unit->GetController()) : nullptr;
+		Controller && Inst.bOrderIssued)
+	{
+		Controller->StopMovement();
+	}
+
+	// Камеру отпускаем строго парно к своему SetFollowTarget: следующий шаг
+	// (второй Scripted Move или Beat) сразу поставит свой фокус поверх.
+	if (Inst.bCameraAttached)
+	{
+		if (const UWorld* World = TacticalQuestTasks_Internal::GetWorld(Context))
+		{
+			const APlayerController* PlayerController = World->GetFirstPlayerController();
+			if (ATacticalCameraPawn* Camera = PlayerController
+					? Cast<ATacticalCameraPawn>(PlayerController->GetPawn()) : nullptr)
+			{
+				Camera->ClearFollowTarget();
+			}
+		}
+	}
+}
+
+// --- FTacticalTask_ForceNextShot ------------------------------------------------
+
+FTacticalTask_ForceNextShot::FTacticalTask_ForceNextShot()
+{
+	// Взводит форс и сразу Succeeded: состояние держат objectives шага.
+	bShouldCallTick = false;
+	bShouldCallTickOnlyOnEvents = false;
+}
+
+EStateTreeRunStatus FTacticalTask_ForceNextShot::EnterState(
+	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
+{
+	const FInstanceDataType& Inst = Context.GetInstanceData(*this);
+	UTacticalScenarioSubsystem* Registry =
+		TacticalQuestTasks_Internal::GetScenarioRegistry(Context);
+	AUnitBase* Unit = Registry
+		? Cast<AUnitBase>(Registry->FindScenarioActor(Inst.UnitAnchorId)) : nullptr;
+	if (!Unit)
+	{
+		UE_LOG(LogXRU1Quest, Error, TEXT("[Tutorial] Force Next Shot: боец %s не найден"),
+			*Inst.UnitAnchorId.ToString());
+		return EStateTreeRunStatus::Failed;
+	}
+	// Цель не фиксируем: игрок выбирает её сам, gate уже сузил допустимых.
+	Unit->SetPendingScriptedShot(Inst.Shot, nullptr);
+	UE_LOG(LogXRU1Quest, Display,
+		TEXT("[Tutorial] Force Next Shot: следующий выстрел %s форсирован (hit=%.0f)"),
+		*Inst.UnitAnchorId.ToString(), Inst.Shot.HitChancePercent);
+	return EStateTreeRunStatus::Succeeded;
+}
+
+void FTacticalTask_ForceNextShot::ExitState(
+	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
+{
+	const FInstanceDataType& Inst = Context.GetInstanceData(*this);
+	UTacticalScenarioSubsystem* Registry =
+		TacticalQuestTasks_Internal::GetScenarioRegistry(Context);
+	if (AUnitBase* Unit = Registry
+		? Cast<AUnitBase>(Registry->FindScenarioActor(Inst.UnitAnchorId)) : nullptr)
+	{
+		// Непотраченный форс не должен утечь в следующий шаг.
+		Unit->ClearPendingScriptedShot();
 	}
 }

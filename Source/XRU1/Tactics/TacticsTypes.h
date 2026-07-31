@@ -64,7 +64,9 @@ enum class EAttackTargetStatus : uint8
 	NotHostile     UMETA(DisplayName = "Не враг"),
 	Dead           UMETA(DisplayName = "Цель мертва"),
 	OutOfRange     UMETA(DisplayName = "Слишком далеко"),
-	NoLineOfSight  UMETA(DisplayName = "Нет линии огня")
+	NoLineOfSight  UMETA(DisplayName = "Нет линии огня"),
+	/** Геометрия чиста, но цель дальше собственного обзора, а прицела отряда нет. */
+	OutOfSight     UMETA(DisplayName = "Цель вне обзора")
 };
 
 /**

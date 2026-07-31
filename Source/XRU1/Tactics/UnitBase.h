@@ -61,6 +61,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|Stats", meta = (ClampMin = "1"))
 	float BaseMaxHealth = 100.f;
 
+	/**
+	 * Стартовое ТЕКУЩЕЕ здоровье экземпляра (0 = полное). Постановка туториала
+	 * выводит «потрёпанного» бойца сразу раненым, не трогая его максимум.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|Stats",
+		meta = (ClampMin = "0"))
+	float InitialHealth = 0.f;
+
 	/** Базовый шанс попадания до модификаторов укрытия, %. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tactics|Stats", meta = (ClampMin = "0", ClampMax = "100"))
 	float BaseAim = 75.f;
@@ -177,6 +185,13 @@ public:
 	/** Поднимает тяжело раненого с указанным HP (обёртка для медика). */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|State")
 	void ReviveFromDowned(float ReviveHealth = 30.f) { SetDowned(false, ReviveHealth); }
+
+	/**
+	 * Прямо задать текущее HP (кламп 1..Max — смерть этим способом не наносится,
+	 * для неё есть боевой pipeline). Инструмент постановки туториала и отладки.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|State")
+	void SetHealthDirect(float NewHealth);
 
 	/** Эвакуация: юнит покидает поле боя (скрывается, выбывает из очереди). */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|State")

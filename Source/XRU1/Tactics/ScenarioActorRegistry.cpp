@@ -3,6 +3,7 @@
 
 #include "Components/BillboardComponent.h"
 #include "Components/SceneComponent.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "Engine/World.h"
 #include "GameFramework/Controller.h"
 #include "TurnManagerSubsystem.h"
@@ -151,14 +152,19 @@ bool UTacticalScenarioSubsystem::IsActorScenarioActive(const AActor* Actor)
 int32 UTacticalScenarioSubsystem::SetScenarioActorActive(FName AnchorId, bool bActive)
 {
 	int32 Changed = 0;
+	int32 Found = 0;
 	for (AActor* Actor : FindScenarioActors(AnchorId))
 	{
+		++Found;
 		if (SetActorScenarioActive(Actor, bActive))
 		{
 			++Changed;
 		}
 	}
-	if (Changed == 0)
+	// Warning только когда якоря действительно нет: «актор уже в нужном
+	// состоянии» — штатная ситуация (пример: Клин активен с самого старта,
+	// а шаг на всякий случай включает его ещё раз).
+	if (Found == 0)
 	{
 		UE_LOG(LogXRU1Scenario, Warning, TEXT("[Scenario] SetScenarioActorActive: AnchorId %s не найден"),
 			*AnchorId.ToString());
@@ -213,6 +219,15 @@ bool UTacticalScenarioSubsystem::SetActorScenarioActive(AActor* Actor, bool bAct
 		if (bActive)
 		{
 			ApplyStartDowned(Component);
+
+			// Меш, долго простоявший скрытым, с дефолтной оптимизацией «тикать
+			// позу только когда отрендерен» начинает движение «скольжением»:
+			// первый же бег включённого staged-бойца требует полного тика позы.
+			if (USkeletalMeshComponent* Mesh = Unit->GetMesh())
+			{
+				Mesh->VisibilityBasedAnimTickOption =
+					EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+			}
 		}
 	}
 

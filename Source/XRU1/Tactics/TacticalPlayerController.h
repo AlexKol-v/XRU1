@@ -173,6 +173,13 @@ public:
 	FText GetTutorialDenialText() const;
 
 	/**
+	 * Сценарий поставил стартовую камеру (InitialCameraAnchorId): первый
+	 * автофокус на центр отряда при старте боя пропускается, ракурс — за
+	 * режиссурой. Зовёт ATacticalScenarioDirector после телепорта камеры.
+	 */
+	void NotifyScenarioCameraPlaced() { bScenarioCameraPlaced = true; }
+
+	/**
 	 * Сообщить UI, что набор доступных действий мог измениться извне (открылась
 	 * зона эвакуации, скрипт туториала сдвинул мир). Зовут GameMode и level BP —
 	 * HUD пересчитает серость кнопок без ожидания следующего события боя.
@@ -548,9 +555,30 @@ protected:
 	/** Живые декали-маркеры точек назначения текущего шага. */
 	TArray<TWeakObjectPtr<class UDecalComponent>> TutorialDestinationMarkers;
 
+	/** Круг дальности способности на время Ability-targeting. */
+	TWeakObjectPtr<class UDecalComponent> AbilityRangeDecal;
+
+	/** Цели, подсвеченные кольцом на время Ability-targeting. */
+	TArray<TWeakObjectPtr<AUnitBase>> AbilityHighlightedTargets;
+
+	/** Круг радиуса + подсветка валидных целей при входе в Ability-режим. */
+	void BeginAbilityTargetingVisuals();
+	void ClearAbilityTargetingVisuals();
+
 	/** Последний отказ Action Gate — оверлей показывает его 3 секунды. */
 	FText LastDenialReason;
 	float LastDenialTimeSeconds = -100.f;
+
+	/** Стартовую камеру поставил сценарий — не перебивать автофокусом отряда. */
+	bool bScenarioCameraPlaced = false;
+
+	/**
+	 * Прошлая политика шага была lock-постановкой. Переход lock → не-lock
+	 * возвращает камеру игроку (к выбранному бойцу или отряду): во время
+	 * постановки все автовозвраты фокуса подавлены, и без этого перехода
+	 * камера оставалась бы там, где закончилась режиссура.
+	 */
+	bool bTutorialPolicyWasLock = false;
 
 	/**
 	 * Автоматически завершать ход игрока, когда AP не осталось НИ У КОГО из

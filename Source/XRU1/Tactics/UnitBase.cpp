@@ -155,6 +155,21 @@ void AUnitBase::PlayUnitSound(EUnitSoundEvent Event)
 	}
 }
 
+void AUnitBase::SetHealthDirect(float NewHealth)
+{
+	const float Clamped = FMath::Clamp(NewHealth, 1.f, GetMaxHealth());
+	if (UAbilitySystemComponent* ASC = GetAbilitySystemComponent())
+	{
+		ASC->SetNumericAttributeBase(UTDAttributeSet::GetHealthAttribute(), Clamped);
+	}
+	else if (Attributes)
+	{
+		Attributes->InitHealth(Clamped);
+	}
+	// HUD/портреты обязаны увидеть новое значение немедленно.
+	NotifyUnitStateChanged();
+}
+
 void AUnitBase::SetPendingScriptedShot(const FScriptedShotOverride& Override, AActor* ScriptedTarget)
 {
 	PendingScriptedShot = Override;
@@ -804,17 +819,21 @@ void AUnitBase::PostInitializeComponents()
 	// В APawn Super::PostInitializeComponents() создаёт default controller, а
 	// PossessedBy затем применяет StartupEffects. Поэтому базу GAS намеренно
 	// задаём ДО Super: будущие стартовые эффекты модифицируют её, а не стираются.
-	const float InitialHealth = FMath::Max(1.f, BaseMaxHealth);
+	const float StartMaxHealth = FMath::Max(1.f, BaseMaxHealth);
+	// InitialHealth > 0 — постановочный экземпляр стартует раненым (кламп 1..Max).
+	const float StartHealth = InitialHealth > 0.f
+		? FMath::Clamp(InitialHealth, 1.f, StartMaxHealth)
+		: StartMaxHealth;
 	if (UAbilitySystemComponent* ASC = GetAbilitySystemComponent())
 	{
-		ASC->SetNumericAttributeBase(UTDAttributeSet::GetMaxHealthAttribute(), InitialHealth);
-		ASC->SetNumericAttributeBase(UTDAttributeSet::GetHealthAttribute(), InitialHealth);
+		ASC->SetNumericAttributeBase(UTDAttributeSet::GetMaxHealthAttribute(), StartMaxHealth);
+		ASC->SetNumericAttributeBase(UTDAttributeSet::GetHealthAttribute(), StartHealth);
 	}
 	else if (Attributes)
 	{
 		// Защитный fallback для нестандартного наследника без ASC.
-		Attributes->InitMaxHealth(InitialHealth);
-		Attributes->InitHealth(InitialHealth);
+		Attributes->InitMaxHealth(StartMaxHealth);
+		Attributes->InitHealth(StartHealth);
 	}
 
 	Super::PostInitializeComponents();

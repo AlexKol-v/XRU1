@@ -59,6 +59,15 @@ public:
 	UFUNCTION(BlueprintNativeEvent, BlueprintPure, Category = "Tactics|Targeting")
 	bool IsValidTargetActor(AUnitBase* SourceUnit, AActor* TargetActor) const;
 
+	/**
+	 * Дальность выбора цели, см (0 — не показывать). HUD рисует круг этого
+	 * радиуса вокруг бойца на время targeting-режима: игрок видит, кого может
+	 * достать, ДО клика — как подсказка радиуса аптечки в XCOM.
+	 */
+	UFUNCTION(BlueprintNativeEvent, BlueprintPure, Category = "Tactics|Targeting")
+	float GetTargetingRange() const;
+	virtual float GetTargetingRange_Implementation() const { return 0.f; }
+
 	/** Осталось применений в этой миссии (реплика UI; -1 = без лимита). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Cost")
 	int32 GetUsesRemaining() const { return MaxUsesPerMission > 0 ? UsesRemaining : -1; }

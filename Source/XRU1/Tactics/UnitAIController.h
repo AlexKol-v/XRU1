@@ -712,6 +712,9 @@ protected:
 	 */
 	TArray<TWeakObjectPtr<AActor>> FailedAttackTargetsThisTurn;
 
+	/** Сценарное сближение с невидимой целью уже пробовали в этом ходу. */
+	bool bScriptedRepositionTried = false;
+
 	/**
 	 * Манёвр в укрытие в этом ходу уже ВЫБРАН. Один выбор на ход (XCOM:
 	 * переместился — стреляй): без флага открытый юнит, не нашедший идеального

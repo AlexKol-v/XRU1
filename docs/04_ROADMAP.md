@@ -87,13 +87,22 @@
       и маркеры точек, «AP>1 через точку», симметрия LOS Ф5
       ([13_LOS_TARGETING.md](13_LOS_TARGETING.md)), привязка scripted-форса к
       цели, quest registry: скан AssetManager расширен на `/Data`.
-- [ ] Довести позиции сценарных акторов секций B–D глазами (ракурсы, дистанции,
-      точность full/half cover) — чек-лист §13.0; B-актёры сейчас вне арены.
-- [ ] Собрать в `ST_Quest_Tutorial` секции B–D (B1–D3) по
-      [11_SHARED_MAP_TUTORIAL.md](11_SHARED_MAP_TUTORIAL.md) §5.4.
+- [x] Ревизия способностей (2026-07-31): Heal — радиус 200 см «вплотную», круг
+      радиуса + подсветка целей + причины отказа; Squadsight — модель XCOM 2
+      (обнаружение союзником, геометрия обязательна, статус «Цель вне обзора»);
+      `InitialHealth` на экземпляре, `SetHealthDirect`, задача `Scripted Move`.
+- [x] Режиссура v2.1 принята (2026-07-31): Overwatch/Hunker встроены тактами
+      C0–C2, фланг+Run&Gun добивает (C3), бомба на 2 действия (C4). Черновые
+      v2.1-акторы созданы скриптом, Holo_D настроен (HP 50, патруль), якорь
+      камеры починен (label ≠ AnchorId — теперь совпадают).
+- [ ] Выверить позиции v2.1-акторов глазами по [12 §2](12_TUTORIAL_LAYOUT_SPEC.md)
+      и собрать состояния B0–D1 в `ST_Quest_Tutorial` по [11 §5.0](11_SHARED_MAP_TUTORIAL.md).
+- [ ] Сгенерировать озвучку реплик v2 (список — [02 §6.1](02_LORE_SCRIPT.md)).
 - [ ] Заполнить `ST_Quest_Mission01` по §6.2.
 - [ ] Исправить `NavData RegistrationFailed_AgentNotValid` и пересобрать Paths.
-- [ ] Найти и убрать `SpawnActor` с пустым Class; исправить/заменить `MM_Sky` SM6.
+- [x] Найти и убрать `SpawnActor` с пустым Class (это был `HUDClass=None` в
+      `GM_Tactics` — движок спавнил AHUD без класса; назначен базовый
+      `/Script/Engine.HUD`, 2026-07-31). Осталось: исправить/заменить `MM_Sky` SM6.
 - [ ] Сделать два сквозных PIE-прогона как два чистых запуска одного persistent
       map package `Main_Map_Showreel`, включая retry/abort и отсутствие состояния
       предыдущего runtime World.

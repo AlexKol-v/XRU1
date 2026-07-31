@@ -120,16 +120,27 @@ EAttackTargetStatus UGA_Attack::GetTargetStatus(const AUnitBase* Shooter, const 
 		return EAttackTargetStatus::OutOfRange;
 	}
 
-	// Прямая видимость либо Squadsight (цель видит любой союзник снайпера).
-	if (UTacticsCombatStatics::HasLineOfSight(Shooter, Target))
+	// Геометрическая линия огня обязательна ВСЕГДА — сквозь стены не стреляет
+	// никто (модель XCOM 2). Squadsight ниже расширяет только ОБНАРУЖЕНИЕ,
+	// а не геометрию.
+	if (!UTacticsCombatStatics::HasLineOfSight(Shooter, Target))
 	{
-		return EAttackTargetStatus::Valid;
+		return EAttackTargetStatus::NoLineOfSight;
 	}
-	if (Shooter->bHasSquadsight && UTacticsCombatStatics::SquadHasLineOfSight(Shooter, Target))
+
+	// Обнаружение: цель в СОБСТВЕННОМ обзоре бойца (тот же радиус, что у тумана
+	// войны), либо «Прицел отряда» — цель дальше своего обзора, но её видит
+	// любой союзник. Так снайпер бьёт через полкарты по вскрытым отрядом целям,
+	// но никогда — по тем, кого не видит никто.
+	if (Distance > UTacticsCombatStatics::SquadVisionRange)
 	{
-		return EAttackTargetStatus::Valid;
+		if (!Shooter->bHasSquadsight ||
+			!UTacticsCombatStatics::SquadHasLineOfSight(Shooter, Target))
+		{
+			return EAttackTargetStatus::OutOfSight;
+		}
 	}
-	return EAttackTargetStatus::NoLineOfSight;
+	return EAttackTargetStatus::Valid;
 }
 
 bool UGA_Attack::CanTargetActor(const AUnitBase* Shooter, const AActor* Target)
@@ -246,9 +257,11 @@ void UGA_Attack::ActivateAbility(
 		return;
 	}
 
-	const bool bUsedSquadsight = !UTacticsCombatStatics::HasLineOfSight(Shooter, Target)
-		&& Shooter->bHasSquadsight
-		&& UTacticsCombatStatics::SquadHasLineOfSight(Shooter, Target);
+	// Squadsight-выстрел = цель дальше собственного обзора (обнаружена союзником);
+	// геометрию и союзную видимость уже гарантировал GetTargetStatus выше.
+	const bool bUsedSquadsight = Shooter->bHasSquadsight &&
+		FVector::Dist(Shooter->GetActorLocation(), Target->GetActorLocation())
+			> UTacticsCombatStatics::SquadVisionRange;
 	FireAction.Begin(Shooter, Target, FiringEyeLocation, ResolvedHitChance,
 		ResolvedDamage, Shooter->AttackRange, DamageEffect, ActionPointsBefore);
 	const UCoverDetectionComponent* Cover = Shooter->GetCoverDetection();
@@ -580,17 +593,11 @@ bool UGA_Attack::IsFrozenFireCommitValid() const
 	{
 		return false;
 	}
-	if (UTacticsCombatStatics::HasLineOfSightFromFrozenOrigin(
-		Shooter->GetWorld(), FireAction.FiringEyeLocation, Target))
-	{
-		return true;
-	}
-
-	// Squadsight — зафиксированное правило именно этой транзакции. Мы не
-	// превращаем обычный выстрел в Squadsight задним числом, но сохраняем
-	// разрешённый GDD путь, если союзник всё ещё видит живую цель на commit.
-	return FireAction.bUsedSquadsight && Shooter->bHasSquadsight
-		&& UTacticsCombatStatics::SquadHasLineOfSight(Shooter, Target);
+	// Геометрия из замороженной позиции обязательна для ЛЮБОГО выстрела —
+	// squadsight расширяет обнаружение, а не разрешает стрелять сквозь стены
+	// (модель XCOM 2). Отдельной squadsight-ветки без геометрии больше нет.
+	return UTacticsCombatStatics::HasLineOfSightFromFrozenOrigin(
+		Shooter->GetWorld(), FireAction.FiringEyeLocation, Target);
 }
 
 void UGA_Attack::NotifyShotPresentation(AActor* Shooter, AActor* Target) const

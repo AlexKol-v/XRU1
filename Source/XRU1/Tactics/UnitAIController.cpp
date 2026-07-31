@@ -353,6 +353,7 @@ void AUnitAIController::ExecuteUnitTurn(FSimpleDelegate OnFinished)
 	bManeuverInProgress = false;
 	DecisionOrdinalThisTurn = 0;
 	FailedAttackTargetsThisTurn.Reset(); // новый ход — новые попытки
+	bScriptedRepositionTried = false;
 	AdvanceTurnStep();
 }
 
@@ -402,16 +403,63 @@ void AUnitAIController::AdvanceTurnStep()
 	// через тот же GA_Attack, поэтому урон, montage и FireCommit — настоящие.
 	if (AActor* ScriptedTarget = ScriptedAttackTarget.Get())
 	{
-		ClearScriptedAttackOrder();
-		if (UTacticsCombatStatics::IsUnitAlive(ScriptedTarget) &&
-			TryFireAtTarget(Unit, ScriptedTarget))
+		if (!UTacticsCombatStatics::IsUnitAlive(ScriptedTarget))
 		{
+			ClearScriptedAttackOrder();
+		}
+		else if (TryFireAtTarget(Unit, ScriptedTarget))
+		{
+			ClearScriptedAttackOrder();
 			ScheduleNextStep();
 			return;
 		}
-		UE_LOG(LogXRU1AI, Error,
-			TEXT("[AI] %s: сценарный выстрел по %s не активировался — шаг обучения не закроется"),
-			*GetNameSafe(Unit), *GetNameSafe(ScriptedTarget));
+		else if (!bScriptedRepositionTried)
+		{
+			// Из текущей позиции линии огня нет (расстановка со свободным допуском
+			// это допускает). Приказ НЕ снимается: боец штатным манёвром хода
+			// сближается с целью — навигация сама огибает стену, — и следующий
+			// шаг этого же хода повторяет выстрел. Один ретрай за ход.
+			bScriptedRepositionTried = true;
+			FailedAttackTargetsThisTurn.Remove(ScriptedTarget);
+			UE_LOG(LogXRU1AI, Warning,
+				TEXT("[AI] %s: сценарной цели %s не видно — сближаюсь и повторю выстрел"),
+				*GetNameSafe(Unit), *GetNameSafe(ScriptedTarget));
+			// Сама позиция цели занята её же occupancy-диском — планировщик такую
+			// точку честно отвергает. Выталкиваем цель манёвра из дисков юнитов.
+			FVector ApproachGoal = ScriptedTarget->GetActorLocation();
+			UTacticsCombatStatics::AdjustGoalOutOfUnits(GetWorld(), Unit, ApproachGoal);
+			if (StartManeuverTo(Unit, ApproachGoal, TEXT("сценарное сближение")))
+			{
+				return;
+			}
+			// Полный маршрут не влез в бюджет AP (цель за длинным обходом) —
+			// частичный шаг: точка на навмеш-пути к цели в пределах досягаемости.
+			// Следующий ход повторит выстрел уже с более близкой позиции.
+			FVector PartialGoal;
+			if (UTacticsCombatStatics::GetPointAlongPathBudget(this, Unit,
+					Unit->GetActorLocation(), ApproachGoal,
+					Unit->MoveRange * FMath::Max(1,
+						Unit->GetActionPoints() ? Unit->GetActionPoints()->CurrentActionPoints : 1),
+					PartialGoal) &&
+				UTacticsCombatStatics::AdjustGoalOutOfUnits(GetWorld(), Unit, PartialGoal) &&
+				FVector::Dist2D(PartialGoal, Unit->GetActorLocation()) > 100.f &&
+				StartManeuverTo(Unit, PartialGoal, TEXT("сценарное сближение (частичный шаг)")))
+			{
+				return;
+			}
+			ClearScriptedAttackOrder();
+			UE_LOG(LogXRU1AI, Error,
+				TEXT("[AI] %s: сценарное сближение с %s не началось (маршрут не найден "
+					 "даже частично) — шаг обучения не закроется"),
+				*GetNameSafe(Unit), *GetNameSafe(ScriptedTarget));
+		}
+		else
+		{
+			ClearScriptedAttackOrder();
+			UE_LOG(LogXRU1AI, Error,
+				TEXT("[AI] %s: сценарный выстрел по %s невозможен даже после сближения — шаг обучения не закроется"),
+				*GetNameSafe(Unit), *GetNameSafe(ScriptedTarget));
+		}
 	}
 
 	// Видимая цель мгновенно поднимает red alert (перцепция могла отстать на кадр).
@@ -1648,6 +1696,7 @@ UTacticalAIDirectorSubsystem* AUnitAIController::GetAIDirector() const
 void AUnitAIController::SetScriptedAttackOrder(AActor* Target)
 {
 	ScriptedAttackTarget = Target;
+	bScriptedRepositionTried = false;
 }
 
 void AUnitAIController::ClearScriptedAttackOrder()
@@ -1811,7 +1860,7 @@ void AUnitAIController::TryFinalizeMoveSettlement()
 		// а не по факту выдачи приказа: отменённое перемещение маршрут не двигает.
 		if (UTutorialActionGateSubsystem* Gate = UTutorialActionGateSubsystem::Get(this))
 		{
-			Gate->NotifyDestinationReached(Unit->GetActorLocation());
+			Gate->NotifyDestinationReached(Unit->GetActorLocation(), Unit);
 		}
 	}
 
