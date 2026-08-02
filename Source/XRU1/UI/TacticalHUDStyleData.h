@@ -9,6 +9,7 @@
 
 class AUnitBase;
 class UMaterialInterface;
+class UMediaPlayer;
 class UMediaSource;
 class UTexture2D;
 
@@ -401,6 +402,13 @@ public:
 	/** Материал с MediaTexture для Image в WBP_IntroPlayer. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "04. Экраны|Интро")
 	TSoftObjectPtr<UMaterialInterface> IntroVideoMaterial;
+
+	/**
+	 * Media Player, к которому привязана MediaTexture материала выше. Без него
+	 * ролик не воспроизвести: текстура получает кадры только от своего плеера.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "04. Экраны|Интро")
+	TSoftObjectPtr<UMediaPlayer> IntroMediaPlayer;
 
 	// --- Размеры отдельных элементов ----------------------------------------
 

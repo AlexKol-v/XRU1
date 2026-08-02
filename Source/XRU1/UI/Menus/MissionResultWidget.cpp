@@ -1,5 +1,6 @@
 #include "MissionResultWidget.h"
 #include "TacticsGameInstance.h"
+#include "TacticsAudioSubsystem.h"
 #include "TacticalScenarioDataAsset.h"
 #include "TacticalHUDStyleData.h"
 #include "Kismet/GameplayStatics.h"
@@ -12,6 +13,7 @@ void UMissionResultWidget::SetupResult(bool bInVictory, bool bInDefeatByTimeout)
 	bVictory = bInVictory;
 	bDefeatByTimeout = bInDefeatByTimeout;
 	UpdateResultVisuals();
+	PlayOutcomeVoice();
 	OnResultReady(bVictory, bDefeatByTimeout);
 }
 
@@ -33,6 +35,37 @@ void UMissionResultWidget::NativeOnInitialized()
 	if (Btn_Retry)  { Btn_Retry->OnClicked.AddUniqueDynamic(this, &UMissionResultWidget::HandleRetryClicked);   RegisterButtonSounds(Btn_Retry); }
 	if (Btn_ToHub)  { Btn_ToHub->OnClicked.AddUniqueDynamic(this, &UMissionResultWidget::HandleToHubClicked);   RegisterButtonSounds(Btn_ToHub); }
 	if (Btn_ToMenu) { Btn_ToMenu->OnClicked.AddUniqueDynamic(this, &UMissionResultWidget::HandleToMenuClicked); RegisterButtonSounds(Btn_ToMenu); }
+}
+
+void UMissionResultWidget::PlayOutcomeVoice()
+{
+	// Реплика исхода принадлежит СЦЕНАРИЮ: экран результата один на все миссии,
+	// а «Зачёт, отряд к вылету готов» — текст конкретного зачёта.
+	const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>();
+	const UTacticalScenarioDataAsset* Scenario = GameInstance
+		? GameInstance->GetActiveScenario() : nullptr;
+	if (!Scenario)
+	{
+		return;
+	}
+
+	TSoftObjectPtr<USoundBase> Line = bVictory
+		? Scenario->VictoryVoice
+		: (bDefeatByTimeout && !Scenario->DefeatByTimeoutVoice.IsNull()
+			? Scenario->DefeatByTimeoutVoice
+			: Scenario->DefeatVoice);
+	if (Line.IsNull())
+	{
+		return; // сценарий молчит — это штатная настройка, не ошибка
+	}
+
+	USoundBase* Voice = Line.LoadSynchronous(); // экран результата — не горячий путь
+	UTacticsAudioSubsystem* Audio = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UTacticsAudioSubsystem>() : nullptr;
+	if (Voice && Audio)
+	{
+		Audio->PlayVoice2D(Voice);
+	}
 }
 
 void UMissionResultWidget::UpdateResultVisuals()

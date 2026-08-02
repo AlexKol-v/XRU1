@@ -153,6 +153,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Control")
 	void RequestPause();
 
+	/** Открыть экран паузы без разбора режима прицеливания (общий путь). */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Control")
+	void OpenPauseMenu();
+
 	/**
 	 * Команда отклонена. Игрок обязан получить обратную связь: «ничего не
 	 * произошло» неотличимо от зависшей игры, и именно этим обычно читается
@@ -349,6 +353,39 @@ protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void SetupInputComponent() override;
 	virtual void PlayerTick(float DeltaTime) override;
+
+	/**
+	 * Принимает ли МИР команды игрока: не идёт реакция, наша фаза, не звучит
+	 * инструктаж. Не зависит от выбранного бойца — поэтому это отдельный
+	 * предикат, а не часть CanIssueCommand: конец хода легален и без выбора,
+	 * и именно он раньше проходил мимо всех запретов.
+	 */
+	bool IsWorldAcceptingCommands() const;
+
+	/**
+	 * Осмысленна ли команда САМА ПО СЕБЕ — без учёта запрета «идёт инструктаж».
+	 * Это язык ПОКАЗА: зона хода, превью пути и подсветка остаются на экране,
+	 * пока звучит реплика. Разрешение отдать приказ — CanIssueCommand.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Control")
+	bool CanShowCommandAffordance(ETacticalPlayerCommand Command) const;
+
+	/**
+	 * То же, что CanIssueCommand, но пишет в лог ПРИЧИНУ отказа. Зовётся только
+	 * из точек входа игрока (Request*): в предикатах отрисовки такой лог шёл бы
+	 * каждый кадр.
+	 */
+	bool CanIssueCommandLogged(ETacticalPlayerCommand Command);
+
+	/**
+	 * Идёт реплика обучения — команды игрока не принимаются. Единственное
+	 * правило на все входы (hotkey, клик, HUD, автозавершение хода): пока
+	 * инструктор говорит, шаг не может быть выполнен вперёд реплики.
+	 */
+	bool IsTutorialBeatBlockingInput() const;
+
+	/** Пробел во время реплики = «пропустить». True, если пропуск случился. */
+	bool TrySkipTutorialBeat();
 
 	// --- Обработчики Enhanced Input -------------------------------------------
 
@@ -577,6 +614,9 @@ protected:
 
 	/** Кольца «встань сюда» вокруг Downed союзников, пока выбран медик. */
 	TArray<TWeakObjectPtr<class UDecalComponent>> ReviveRingDecals;
+
+	/** Инструктаж блокировал ввод в прошлом кадре (для доводки на его конце). */
+	bool bTutorialBeatWasBlocking = false;
 
 	/**
 	 * Показ/скрытие колец радиуса подъёма у лежащих союзников. Игрок в A9 видит

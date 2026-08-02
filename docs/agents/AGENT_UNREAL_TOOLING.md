@@ -341,6 +341,41 @@ cdo.set_editor_property('AuthorName', unreal.Text('Aleksei Beer'))              
 unreal.EditorAssetLibrary.save_asset('/Game/XRU1Game/Core/BP_TacticsGameInstance')
 ```
 
+### 5.2.5 ⚠️ Смена уровня внутри `execute_script` = краш редактора (2026-08-02)
+
+**Нельзя вызывать `new_level` / `load_level` / любую смену карты из Python в
+`execute_script`.** Редактор гарантированно падает:
+
+```
+EXCEPTION_ACCESS_VIOLATION
+  FScriptExecutionManager::ExecutePython  →  FActorIteratorState  →
+  UWorld::AddOnActorSpawnedHandler
+```
+
+Причина: после скрипта плагин сам проходит `TActorIterator` по миру, который
+закэшировал ДО запуска (ради шумного «no new actors were created»). Если скрипт
+сменил уровень, тот мир уже уничтожен. Поймано дважды подряд.
+
+Рабочий порядок создания уровня:
+
+1. `open_level {action:"new", save_current:true}` — новый пустой мир;
+2. проверить `get_level_actors` (`levelName` = `Untitled_*`, ~5 служебных акторов);
+3. `open_level {action:"save_as", save_path:"/Game/.../L_X"}` — **параметр
+   называется `save_path`, не `level_path`**;
+4. заселение — уже `execute_script` (spawn/настройка/`save_current_level()`
+   безопасны, пока мир не меняется);
+5. вернуть пользователя: `open_level {action:"open", level_path:"..."}`.
+
+Ещё две ловушки заселения:
+
+- `EditorActorSubsystem.spawn_actor_from_class` ставит актор **в точку
+  вьюпорта**, а не в переданную: позицию задавать `set_actor_location` после
+  спавна.
+- `WorldSettings` **не входит** в `get_all_level_actors()` — из Python его не
+  найти. `DefaultGameMode` ставится инструментом
+  `set_property {actor_name:"WorldSettings", property:"DefaultGameMode", value:"/Game/.../BP_X.BP_X_C"}`
+  (в `get_level_actors` актор при этом виден).
+
 ### 5.3 Уровни при живом пользователе
 
 Редактор общий: пользователь может переключать уровни параллельно.

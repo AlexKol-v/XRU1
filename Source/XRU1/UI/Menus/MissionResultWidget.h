@@ -55,6 +55,9 @@ protected:
 	/** C++-заполнение текстов/арта по результату; работает без BP-графа. */
 	void UpdateResultVisuals();
 
+	/** Реплика исхода из активного сценария (VictoryVoice / DefeatVoice). */
+	void PlayOutcomeVoice();
+
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UTextBlock> Txt_ResultTitle;
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UTextBlock> Txt_ResultSubtitle;
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UImage> Img_ResultArt;

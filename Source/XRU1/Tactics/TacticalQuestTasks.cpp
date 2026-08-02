@@ -415,6 +415,16 @@ EStateTreeRunStatus FTacticalTask_ScriptedShot::Tick(
 	const bool bActionInProgress = UGA_Attack::GetAttackActionInProgressFor(Shooter, ActionId);
 	if (!Shooter->HasPendingScriptedShot() && Inst.bOrderIssued && !bActionInProgress)
 	{
+		// Объявляем о завершении САМИ: обычные выстрелы врага quest-событий не
+		// публикуют (иначе они закрывали бы шаги обучения), а реплики-реакции
+		// обязаны звучать после попадания. Событие принадлежит сценарному
+		// действию, а не боевой системе.
+		AActor* Target = Registry ? Registry->FindScenarioActor(Inst.TargetAnchorId) : nullptr;
+		UTacticalQuestEvents::BroadcastQuestEventEx(Shooter,
+			TacticalQuestTags::Event_Tactical_Scripted_ShotFinished, Shooter, Target);
+		UE_LOG(LogXRU1Quest, Display,
+			TEXT("[Tutorial] Scripted Shot: %s отстрелялся — событие ShotFinished"),
+			*GetNameSafe(Shooter));
 		return EStateTreeRunStatus::Succeeded;
 	}
 
@@ -462,56 +472,187 @@ EStateTreeRunStatus FTacticalTask_TutorialBeat::EnterState(
 	FInstanceDataType& Inst = Context.GetInstanceData(*this);
 	Inst.ElapsedTime = 0.f;
 	Inst.bBeatStarted = false;
+	Inst.bFollowUpStarted = false;
+	Inst.bBeatFinished = false;
 
+	// Реплика-реакция ждёт своего события (выстрела, добега, срабатывания
+	// наблюдения) — на входе в шаг она звучала бы до того, что комментирует.
+	if (Inst.TriggerEvent.IsValid())
+	{
+		UE_LOG(LogXRU1Quest, Display, TEXT("[Beat] %s ждёт события %s (не более %.0f с)"),
+			*Inst.Beat.BeatId.ToString(), *Inst.TriggerEvent.ToString(), Inst.TriggerTimeout);
+		return EStateTreeRunStatus::Running;
+	}
+
+	// Такт С ФОКУСОМ ждёт, пока камера освободится от кадра выстрела. Шаг при
+	// этом уже сменился — очередь шагов решает квест-логика, а не презентация.
+	// Иначе реплика говорит «его ранили», пока камера доигрывает kill-cam, и
+	// показать раненого физически не может: фокус откладывается монополией
+	// кадра и приезжает, когда фраза уже кончилась (лог A9).
+	if (IsCameraBusyForBeat(Context, Inst))
+	{
+		UE_LOG(LogXRU1Quest, Display,
+			TEXT("[Beat] %s ждёт освобождения камеры (идёт кадр выстрела)"),
+			*Inst.Beat.BeatId.ToString());
+		return EStateTreeRunStatus::Running;
+	}
+
+	return StartBeatNow(Context, Inst) ? EStateTreeRunStatus::Running
+		: EStateTreeRunStatus::Failed;
+}
+
+bool FTacticalTask_TutorialBeat::IsCameraBusyForBeat(
+	FStateTreeExecutionContext& Context, const FInstanceDataType& Inst) const
+{
+	// Без фокуса такту камера не нужна: реплика поверх кадра выстрела уместна и
+	// держит темп. Ждёт только тот, кому есть что показать.
+	if (Inst.Beat.FocusAnchorId.IsNone())
+	{
+		return false;
+	}
+	const UWorld* World = TacticalQuestTasks_Internal::GetWorld(Context);
+	const APlayerController* PlayerController = World ? World->GetFirstPlayerController() : nullptr;
+	const ATacticalCameraPawn* Camera = PlayerController
+		? Cast<ATacticalCameraPawn>(PlayerController->GetPawn()) : nullptr;
+	return Camera && Camera->IsPlayingPresentationFrame();
+}
+
+bool FTacticalTask_TutorialBeat::StartBeatNow(
+	FStateTreeExecutionContext& Context, FInstanceDataType& Inst) const
+{
 	UWorld* World = TacticalQuestTasks_Internal::GetWorld(Context);
 	if (UTutorialPresentationSubsystem* Presentation = World
 		? World->GetSubsystem<UTutorialPresentationSubsystem>() : nullptr)
 	{
 		Presentation->StartBeat(Inst.Beat);
 		Inst.bBeatStarted = true;
-		return EStateTreeRunStatus::Running;
+		Inst.ElapsedTime = 0.f;
+		return true;
 	}
-	return EStateTreeRunStatus::Failed;
+	return false;
 }
 
 EStateTreeRunStatus FTacticalTask_TutorialBeat::Tick(
 	FStateTreeExecutionContext& Context, const float DeltaTime) const
 {
 	FInstanceDataType& Inst = Context.GetInstanceData(*this);
-	// Такт уже закрыт своим Tick — состояние ещё живёт (ждёт игрока), но
-	// пересчитывать нечего.
-	if (!Inst.bBeatStarted)
+	// Такт уже отговорил — состояние ещё живёт (ждёт игрока), пересчитывать нечего.
+	if (Inst.bBeatFinished)
 	{
 		return EStateTreeRunStatus::Succeeded;
 	}
+
+	// Фаза ожидания: события-триггера и/или свободной камеры.
+	if (!Inst.bBeatStarted)
+	{
+		Inst.ElapsedTime += DeltaTime;
+		bool bTriggered = !Inst.TriggerEvent.IsValid(); // без триггера ждём только камеру
+		Context.ForEachEvent([&Inst, &bTriggered](const FStateTreeEvent& Event)
+		{
+			if (!Inst.TriggerEvent.IsValid() || Event.Tag != Inst.TriggerEvent)
+			{
+				return EStateTreeLoopEvents::Next;
+			}
+			if (!Inst.TriggerSourceAnchorId.IsNone())
+			{
+				const FQuestEventData* Data = Event.Payload.GetPtr<FQuestEventData>();
+				if (!Data || !TacticalQuestTasks_Internal::MatchesAnchor(
+						Inst.TriggerSourceAnchorId, Data->Source))
+				{
+					return EStateTreeLoopEvents::Next;
+				}
+			}
+			bTriggered = true;
+			return EStateTreeLoopEvents::Break;
+		});
+
+		// Камера — второе условие старта: такту с фокусом нечего показывать,
+		// пока кадр выстрела держит взгляд.
+		const bool bCameraBusy = IsCameraBusyForBeat(Context, Inst);
+		const bool bTimedOut = Inst.ElapsedTime >= Inst.TriggerTimeout;
+		if ((!bTriggered || bCameraBusy) && !bTimedOut)
+		{
+			return EStateTreeRunStatus::Running;
+		}
+		if (bTimedOut && (!bTriggered || bCameraBusy))
+		{
+			UE_LOG(LogXRU1Quest, Warning,
+				TEXT("[Beat] %s не дождался (%s) за %.0f с — играю реплику как есть"),
+				*Inst.Beat.BeatId.ToString(),
+				!bTriggered ? *Inst.TriggerEvent.ToString() : TEXT("свободной камеры"),
+				Inst.TriggerTimeout);
+		}
+		if (!StartBeatNow(Context, Inst))
+		{
+			return EStateTreeRunStatus::Failed;
+		}
+		return EStateTreeRunStatus::Running;
+	}
+
 	Inst.ElapsedTime += DeltaTime;
 
-	if (Inst.ElapsedTime < FMath::Max(0.1f, Inst.Beat.Duration))
+	// Длительность текущей реплики обмена. Authored-значения НЕ мутируем:
+	// instance data переживает повторный вход в состояние (retry сценария), и
+	// подменённая длительность испортила бы второй прогон.
+	const float CurrentDuration = Inst.bFollowUpStarted
+		? FMath::Max(0.1f, Inst.Beat.FollowUpDuration)
+		: FMath::Max(0.1f, Inst.Beat.Duration);
+
+	// Пропуск реплики игроком (клик во время постановки) — как «Skip» диалога.
+	UWorld* TickWorld = TacticalQuestTasks_Internal::GetWorld(Context);
+	UTutorialPresentationSubsystem* Presentation = TickWorld
+		? TickWorld->GetSubsystem<UTutorialPresentationSubsystem>() : nullptr;
+	const bool bSkipped = Presentation && Presentation->ConsumeSkipRequest();
+
+	if (!bSkipped && Inst.ElapsedTime < CurrentDuration)
 	{
 		return EStateTreeRunStatus::Running;
+	}
+
+	// Обмен репликами: первая отговорила — включаем ответную тем же тактом.
+	// Отдельного состояния это не требует: последовательность реплик —
+	// презентация ВНУТРИ шага, а не новая фаза обучения (отдельным состоянием
+	// остаётся только пауза, обязанная задержать следующий шаг).
+	if (Inst.Beat.HasFollowUp() && !Inst.bFollowUpStarted)
+	{
+		FTacticalTutorialBeat FollowUp = Inst.Beat;
+		FollowUp.Speaker = Inst.Beat.FollowUpSpeaker;
+		FollowUp.Subtitle = Inst.Beat.FollowUpSubtitle;
+		FollowUp.Voice = Inst.Beat.FollowUpVoice;
+		FollowUp.Duration = FMath::Max(0.1f, Inst.Beat.FollowUpDuration);
+		FollowUp.FollowUpVoice.Reset(); // у ответа своего ответа уже нет
+		FollowUp.FollowUpSubtitle = FText::GetEmpty();
+
+		if (Presentation)
+		{
+			// StartBeat сам закрывает предыдущую реплику и продлевает
+			// режиссёрское удержание камеры на длительность ответа.
+			Presentation->StartBeat(FollowUp);
+			Inst.bFollowUpStarted = true;
+			Inst.ElapsedTime = 0.f;
+			return EStateTreeRunStatus::Running;
+		}
 	}
 
 	// Такт закрываем ЗДЕСЬ, по своей длительности, а не в ExitState: выход из
 	// состояния наступает только когда шаг целиком выполнен игроком (в C0 это
 	// четыре цели), и субтитр с режиссёрским удержанием камеры жили всё это
 	// время — камера переставала слушаться выбора бойца.
-	UWorld* World = TacticalQuestTasks_Internal::GetWorld(Context);
-	if (UTutorialPresentationSubsystem* Presentation = World
-		? World->GetSubsystem<UTutorialPresentationSubsystem>() : nullptr)
+	if (Presentation)
 	{
 		Presentation->FinishBeat();
 	}
-	Inst.bBeatStarted = false; // ExitState уже нечего закрывать
+	Inst.bBeatFinished = true; // ExitState уже нечего закрывать
 	return EStateTreeRunStatus::Succeeded;
 }
 
 void FTacticalTask_TutorialBeat::ExitState(
 	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
 {
-	// Такт, не доживший до показа (выход в паузе), нечем завершать — FinishBeat
-	// снял бы чужой активный такт.
+	// Не доживший до показа (ждал триггер) или уже закрытый такт завершать
+	// нечем — FinishBeat снял бы чужую активную реплику.
 	FInstanceDataType& Inst = Context.GetInstanceData(*this);
-	if (!Inst.bBeatStarted)
+	if (!Inst.bBeatStarted || Inst.bBeatFinished)
 	{
 		return;
 	}
@@ -698,6 +839,16 @@ EStateTreeRunStatus FTacticalTask_ScriptedMove::Tick(
 				ActionPoints->SpendAllRemaining();
 			}
 		}
+		// Как и сценарный выстрел, перебежка объявляет о своём завершении сама:
+		// движение по приказу задачи не публикует боевых quest-событий, а
+		// реплика «Не стреляйте, свои!» обязана звучать, КОГДА боец уже добежал
+		// и встал, а не когда он только сорвался с места.
+		UTacticalQuestEvents::BroadcastQuestEventEx(const_cast<AUnitBase*>(Unit),
+			TacticalQuestTags::Event_Tactical_Scripted_MoveFinished,
+			const_cast<AUnitBase*>(Unit), const_cast<AActor*>(Destination));
+		UE_LOG(LogXRU1Quest, Display,
+			TEXT("[Tutorial] Scripted Move: %s добежал до %s — событие MoveFinished"),
+			*GetNameSafe(Unit), *Inst.DestinationAnchorId.ToString());
 		return EStateTreeRunStatus::Succeeded;
 	}
 

@@ -119,6 +119,13 @@ void UCombatFeedbackSubsystem::EnsureOverlay()
 
 void UCombatFeedbackSubsystem::Tick(float DeltaTime)
 {
+	// Надписей нет почти всё время боя — выходим до любой работы, включая
+	// поиск темы через GameInstance.
+	if (Entries.IsEmpty())
+	{
+		return;
+	}
+
 	const UWorld* World = GetWorld();
 	if (!World)
 	{

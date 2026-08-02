@@ -33,15 +33,19 @@ public:
 	TArray<EUnitRole> SquadRoles;
 
 	/**
-	 * Пользовательские громкости. Живут в слоте кампании, а не в GameUserSettings:
-	 * меню настроек и подсистема звука обязаны читать одно и то же состояние,
-	 * иначе «ползунок стоит на 0.3, а играет громко» становится нормой.
+	 * LEGACY, не использовать. Настройки переехали в `UTacticsUserSettings`
+	 * (2026-08-02): громкость и качество — параметры приложения, а не прогресса,
+	 * и не должны сбрасываться при «Новой игре». Пока настройки жили здесь,
+	 * экран читал слот, движок применял своё, и меню предлагало применить
+	 * полноэкранный режим, который игрок не выбирал.
+	 *
+	 * Поля оставлены только для чтения старых слотов; новый код в них не пишет.
 	 */
-	UPROPERTY(BlueprintReadWrite, SaveGame, Category = "Tactics|Save")
+	UPROPERTY(BlueprintReadWrite, SaveGame, Category = "Tactics|Save|Legacy")
 	FTacticsAudioSettings AudioSettings;
 
-	/** Настройки изображения; применяются к UGameUserSettings при загрузке слота. */
-	UPROPERTY(BlueprintReadWrite, SaveGame, Category = "Tactics|Save")
+	/** LEGACY: см. комментарий выше. Источник правды — `UTacticsUserSettings`. */
+	UPROPERTY(BlueprintReadWrite, SaveGame, Category = "Tactics|Save|Legacy")
 	FTacticsVideoSettings VideoSettings;
 
 	UFUNCTION(BlueprintPure, Category = "Tactics|Save")

@@ -61,6 +61,19 @@ FMenuPalette LoadPalette()
 	return Palette;
 }
 
+/**
+ * Уникальное имя для служебного виджета вёрстки.
+ *
+ * Безымянные (`NAME_None`) виджеты компилятор UMG 5.7 встречает ensure'ом
+ * «was added but did not get a GUID» — на каждый такой виджет в лог падает
+ * полный стек. Имя дешевле, чем сотни килобайт шума.
+ */
+FName MakeAutoName(const TCHAR* Prefix)
+{
+	static int32 Counter = 0;
+	return FName(*FString::Printf(TEXT("%s_%d"), Prefix, ++Counter));
+}
+
 /** "/Game/A/WBP_X" → "/Game/A/WBP_X.WBP_X"; уже полное имя не трогается. */
 FString NormalizeAssetPath(const FString& AssetPath)
 {
@@ -104,7 +117,8 @@ UWidgetBlueprint* LoadTargetBlueprint(const FString& AssetPath, bool bOverwriteE
 UTextBlock* MakeText(UWidgetTree* Tree, FName Name, const FText& Text, int32 FontSize,
 	const FLinearColor& Color, bool bAutoWrap = false)
 {
-	UTextBlock* Block = Tree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), Name);
+	UTextBlock* Block = Tree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(),
+		Name.IsNone() ? MakeAutoName(TEXT("Txt_Auto")) : Name);
 	Block->SetText(Text);
 	FSlateFontInfo Font = Block->GetFont();
 	Font.Size = FontSize;
@@ -191,32 +205,52 @@ UVerticalBox* MakeScreenScaffold(UWidgetBlueprint* Blueprint, const FText& Title
 	return Content;
 }
 
-/** Строка «подпись слева — контрол справа» для экрана настроек. */
+/**
+ * Строка «подпись слева — контрол справа» для экрана настроек.
+ *
+ * Подпись занимает всё оставшееся место и переносится по словам, а контрол
+ * получает фиксированную колонку справа. Обратная схема (фиксированная подпись +
+ * Fill-контрол) ломается на длинных названиях: «Вертикальная синхронизация»
+ * вылезала из своей колонки прямо под чекбокс.
+ */
 void AddLabeledRow(UWidgetTree* Tree, UVerticalBox* Parent, const FText& Label,
-	UWidget* Control, const FMenuPalette& Palette, float LabelWidth = 240.f)
+	UWidget* Control, const FMenuPalette& Palette, float ControlWidth = 420.f)
 {
-	UHorizontalBox* Row = Tree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass());
+	UHorizontalBox* Row = Tree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass(), MakeAutoName(TEXT("Row")));
 	Parent->AddChildToVerticalBox(Row);
 	if (UVerticalBoxSlot* RowSlot = Cast<UVerticalBoxSlot>(Row->Slot))
 	{
-		RowSlot->SetPadding(FMargin(0.f, 6.f));
+		RowSlot->SetPadding(FMargin(0.f, 7.f));
 	}
 
-	USizeBox* LabelBox = Tree->ConstructWidget<USizeBox>(USizeBox::StaticClass());
-	LabelBox->SetWidthOverride(LabelWidth);
-	Row->AddChildToHorizontalBox(LabelBox);
-	if (UHorizontalBoxSlot* LabelSlot = Cast<UHorizontalBoxSlot>(LabelBox->Slot))
+	UTextBlock* LabelText = MakeText(Tree, NAME_None, Label, 18, Palette.PrimaryText, /*bAutoWrap=*/true);
+	Row->AddChildToHorizontalBox(LabelText);
+	if (UHorizontalBoxSlot* LabelSlot = Cast<UHorizontalBoxSlot>(LabelText->Slot))
 	{
+		LabelSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
 		LabelSlot->SetVerticalAlignment(VAlign_Center);
+		LabelSlot->SetPadding(FMargin(0.f, 0.f, 24.f, 0.f));
 	}
-	LabelBox->AddChild(MakeText(Tree, NAME_None, Label, 18, Palette.PrimaryText));
 
-	Row->AddChildToHorizontalBox(Control);
-	if (UHorizontalBoxSlot* ControlSlot = Cast<UHorizontalBoxSlot>(Control->Slot))
+	// Колонка контролов одной ширины у всех строк: слайдеры и чекбоксы
+	// выстраиваются по одной вертикали.
+	USizeBox* ControlBox = Tree->ConstructWidget<USizeBox>(USizeBox::StaticClass(), MakeAutoName(TEXT("Box")));
+	ControlBox->SetWidthOverride(ControlWidth);
+	Row->AddChildToHorizontalBox(ControlBox);
+	if (UHorizontalBoxSlot* ControlSlot = Cast<UHorizontalBoxSlot>(ControlBox->Slot))
 	{
-		ControlSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+		ControlSlot->SetSize(FSlateChildSize(ESlateSizeRule::Automatic));
 		ControlSlot->SetVerticalAlignment(VAlign_Center);
-		ControlSlot->SetPadding(FMargin(12.f, 0.f, 0.f, 0.f));
+	}
+
+	ControlBox->AddChild(Control);
+	if (USizeBoxSlot* InnerSlot = Cast<USizeBoxSlot>(Control->Slot))
+	{
+		// Чекбокс прижимается влево своей колонки, растягиваемые контролы
+		// (слайдер, выпадающий список) занимают её целиком.
+		const bool bStretch = !Control->IsA<UCheckBox>();
+		InnerSlot->SetHorizontalAlignment(bStretch ? HAlign_Fill : HAlign_Left);
+		InnerSlot->SetVerticalAlignment(VAlign_Center);
 	}
 }
 
@@ -235,7 +269,7 @@ void AddSectionHeader(UWidgetTree* Tree, UVerticalBox* Parent, const FText& Text
 void AddButtonRow(UWidgetTree* Tree, UVerticalBox* Parent,
 	const TArray<TPair<FName, FText>>& Buttons, const FMenuPalette& Palette)
 {
-	UHorizontalBox* Row = Tree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass());
+	UHorizontalBox* Row = Tree->ConstructWidget<UHorizontalBox>(UHorizontalBox::StaticClass(), MakeAutoName(TEXT("Row")));
 	Parent->AddChildToVerticalBox(Row);
 	if (UVerticalBoxSlot* RowSlot = Cast<UVerticalBoxSlot>(Row->Slot))
 	{
@@ -535,6 +569,101 @@ bool UXRU1WidgetAuthoringLibrary::BuildMissionResultLayout(const FString& AssetP
 #endif
 }
 
+bool UXRU1WidgetAuthoringLibrary::BuildHubHUDLayout(const FString& AssetPath, bool bOverwriteExisting)
+{
+#if WITH_EDITOR
+	UWidgetBlueprint* Blueprint = LoadTargetBlueprint(AssetPath, bOverwriteExisting);
+	if (!Blueprint)
+	{
+		return false;
+	}
+	const FMenuPalette Palette = LoadPalette();
+	UWidgetTree* Tree = Blueprint->WidgetTree;
+
+	// HUD, а не экран: затемнения нет, карта под ним должна оставаться видимой.
+	UOverlay* Root = Tree->ConstructWidget<UOverlay>(UOverlay::StaticClass(), TEXT("RootOverlay"));
+	Tree->RootWidget = Root;
+
+	// --- Карточка выбранной точки (слева внизу) ------------------------------
+	USizeBox* CardFrame = Tree->ConstructWidget<USizeBox>(USizeBox::StaticClass(), TEXT("CardFrame"));
+	CardFrame->SetWidthOverride(520.f);
+	Root->AddChildToOverlay(CardFrame);
+	if (UOverlaySlot* Slot = Cast<UOverlaySlot>(CardFrame->Slot))
+	{
+		Slot->SetHorizontalAlignment(HAlign_Left);
+		Slot->SetVerticalAlignment(VAlign_Bottom);
+		Slot->SetPadding(FMargin(48.f, 0.f, 0.f, 48.f));
+	}
+
+	UBorder* Card = Tree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("CardPanel"));
+	Card->SetBrushColor(Palette.PanelBackground);
+	CardFrame->AddChild(Card);
+
+	UVerticalBox* CardBox = Tree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass(), TEXT("CardBox"));
+	Card->AddChild(CardBox);
+	if (UBorderSlot* Slot = Cast<UBorderSlot>(CardBox->Slot))
+	{
+		Slot->SetPadding(FMargin(26.f, 22.f));
+	}
+
+	UTextBlock* Title = MakeText(Tree, TEXT("Txt_POITitle"), FText::GetEmpty(), 26, Palette.PrimaryText);
+	CardBox->AddChildToVerticalBox(Title);
+
+	UTextBlock* Description = MakeText(Tree, TEXT("Txt_POIDescription"), FText::GetEmpty(), 16,
+		Palette.MutedText, /*bAutoWrap=*/true);
+	CardBox->AddChildToVerticalBox(Description);
+	if (UVerticalBoxSlot* Slot = Cast<UVerticalBoxSlot>(Description->Slot))
+	{
+		Slot->SetPadding(FMargin(0.f, 10.f, 0.f, 0.f));
+	}
+
+	UTextBlock* Status = MakeText(Tree, TEXT("Txt_Status"), FText::GetEmpty(), 15, Palette.Warning);
+	CardBox->AddChildToVerticalBox(Status);
+	if (UVerticalBoxSlot* Slot = Cast<UVerticalBoxSlot>(Status->Slot))
+	{
+		Slot->SetPadding(FMargin(0.f, 10.f, 0.f, 0.f));
+	}
+
+	UButton* Start = MakeTextButton(Tree, TEXT("Btn_Start"),
+		NSLOCTEXT("XRU1.Hub", "StartOperation", "Начать операцию"), Palette);
+	CardBox->AddChildToVerticalBox(Start);
+	if (UVerticalBoxSlot* Slot = Cast<UVerticalBoxSlot>(Start->Slot))
+	{
+		Slot->SetPadding(FMargin(0.f, 18.f, 0.f, 0.f));
+		Slot->SetHorizontalAlignment(HAlign_Fill);
+	}
+
+	// --- Служебные кнопки (справа вверху) ------------------------------------
+	UHorizontalBox* TopRight = Tree->ConstructWidget<UHorizontalBox>(
+		UHorizontalBox::StaticClass(), TEXT("TopRightRow"));
+	Root->AddChildToOverlay(TopRight);
+	if (UOverlaySlot* Slot = Cast<UOverlaySlot>(TopRight->Slot))
+	{
+		Slot->SetHorizontalAlignment(HAlign_Right);
+		Slot->SetVerticalAlignment(VAlign_Top);
+		Slot->SetPadding(FMargin(0.f, 36.f, 48.f, 0.f));
+	}
+
+	const TPair<FName, FText> TopButtons[] = {
+		{ TEXT("Btn_Settings"), NSLOCTEXT("XRU1.Menu", "Settings", "Настройки") },
+		{ TEXT("Btn_ToMenu"),   NSLOCTEXT("XRU1.Menu", "ToMenu", "В меню") }
+	};
+	for (const TPair<FName, FText>& Desc : TopButtons)
+	{
+		UButton* Button = MakeTextButton(Tree, Desc.Key, Desc.Value, Palette);
+		TopRight->AddChildToHorizontalBox(Button);
+		if (UHorizontalBoxSlot* Slot = Cast<UHorizontalBoxSlot>(Button->Slot))
+		{
+			Slot->SetPadding(FMargin(8.f, 0.f, 0.f, 0.f));
+		}
+	}
+
+	return FinalizeBlueprint(Blueprint);
+#else
+	return false;
+#endif
+}
+
 bool UXRU1WidgetAuthoringLibrary::BuildPOIPopupLayout(const FString& AssetPath, bool bOverwriteExisting)
 {
 #if WITH_EDITOR
@@ -547,8 +676,14 @@ bool UXRU1WidgetAuthoringLibrary::BuildPOIPopupLayout(const FString& AssetPath, 
 	UWidgetTree* Tree = Blueprint->WidgetTree;
 
 	// World-space попап рисуется DrawAtDesiredSize — корень ограничивает ширину.
+	// Ширины 380 не хватало: длинные строки («Недоступно: сначала пройдите …»)
+	// вылезали за подложку, потому что текст ограничен не шириной SizeBox,
+	// а собственным WrapTextAt.
+	const float PopupWidth = 460.f;
+	const float PopupTextWrap = PopupWidth - 44.f; // минус внутренние отступы Border
+
 	USizeBox* Root = Tree->ConstructWidget<USizeBox>(USizeBox::StaticClass(), TEXT("RootFrame"));
-	Root->SetWidthOverride(380.f);
+	Root->SetWidthOverride(PopupWidth);
 	Tree->RootWidget = Root;
 
 	UBorder* Panel = Tree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("ContentPanel"));
@@ -562,19 +697,24 @@ bool UXRU1WidgetAuthoringLibrary::BuildPOIPopupLayout(const FString& AssetPath, 
 		Slot->SetPadding(FMargin(18.f, 14.f));
 	}
 
-	UTextBlock* Title = MakeText(Tree, TEXT("Txt_Title"), FText::GetEmpty(), 20, Palette.PrimaryText);
+	UTextBlock* Title = MakeText(Tree, TEXT("Txt_Title"), FText::GetEmpty(), 20,
+		Palette.PrimaryText, /*bAutoWrap=*/true);
+	Title->SetWrapTextAt(PopupTextWrap);
 	Content->AddChildToVerticalBox(Title);
 
 	UTextBlock* Description = MakeText(Tree, TEXT("Txt_Description"), FText::GetEmpty(), 15,
 		Palette.MutedText, /*bAutoWrap=*/true);
+	Description->SetWrapTextAt(PopupTextWrap);
 	Content->AddChildToVerticalBox(Description);
 	if (UVerticalBoxSlot* Slot = Cast<UVerticalBoxSlot>(Description->Slot))
 	{
 		Slot->SetPadding(FMargin(0.f, 6.f, 0.f, 0.f));
 	}
 
-	UTextBlock* Locked = MakeText(Tree, TEXT("Txt_Locked"),
-		NSLOCTEXT("XRU1.Menu", "POILocked", "Сначала пройдите обучение"), 15, Palette.Warning);
+	// Текст приходит из миссии и бывает длинным — перенос обязателен.
+	UTextBlock* Locked = MakeText(Tree, TEXT("Txt_Locked"), FText::GetEmpty(), 15,
+		Palette.Warning, /*bAutoWrap=*/true);
+	Locked->SetWrapTextAt(PopupTextWrap);
 	Content->AddChildToVerticalBox(Locked);
 	if (UVerticalBoxSlot* Slot = Cast<UVerticalBoxSlot>(Locked->Slot))
 	{

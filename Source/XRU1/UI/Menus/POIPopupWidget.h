@@ -18,11 +18,25 @@ class XRU1_API UPOIPopupWidget : public UCommonUserWidget
 	GENERATED_BODY()
 
 public:
-	/** Заполняет попап данными POI; зовёт AMissionPointOfInterest. */
+	/**
+	 * Заполняет попап данными POI; зовёт AMissionPointOfInterest.
+	 * `InLockedReason` пустой означает «точка доступна» — отдельный флаг не нужен
+	 * и не может разойтись с текстом.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Menu|POI")
-	void SetupFromPOI(const FText& InTitle, const FText& InDescription, bool bInLocked);
+	void SetupFromPOI(const FText& InTitle, const FText& InDescription, const FText& InLockedReason);
 
 protected:
+	/**
+	 * Попап обязан быть прозрачным для мыши. Он висит прямо над маркером, и в
+	 * Screen space его hit-test идёт через Slate, а не через физику: перекрыв
+	 * курсор, он отбирает наведение у маркера, попап гаснет, наведение
+	 * возвращается — точка мигает с частотой кадров. Коллизия компонента на это
+	 * не влияет, лечится только видимостью самого виджета.
+	 */
+	virtual void NativeOnInitialized() override;
+	virtual void NativePreConstruct() override;
+
 	/** BP-хук после заполнения (доп. оформление; вёрстка уже обновлена в C++). */
 	UFUNCTION(BlueprintImplementableEvent, Category = "Menu|POI")
 	void OnPOIDataChanged(bool bInLocked);

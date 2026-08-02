@@ -14,6 +14,7 @@
 #include "ScenarioActorRegistry.h"
 #include "TacticsAudioSubsystem.h"
 #include "TacticsGameInstance.h"
+#include "TacticalScenarioDataAsset.h" // сценарий решает, автоматизировать ли конец хода
 #include "XRU1Log.h"
 #include "TacticalQuestEvents.h"
 #include "TacticsCombatStatics.h"
@@ -83,6 +84,12 @@ void ATacticalPlayerController::BeginPlay()
 		return;
 	}
 
+	// Пауза по потере фокуса НЕ дублируется здесь: её владелец —
+	// UGamePauseSubsystem (стек причин + приглушение звука + подписка на
+	// активацию приложения). Два независимых владельца глобальной паузы
+	// неизбежно расходятся: один ставит, другой снимает — мир продолжает идти
+	// под открытым меню либо остаётся замороженным без способа выйти.
+
 	// Корневой UI-слой (стеки CommonUI) — как у контроллеров меню/хаба.
 	if (UGameInstance* GameInstance = GetGameInstance())
 	{
@@ -142,6 +149,19 @@ void ATacticalPlayerController::BeginPlay()
 
 void ATacticalPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	// Отписка от менеджера ходов — та же гигиена, что и у остальных подписок
+	// контроллера: мир и подсистема умирают вместе, но правило «подписался —
+	// отпишись» не должно иметь исключений, иначе аудит перестаёт быть строгим.
+	if (const UWorld* World = GetWorld())
+	{
+		if (UTurnManagerSubsystem* TurnManager = World->GetSubsystem<UTurnManagerSubsystem>())
+		{
+			TurnManager->OnTurnStarted.RemoveDynamic(this, &ATacticalPlayerController::HandleTurnStarted);
+			TurnManager->OnEnemyUnitActivated.RemoveDynamic(
+				this, &ATacticalPlayerController::HandleEnemyUnitActivated);
+		}
+	}
+
 	if (TutorialHintOverlay.IsValid() && GEngine && GEngine->GameViewport)
 	{
 		GEngine->GameViewport->RemoveViewportWidgetContent(TutorialHintOverlay.ToSharedRef());
@@ -243,6 +263,38 @@ void ATacticalPlayerController::PlayerTick(float DeltaTime)
 {
 	Super::PlayerTick(DeltaTime);
 
+	// Инструктаж: пока звучит реплика, мир не двигается сам (ход не передаётся,
+	// выбор не перескакивает). На КОНЦЕ реплики отложенное доводится — иначе
+	// боец с нулём ОД остался бы стоять, а ход не ушёл бы никогда.
+	const bool bBeatBlocking = IsTutorialBeatBlockingInput();
+	if (bTutorialBeatWasBlocking != bBeatBlocking)
+	{
+		UE_LOG(LogXRU1Quest, Display, TEXT("[Beat] Ввод %s (боец=%s, есть ОД=%d)"),
+			bBeatBlocking ? TEXT("ЗАБЛОКИРОВАН инструктажем") : TEXT("разблокирован"),
+			*GetNameSafe(SelectedUnit),
+			SelectedUnit && SelectedUnit->GetActionPoints() &&
+				SelectedUnit->GetActionPoints()->HasActionsLeft() ? 1 : 0);
+
+		// HUD и зона хода пересобираются на ОБОИХ переходах: кнопки меняют
+		// серость, а зона обязана быть на экране сразу, без переклика по бойцу.
+		RefreshMoveRange();
+		OnAvailableActionsChanged.Broadcast();
+		if (!bBeatBlocking)
+		{
+			TryAutoEndTurn();
+		}
+	}
+	bTutorialBeatWasBlocking = bBeatBlocking;
+
+	// Пробел — пропустить реплику. Проверяем клавишу напрямую: действие ввода
+	// живёт в общем контексте, который во время инструктажа обслуживает только
+	// камеру, а заводить отдельный IA ради одной кнопки пропуска — лишняя
+	// сущность в ассетах (при желании заменяется на IA_SkipDialogue).
+	if (bBeatBlocking && WasInputKeyJustPressed(EKeys::SpaceBar))
+	{
+		TrySkipTutorialBeat();
+	}
+
 	// Юнит закончил перемещение — зона хода перестраивается от новой позиции,
 	// камера прекращает сопровождение бегущего бойца.
 	const bool bMovingNow = IsSelectedUnitMoving();
@@ -279,7 +331,7 @@ void ATacticalPlayerController::PlayerTick(float DeltaTime)
 	// Штамп кадра (см. PendingAutoAdvanceFrame): не разрешаем в тот же кадр, где
 	// pending взведён — иначе перехватили бы ход до старта кадра выстрела.
 	if (bPendingAutoAdvance && GFrameCounter != PendingAutoAdvanceFrame && !bReactionPlaying &&
-		IsPlayerPhase() && !bMovingNow && !IsCameraFramingShot() &&
+		IsPlayerPhase() && !bMovingNow && !IsCameraFramingShot() && !bBeatBlocking &&
 		!IsUnitActionInProgress(SelectedUnit))
 	{
 		UE_LOG(LogXRU1Combat, Log, TEXT("[AutoAdv] pending дозрел (кадр выстрела кончился) → переход"));
@@ -509,7 +561,9 @@ void ATacticalPlayerController::UpdatePathPreviewUnderCursor()
 	}
 
 	// Превью уместно только когда юнит готов принять приказ и стоит на месте.
-	const bool bCanPreview = CanIssueCommand(ETacticalPlayerCommand::Move);
+	// Инструктаж превью НЕ гасит: во время реплики игрок должен видеть, куда
+	// боец сможет пойти, — запрещён только сам приказ.
+	const bool bCanPreview = CanShowCommandAffordance(ETacticalPlayerCommand::Move);
 	if (!bCanPreview)
 	{
 		MoveRangeVisualizer->HidePathPreview();
@@ -652,12 +706,15 @@ FText ATacticalPlayerController::GetTutorialBeatSubtitle() const
 	{
 		return FText::GetEmpty();
 	}
-	if (Beat.Speaker.IsEmpty())
-	{
-		return Beat.Subtitle;
-	}
-	return FText::Format(NSLOCTEXT("XRU1.Tutorial", "BeatSubtitle", "{0}: {1}"),
-		Beat.Speaker, Beat.Subtitle);
+
+	const FText Line = Beat.Speaker.IsEmpty()
+		? Beat.Subtitle
+		: FText::Format(NSLOCTEXT("XRU1.Tutorial", "BeatSubtitle", "{0}: {1}"),
+			Beat.Speaker, Beat.Subtitle);
+
+	// Подсказка про пропуск обязательна: на время реплики ввод заблокирован, и
+	// без неё «игра не отвечает» читается как баг, а не как «идёт инструктаж».
+	return FText::Format(NSLOCTEXT("XRU1.Tutorial", "BeatSubtitleWithSkip", "{0}\n\n[Пробел — пропустить]"), Line);
 }
 
 bool ATacticalPlayerController::IsUnitSelectableByGate(const AUnitBase* Unit) const
@@ -1141,6 +1198,14 @@ bool ATacticalPlayerController::TraceUnderCursor(FHitResult& OutHit) const
 
 void ATacticalPlayerController::HandleSelectPressed()
 {
+	// Инструктаж останавливает мир: выбор бойца тоже ждёт конца реплики. Иначе
+	// игрок выбирает юнита посреди фразы, зона хода ещё запрещена шагом — и
+	// выглядит это как «выбор не сработал».
+	if (IsTutorialBeatBlockingInput())
+	{
+		return;
+	}
+
 	FHitResult Hit;
 	TraceUnderCursor(Hit);
 
@@ -1246,9 +1311,50 @@ bool ATacticalPlayerController::IsPlayerPhase() const
 
 bool ATacticalPlayerController::CanIssueCommand(ETacticalPlayerCommand Command) const
 {
+	// Инструктаж запрещает ОТДАВАТЬ команду, но не отменяет её осмысленность:
+	// зона хода и превью пути рисуются по CanShowCommandAffordance и остаются
+	// на экране, пока «Купол» говорит. Иначе игрок выбирает бойца под реплику,
+	// не видит зоны и считает, что выбор не сработал.
+	if (IsTutorialBeatBlockingInput())
+	{
+		return false;
+	}
+	return CanShowCommandAffordance(Command);
+}
+
+bool ATacticalPlayerController::CanIssueCommandLogged(ETacticalPlayerCommand Command)
+{
+	if (CanIssueCommand(Command))
+	{
+		return true;
+	}
+	// Логируем ТОЛЬКО отказы по инициативе игрока (Request*), а не каждый кадр
+	// перерисовки HUD: иначе лог захлестнёт. Разбор «нажал — ничего не
+	// произошло» без этой строки сводится к гаданию.
+	UE_LOG(LogXRU1Quest, Display,
+		TEXT("[Command] Отказ %d: инструктаж=%d реакция=%d фазаИгрока=%d боец=%s "
+			"движется=%d действие=%d режимПрицела=%d шагРазрешает=%d"),
+		static_cast<int32>(Command), IsTutorialBeatBlockingInput() ? 1 : 0,
+		bReactionPlaying ? 1 : 0, IsPlayerPhase() ? 1 : 0, *GetNameSafe(SelectedUnit),
+		IsSelectedUnitMoving() ? 1 : 0, IsUnitActionInProgress(SelectedUnit) ? 1 : 0,
+		static_cast<int32>(TargetingMode),
+		UTutorialActionGateSubsystem::AllowsAction(
+			this, TacticalCommandToTutorialAction(Command), SelectedUnit) ? 1 : 0);
+	return false;
+}
+
+bool ATacticalPlayerController::CanShowCommandAffordance(ETacticalPlayerCommand Command) const
+{
+	// Уровень МИРА (реакция, фаза) — общий для всех команд, включая те,
+	// которым не нужен выбранный боец.
+	if (bReactionPlaying || !IsPlayerPhase())
+	{
+		return false;
+	}
+
 	// Общий инвариант одной тактической активации. Он живёт здесь один раз и
 	// используется как Request*-методами, так и HUD.
-	if (bReactionPlaying || !IsPlayerPhase() || !SelectedUnit || SelectedUnit->IsDead() ||
+	if (!SelectedUnit || SelectedUnit->IsDead() ||
 		SelectedUnit->IsDowned() || SelectedUnit->IsEvacuated() ||
 		IsSelectedUnitMoving() || IsUnitActionInProgress(SelectedUnit))
 	{
@@ -1564,8 +1670,15 @@ void ATacticalPlayerController::HandleAbilityTargetClick(AActor* ClickedActor)
 
 void ATacticalPlayerController::RequestEndTurn()
 {
-	if (bReactionPlaying)
+	// Тот же мировой уровень запрета, что и у остальных команд: конец хода —
+	// единственная команда без требования выбранного бойца, поэтому проверяется
+	// отдельным предикатом, а не полным CanIssueCommand.
+	if (!IsWorldAcceptingCommands())
 	{
+		UE_LOG(LogXRU1Quest, Display,
+			TEXT("[Command] Конец хода отклонён: реакция=%d фазаИгрока=%d инструктаж=%d"),
+			bReactionPlaying ? 1 : 0, IsPlayerPhase() ? 1 : 0,
+			IsTutorialBeatBlockingInput() ? 1 : 0);
 		return;
 	}
 
@@ -1611,7 +1724,7 @@ void ATacticalPlayerController::RequestAttack()
 	// входит в прицеливание (камера кадром «из-за плеча» СРАЗУ показывает цель —
 	// стрелять вслепую нельзя, видно по кому), второе нажатие ТЕМ ЖЕ пробелом
 	// подтверждает выстрел по взятой цели. Выход из режима — ПКМ/Esc.
-	if (!CanIssueCommand(ETacticalPlayerCommand::Attack))
+	if (!CanIssueCommandLogged(ETacticalPlayerCommand::Attack))
 	{
 		return;
 	}
@@ -2056,7 +2169,7 @@ void ATacticalPlayerController::EndReactionShotPresentation()
 
 void ATacticalPlayerController::RequestOverwatch()
 {
-	if (!CanIssueCommand(ETacticalPlayerCommand::Overwatch))
+	if (!CanIssueCommandLogged(ETacticalPlayerCommand::Overwatch))
 	{
 		NotifyCommandDenied();
 		return;
@@ -2069,7 +2182,7 @@ void ATacticalPlayerController::RequestOverwatch()
 
 void ATacticalPlayerController::RequestHunkerDown()
 {
-	if (!CanIssueCommand(ETacticalPlayerCommand::HunkerDown))
+	if (!CanIssueCommandLogged(ETacticalPlayerCommand::HunkerDown))
 	{
 		NotifyCommandDenied();
 		return;
@@ -2082,7 +2195,7 @@ void ATacticalPlayerController::RequestHunkerDown()
 
 void ATacticalPlayerController::RequestClassAbility()
 {
-	if (!CanIssueCommand(ETacticalPlayerCommand::ClassAbility))
+	if (!CanIssueCommandLogged(ETacticalPlayerCommand::ClassAbility))
 	{
 		UE_LOG(LogXRU1Combat, Display,
 			TEXT("[Ability] Запрос отклонён CanIssueCommand (unit=%s, gate=%d, targeting=%d)"),
@@ -2118,7 +2231,7 @@ void ATacticalPlayerController::RequestClassAbility()
 
 void ATacticalPlayerController::RequestSkipUnitTurn()
 {
-	if (!CanIssueCommand(ETacticalPlayerCommand::SkipUnitTurn))
+	if (!CanIssueCommandLogged(ETacticalPlayerCommand::SkipUnitTurn))
 	{
 		return;
 	}
@@ -2167,7 +2280,7 @@ EInteractionKind ATacticalPlayerController::GetAvailableInteraction() const
 
 void ATacticalPlayerController::RequestInteract()
 {
-	if (!CanIssueCommand(ETacticalPlayerCommand::Interact))
+	if (!CanIssueCommandLogged(ETacticalPlayerCommand::Interact))
 	{
 		return;
 	}
@@ -2192,15 +2305,43 @@ void ATacticalPlayerController::RequestInteract()
 	}
 }
 
-void ATacticalPlayerController::RequestPause()
+bool ATacticalPlayerController::IsWorldAcceptingCommands() const
 {
-	// Esc сперва гасит режим прицеливания (XCOM), и только «в пустоте» — пауза.
-	if (IsTargetingAttack() || IsTargetingAbility())
+	// ⚠️ Уровень МИРА, отдельно от уровня бойца. Конец хода легален и без
+	// выбранного юнита, поэтому он не может пройти через CanIssueCommand
+	// целиком — и раньше оставался единственной командой ВНЕ общей воронки: в
+	// логе игрок передавал ход прямо посреди реплики «сейчас будет неприятно»,
+	// после чего сценарный выстрел следующего шага стрелял до старта шага.
+	if (bReactionPlaying || !IsPlayerPhase())
 	{
-		CancelTargeting();
-		return;
+		return false;
 	}
+	// Инструктаж останавливает мир: пока звучит реплика обучения, команд нет.
+	// Пропуск — Пробел.
+	return !IsTutorialBeatBlockingInput();
+}
 
+bool ATacticalPlayerController::IsTutorialBeatBlockingInput() const
+{
+	const UTutorialPresentationSubsystem* Presentation = GetWorld()
+		? GetWorld()->GetSubsystem<UTutorialPresentationSubsystem>() : nullptr;
+	return Presentation && Presentation->IsBeatActive();
+}
+
+bool ATacticalPlayerController::TrySkipTutorialBeat()
+{
+	UTutorialPresentationSubsystem* Presentation = GetWorld()
+		? GetWorld()->GetSubsystem<UTutorialPresentationSubsystem>() : nullptr;
+	if (!Presentation || !Presentation->IsBeatActive())
+	{
+		return false;
+	}
+	Presentation->RequestSkipBeat();
+	return true;
+}
+
+void ATacticalPlayerController::OpenPauseMenu()
+{
 	if (!PauseMenuClass)
 	{
 		return;
@@ -2211,9 +2352,23 @@ void ATacticalPlayerController::RequestPause()
 	UPrimaryGameLayout* RootLayout = UIManager ? UIManager->GetRootLayout() : nullptr;
 	if (RootLayout)
 	{
+		// Паузу держит сам экран (UMenuScreenBase::bPauseGameWhileActive) через
+		// UGamePauseSubsystem. Второй SetGamePaused здесь рассинхронизировал бы
+		// стек причин с реальным состоянием мира.
 		RootLayout->PushWidgetToLayer(EUILayer::Menu, PauseMenuClass);
-		UGameplayStatics::SetGamePaused(this, true);
 	}
+}
+
+void ATacticalPlayerController::RequestPause()
+{
+	// Esc сперва гасит режим прицеливания (XCOM), и только «в пустоте» — пауза.
+	if (IsTargetingAttack() || IsTargetingAbility())
+	{
+		CancelTargeting();
+		return;
+	}
+
+	OpenPauseMenu();
 }
 
 // --- Камера/зона -------------------------------------------------------------------
@@ -2269,9 +2424,20 @@ void ATacticalPlayerController::RefreshMoveRange()
 		return;
 	}
 
+	// ЗОНА ХОДА — ИНДИКАТОР ВЫБОРА, а не разрешение. Она отвечает на вопрос
+	// «кто у меня выбран и куда он в принципе дойдёт», поэтому не спрашивает
+	// ни инструктаж, ни политику шага: в A1 («выбери Шприца») движение шагом
+	// запрещено, и без этого правила выбранный боец выглядел невыбранным —
+	// зона появлялась только на следующем шаге. Право ИДТИ по-прежнему решает
+	// CanIssueCommand: клик по запрещённой зоне будет отклонён с причиной.
 	// Во время выполнения приказа зона прячется: она устарела (юнит уже не там)
 	// и перестроится по остановке (PlayerTick ловит конец перемещения).
-	const bool bShouldShow = CanIssueCommand(ETacticalPlayerCommand::Move);
+	const bool bShouldShow = IsPlayerPhase() && !bReactionPlaying &&
+		UTacticsCombatStatics::IsUnitAlive(SelectedUnit) && !SelectedUnit->IsDowned() &&
+		!SelectedUnit->IsEvacuated() && !IsSelectedUnitMoving() &&
+		!IsUnitActionInProgress(SelectedUnit) &&
+		TargetingMode == EPlayerTargetingMode::None &&
+		SelectedUnit->GetActionPoints() && SelectedUnit->GetActionPoints()->HasActionsLeft();
 	if (!bShouldShow)
 	{
 		MoveRangeVisualizer->Hide();
@@ -2553,10 +2719,33 @@ void ATacticalPlayerController::TryAutoEndTurn()
 	{
 		return;
 	}
-	// В обучении конец хода — отдельный шаг (A3, D1). Автозавершение сделало бы
-	// его за игрока, и инструкция «нажми Завершить ход» осталась бы без действия.
-	if (!UTutorialActionGateSubsystem::AllowsAction(this, ETutorialAction::EndTurn, SelectedUnit))
+	// Пока идёт инструктаж, ход не передаётся сам: иначе фаза врага начиналась
+	// бы посреди реплики, а сценарный выстрел следующего шага — до того, как
+	// шаг вообще стартовал.
+	if (IsTutorialBeatBlockingInput())
 	{
+		return;
+	}
+
+	// --- Кому принадлежит конец хода --------------------------------------------
+	// В боевой миссии автопереход — удобство (так и в XCOM). В ОБУЧЕНИИ конец
+	// хода бывает самим уроком: шаг «передавай ход» ждёт нажатия игрока, и
+	// автомат сделал бы урок за него.
+	//
+	// Но выключать автопереход в обучении ЦЕЛИКОМ нельзя: в шагах, где кнопка
+	// «Завершить ход» ЗАПРЕЩЕНА политикой, у игрока не остаётся выхода, если
+	// очки кончились. Поэтому правило точное: **не автоматизируем ровно там,
+	// где шаг сам учит нажимать кнопку**; где кнопки нет — автомат остаётся
+	// страховкой.
+	const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>();
+	const UTacticalScenarioDataAsset* Scenario = GameInstance ? GameInstance->GetActiveScenario() : nullptr;
+	const bool bScenarioAllowsAuto = !Scenario || Scenario->bAutoEndTurnWhenSquadExhausted;
+	const bool bStepTeachesEndTurn =
+		UTutorialActionGateSubsystem::AllowsAction(this, ETutorialAction::EndTurn, SelectedUnit);
+	if (!bScenarioAllowsAuto && bStepTeachesEndTurn)
+	{
+		UE_LOG(LogXRU1Quest, Display,
+			TEXT("[Turns] Автопереход не делается: шаг учит нажимать «Завершить ход»"));
 		return;
 	}
 	// Пока кто-то ещё бежит, ход не завершаем: последний AP мог уйти на движение,

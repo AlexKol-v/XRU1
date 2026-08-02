@@ -66,6 +66,7 @@ public class XRU1 : ModuleRules
 			"XRU1/FX",
 			"XRU1/Characters",
 			"XRU1/UI",
+			"XRU1/Hub",
 			"XRU1/Interaction",
 			"XRU1/PCG",
 			"XRU1/Tactics",

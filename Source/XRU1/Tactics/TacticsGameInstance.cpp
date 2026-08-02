@@ -5,8 +5,23 @@
 #include "TacticalScenarioDataAsset.h"
 #include "TacticsAudioSubsystem.h"
 #include "TacticsSaveGame.h"
+#include "TacticsUserSettings.h"
+#include "GamePauseSubsystem.h"
 #include "GameFramework/GameUserSettings.h"
 #include "Kismet/GameplayStatics.h"
+
+void UTacticsGameInstance::Init()
+{
+	Super::Init();
+
+	// Первый запуск подтягивает дизайнерские дефолты из DA_TacticsAudio и
+	// фактическое состояние окна; последующие — просто применяют сохранённое.
+	if (UTacticsUserSettings* UserSettings = UTacticsUserSettings::Get())
+	{
+		UserSettings->InitializeFromProjectIfNeeded(this);
+	}
+	ApplySavedUserSettings();
+}
 
 bool UTacticsGameInstance::HasSaveGame() const
 {
@@ -21,6 +36,9 @@ UTacticsSaveGame* UTacticsGameInstance::StartNewCampaign(EDifficultyLevel Diffic
 		CurrentSave->Difficulty = Difficulty;
 		CurrentSave->CompletedMissions.Reset();
 		CurrentSave->SquadRoles = { EUnitRole::Assault, EUnitRole::Sniper, EUnitRole::Healer, EUnitRole::Tank };
+		// Громкость и качество картинки НЕ трогаем: это настройки приложения
+		// (UTacticsUserSettings), а не прогресса. Новая игра не должна сбрасывать
+		// то, что игрок настроил под себя.
 		SaveCampaign();
 		ApplySavedUserSettings();
 	}
@@ -45,27 +63,25 @@ UTacticsSaveGame* UTacticsGameInstance::LoadCampaign()
 
 void UTacticsGameInstance::ApplySavedUserSettings()
 {
+	// Единственный источник — UTacticsUserSettings. Слот кампании больше не
+	// участвует: пока настройки жили в двух местах, меню показывало одно, а
+	// движок применял другое (docs/09_UI_HUD §5.5).
 	if (UTacticsAudioSubsystem* Audio = GetSubsystem<UTacticsAudioSubsystem>())
 	{
 		Audio->ApplyAudioSettingsFromSave();
 	}
-
-	UGameUserSettings* UserSettings = GEngine ? GEngine->GetGameUserSettings() : nullptr;
-	if (!UserSettings || !CurrentSave)
+	if (UTacticsUserSettings* UserSettings = UTacticsUserSettings::Get())
 	{
-		return;
+		UserSettings->ApplySettings(/*bCheckForCommandLineOverrides=*/false);
 	}
+}
 
-	const FTacticsVideoSettings& Video = CurrentSave->VideoSettings;
-	if (Video.ScalabilityLevel >= 0)
+void UTacticsGameInstance::ClearPauseBeforeTravel()
+{
+	if (UGamePauseSubsystem* Pause = GetSubsystem<UGamePauseSubsystem>())
 	{
-		UserSettings->SetOverallScalabilityLevel(FMath::Clamp(Video.ScalabilityLevel, 0, 3));
+		Pause->ClearAllPauseReasons();
 	}
-	UserSettings->SetResolutionScaleNormalized(FMath::Clamp(Video.ResolutionScale, 0.25f, 1.f));
-	UserSettings->SetFullscreenMode(Video.bFullscreen
-		? EWindowMode::WindowedFullscreen : EWindowMode::Windowed);
-	UserSettings->SetVSyncEnabled(Video.bVSync);
-	UserSettings->ApplySettings(/*bCheckForCommandLineOverrides=*/false);
 }
 
 void UTacticsGameInstance::TravelToHub()
@@ -73,6 +89,7 @@ void UTacticsGameInstance::TravelToHub()
 	ActiveScenario = nullptr;
 	if (!HubLevel.IsNull())
 	{
+		ClearPauseBeforeTravel();
 		UGameplayStatics::OpenLevelBySoftObjectPtr(this, HubLevel);
 	}
 	else
@@ -86,6 +103,7 @@ void UTacticsGameInstance::TravelToMainMenu()
 	ActiveScenario = nullptr;
 	if (!MainMenuLevel.IsNull())
 	{
+		ClearPauseBeforeTravel();
 		UGameplayStatics::OpenLevelBySoftObjectPtr(this, MainMenuLevel);
 	}
 	else
@@ -135,6 +153,7 @@ bool UTacticsGameInstance::StartCombatScenario(UTacticalScenarioDataAsset* Scena
 		return false;
 	}
 
+	ClearPauseBeforeTravel();
 	UGameplayStatics::OpenLevelBySoftObjectPtr(this, SharedCombatLevel);
 	return true;
 }

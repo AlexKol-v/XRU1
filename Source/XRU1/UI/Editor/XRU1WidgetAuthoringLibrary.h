@@ -52,4 +52,11 @@ public:
 	/** Попап POI хаба: Txt_Title, Txt_Description, Txt_Locked. */
 	UFUNCTION(BlueprintCallable, Category = "XRU1|Widget Authoring")
 	static bool BuildPOIPopupLayout(const FString& AssetPath, bool bOverwriteExisting);
+
+	/**
+	 * HUD хаба: карточка точки слева внизу (Txt_POITitle/Description/Status,
+	 * Btn_Start) и служебные кнопки справа вверху (Btn_Settings, Btn_ToMenu).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "XRU1|Widget Authoring")
+	static bool BuildHubHUDLayout(const FString& AssetPath, bool bOverwriteExisting);
 };

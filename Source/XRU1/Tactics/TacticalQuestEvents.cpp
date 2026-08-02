@@ -34,6 +34,8 @@ namespace TacticalQuestTags
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Tactical_Ability_Overwatch_Activated, "Quest.Event.Tactical.Ability.Overwatch.Activated", "Наблюдение успешно активировано.");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Tactical_Ability_Hunker_Activated, "Quest.Event.Tactical.Ability.Hunker.Activated", "Глухая оборона успешно активирована.");
 
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Tactical_Scripted_ShotFinished, "Quest.Event.Tactical.Scripted.ShotFinished", "Сценарный выстрел закончился: презентация и урон доведены.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Tactical_Scripted_MoveFinished, "Quest.Event.Tactical.Scripted.MoveFinished", "Сценарная перебежка закончилась: боец добежал и осел.");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Tactical_Objective_Defuse_Progressed, "Quest.Event.Tactical.Objective.Defuse.Progressed", "Один промежуточный шаг обезвреживания подтверждён.");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Tactical_Objective_Defuse_Completed, "Quest.Event.Tactical.Objective.Defuse.Completed", "Обезвреживание полностью завершено.");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Tactical_Objective_Evac_Unit, "Quest.Event.Tactical.Objective.Evac.Unit", "Один боец успешно эвакуирован.");

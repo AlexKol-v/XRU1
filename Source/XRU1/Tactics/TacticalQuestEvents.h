@@ -37,6 +37,26 @@ namespace TacticalQuestTags
 	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Ability_Overwatch_Activated);
 	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Ability_Hunker_Activated);
 
+	/**
+	 * Сценарный выстрел ЗАКОНЧИЛСЯ (презентация и урон доведены).
+	 *
+	 * Обычные выстрелы ВРАГА намеренно не публикуют quest-событий: они не
+	 * должны закрывать шаги обучения. Но реплики-реакции («Ай! За что?!»,
+	 * «Щекотно», «Слышал свист?») обязаны звучать ПОСЛЕ попадания, а не на
+	 * входе в шаг — поэтому о завершении объявляет сам оркестратор выстрела,
+	 * своим событием и только для своего сценарного действия.
+	 * Source — стрелок, Target — цель.
+	 */
+	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Scripted_ShotFinished);
+
+	/**
+	 * Сценарная перебежка ЗАКОНЧИЛАСЬ: боец добежал, осел в укрытие и довернул.
+	 * Source — боец, Target — точка назначения. Нужна репликам, которые звучат
+	 * ПОСЛЕ прибытия («Не стреляйте, свои!» Кадета), — обычное движение по
+	 * приказу задачи боевых quest-событий не публикует.
+	 */
+	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Scripted_MoveFinished);
+
 	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Objective_Defuse_Progressed);
 	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Objective_Defuse_Completed);
 	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Objective_Evac_Unit);

@@ -300,6 +300,28 @@ struct FTacticalTask_TutorialBeatInstanceData
 	UPROPERTY(EditAnywhere, Category = "Tutorial")
 	FTacticalTutorialBeat Beat;
 
+	/**
+	 * Событие, ПОСЛЕ которого реплика звучит. Пусто — играет на входе в шаг.
+	 *
+	 * Половина реплик — реакции на то, что происходит внутри шага: «Ай! За
+	 * что?!» после выстрела врага, «Щекотно» после попадания в Молота, «Есть
+	 * контакт» после срабатывания наблюдения, доклад Кадета — после того как он
+	 * добежал. На входе в состояние они звучали ДО события и ломали сцену.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Tutorial|Триггер")
+	FGameplayTag TriggerEvent;
+
+	/** Фильтр источника события (AnchorId). Пусто — любой источник. */
+	UPROPERTY(EditAnywhere, Category = "Tutorial|Триггер")
+	FName TriggerSourceAnchorId;
+
+	/**
+	 * Страховка: не дождались события за столько секунд — играем реплику всё
+	 * равно. Иначе один несработавший сценарный выстрел вешал бы шаг навсегда.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Tutorial|Триггер", meta = (ClampMin = "1"))
+	float TriggerTimeout = 25.f;
+
 	UPROPERTY()
 	float ElapsedTime = 0.f;
 
@@ -311,6 +333,14 @@ struct FTacticalTask_TutorialBeatInstanceData
 	 */
 	UPROPERTY()
 	bool bBeatStarted = false;
+
+	/** Играется ответная реплика обмена (см. FTacticalTutorialBeat). */
+	UPROPERTY()
+	bool bFollowUpStarted = false;
+
+	/** Такт отговорил: повторно не запускаем, состояние уже может жить дальше. */
+	UPROPERTY()
+	bool bBeatFinished = false;
 };
 
 /**
@@ -337,6 +367,18 @@ struct XRU1_API FTacticalTask_TutorialBeat : public FStateTreeTaskCommonBase
 		const float DeltaTime) const override;
 	virtual void ExitState(FStateTreeExecutionContext& Context,
 		const FStateTreeTransitionResult& Transition) const override;
+
+private:
+	/** Запустить реплику (общая точка входа и триггера). */
+	bool StartBeatNow(FStateTreeExecutionContext& Context, FInstanceDataType& Inst) const;
+
+	/**
+	 * Камера занята кадром выстрела, а такту есть что показать (задан фокус).
+	 * Такой такт ждёт: шаг уже сменился (это решает квест-логика), но реплика
+	 * о раненом не должна звучать, пока камера доигрывает kill-cam.
+	 */
+	bool IsCameraBusyForBeat(FStateTreeExecutionContext& Context,
+		const FInstanceDataType& Inst) const;
 };
 
 // --- Сценарное перемещение ------------------------------------------------------

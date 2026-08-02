@@ -83,20 +83,20 @@ struct XRU1_API FTacticsAudioSettings
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadWrite, SaveGame, Category = "Audio", meta = (ClampMin = "0", ClampMax = "1"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category = "Audio", meta = (ClampMin = "0", ClampMax = "1"))
 	float MasterVolume = 1.f;
 
-	UPROPERTY(BlueprintReadWrite, SaveGame, Category = "Audio", meta = (ClampMin = "0", ClampMax = "1"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category = "Audio", meta = (ClampMin = "0", ClampMax = "1"))
 	float MusicVolume = 0.7f;
 
-	UPROPERTY(BlueprintReadWrite, SaveGame, Category = "Audio", meta = (ClampMin = "0", ClampMax = "1"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category = "Audio", meta = (ClampMin = "0", ClampMax = "1"))
 	float SfxVolume = 1.f;
 
-	UPROPERTY(BlueprintReadWrite, SaveGame, Category = "Audio", meta = (ClampMin = "0", ClampMax = "1"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category = "Audio", meta = (ClampMin = "0", ClampMax = "1"))
 	float UIVolume = 1.f;
 
 	/** Голос «Купола» и реплики бойцов. */
-	UPROPERTY(BlueprintReadWrite, SaveGame, Category = "Audio", meta = (ClampMin = "0", ClampMax = "1"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category = "Audio", meta = (ClampMin = "0", ClampMax = "1"))
 	float VoiceVolume = 1.f;
 };
 
@@ -111,15 +111,15 @@ struct XRU1_API FTacticsVideoSettings
 	GENERATED_BODY()
 
 	/** Общий уровень качества 0..3 (Low/Medium/High/Epic). -1 — не применялось. */
-	UPROPERTY(BlueprintReadWrite, SaveGame, Category = "Video", meta = (ClampMin = "-1", ClampMax = "3"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category = "Video", meta = (ClampMin = "-1", ClampMax = "3"))
 	int32 ScalabilityLevel = 2;
 
-	UPROPERTY(BlueprintReadWrite, SaveGame, Category = "Video", meta = (ClampMin = "0.25", ClampMax = "1"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category = "Video", meta = (ClampMin = "0.25", ClampMax = "1"))
 	float ResolutionScale = 1.f;
 
-	UPROPERTY(BlueprintReadWrite, SaveGame, Category = "Video")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category = "Video")
 	bool bFullscreen = true;
 
-	UPROPERTY(BlueprintReadWrite, SaveGame, Category = "Video")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category = "Video")
 	bool bVSync = true;
 };

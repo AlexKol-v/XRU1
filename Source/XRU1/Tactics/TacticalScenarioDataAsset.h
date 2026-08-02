@@ -5,6 +5,8 @@
 #include "TacticalScenarioDataAsset.generated.h"
 
 class UQuestDefinition;
+class USoundBase;
+class UTacticsSaveGame;
 class UWorld;
 
 UENUM(BlueprintType)
@@ -30,6 +32,52 @@ public:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Scenario")
 	ETacticalScenarioKind Kind = ETacticalScenarioKind::Tutorial;
+
+	// --- Витрина миссии (хаб, брифинг, экран результата) -----------------------
+	// Название и описание принадлежат МИССИИ, а не маркеру на карте: один и тот
+	// же текст нужен попапу POI, HUD хаба и брифингу, и он не должен разъезжаться
+	// по трём местам.
+
+	/** Название миссии для игрока («Полигон „Купол“»). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Scenario|Витрина")
+	FText DisplayName;
+
+	/** Краткое описание/брифинг для попапа и HUD хаба. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Scenario|Витрина", meta = (MultiLine = true))
+	FText BriefingText;
+
+	// --- Доступность -----------------------------------------------------------
+
+	/**
+	 * Миссии, которые нужно пройти до этой. Ссылки, а не строки: имя требования
+	 * берётся прямо из ассета, поэтому переименование миссии не ломает подсказку
+	 * и не требует отдельного реестра.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Scenario|Доступность")
+	TArray<TSoftObjectPtr<UTacticalScenarioDataAsset>> RequiredMissions;
+
+	/**
+	 * Разрешить запуск без кампании (прямой PIE хаба). Для боевых миссий обычно
+	 * false: иначе прогрессия проверяется только в полном прохождении.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Scenario|Доступность")
+	bool bAvailableWithoutCampaign = true;
+
+	/** Своя формулировка запрета; пусто — текст собирается из RequiredMissions. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Scenario|Доступность")
+	FText LockedHintOverride;
+
+	/** Выполнены ли требования к запуску при данном слоте кампании (Save может быть null). */
+	UFUNCTION(BlueprintPure, Category = "Scenario|Доступность")
+	bool ArePrerequisitesMet(const UTacticsSaveGame* Save) const;
+
+	/** Причина недоступности для игрока; пустой текст — миссия доступна. */
+	UFUNCTION(BlueprintPure, Category = "Scenario|Доступность")
+	FText GetLockedReason(const UTacticsSaveGame* Save) const;
+
+	/** Название для игрока; при пустом DisplayName — ScenarioId (диагностика). */
+	UFUNCTION(BlueprintPure, Category = "Scenario|Витрина")
+	FText GetDisplayNameSafe() const;
 
 	/** StateTree-квест, который управляет целями этого запуска общей карты. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Scenario")
@@ -62,4 +110,33 @@ public:
 	/** Новый запуск всегда начинает с чистого runtime-состояния тумана. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Scenario|Fog")
 	bool bResetFogOnStart = true;
+
+	/**
+	 * Завершать ход автоматически, когда у отряда кончились очки действия.
+	 *
+	 * В боевой миссии это удобство (XCOM так и делает). В ОБУЧЕНИИ — вред:
+	 * шаги «передай ход» (A3, B1, C1) требуют, чтобы игрок нажал кнопку сам, а
+	 * автопереход делает это за него, пока «Купол» ещё договаривает фразу.
+	 * Поэтому это свойство СЦЕНАРИЯ, а не глобальная настройка контроллера:
+	 * туториал ставит false, боевые миссии — true.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Scenario")
+	bool bAutoEndTurnWhenSquadExhausted = true;
+
+	// --- Реплики исхода (экран результата) -------------------------------------
+	// Живут в СЦЕНАРИИ, а не в виджете: экран результата один на все миссии, а
+	// «Зачёт, отряд к вылету готов» и «…Узел-7 потерян» — тексты конкретного
+	// сценария. Пусто — экран молчит.
+
+	/** Реплика при победе. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Scenario|Озвучка")
+	TSoftObjectPtr<USoundBase> VictoryVoice;
+
+	/** Реплика при поражении (отряд погиб). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Scenario|Озвучка")
+	TSoftObjectPtr<USoundBase> DefeatVoice;
+
+	/** Реплика при поражении по таймеру; пусто — играет DefeatVoice. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Scenario|Озвучка")
+	TSoftObjectPtr<USoundBase> DefeatByTimeoutVoice;
 };

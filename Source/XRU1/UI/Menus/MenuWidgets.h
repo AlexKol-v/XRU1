@@ -9,6 +9,7 @@
 class UTacticsGameInstance;
 class UTacticsAudioSubsystem;
 class UTacticalHUDStyleData;
+class UMediaPlayer;
 class UButton;
 class UCheckBox;
 class UComboBoxString;
@@ -65,12 +66,37 @@ protected:
 	UFUNCTION()
 	void HandleBackClicked();
 
+	/**
+	 * Ставить ли игру на паузу, пока экран открыт.
+	 *
+	 * По умолчанию ВЫКЛЮЧЕНО: под главным меню, выбором сложности и экраном
+	 * результата живого геймплея нет, и лишняя пауза там только создаёт риск
+	 * «залипшей» причины. Включают её экраны поверх идущей игры — пауза
+	 * и настройки.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Menu")
+	bool bPauseGameWhileActive = false;
+
+	virtual void NativeConstruct() override;
+	virtual void NativeOnActivated() override;
+	virtual void NativeOnDeactivated() override;
+	virtual void NativeDestruct() override;
+
+	/** Снимает удерживаемую этим экраном паузу (идемпотентно). */
+	void ReleasePauseHold();
+
 private:
 	UFUNCTION()
 	void HandleButtonHovered();
 
 	UFUNCTION()
 	void HandleButtonClicked();
+
+	/**
+	 * Причина паузы этого экземпляра. Уникальная, а не общая на все меню:
+	 * с общим именем закрытие настроек, открытых из паузы, сняло бы и паузу.
+	 */
+	FName PauseReasonId;
 };
 
 /**
@@ -210,8 +236,15 @@ private:
 	/** Собирает настройки изображения из контролов секции «Изображение». */
 	FTacticsVideoSettings CollectVideoSettings() const;
 
-	/** Расставляет контролы по текущему слоту кампании. */
+	/** Расставляет контролы по текущим настройкам приложения. */
 	void RefreshControlsFromSettings();
+
+	/**
+	 * Идёт программная расстановка контролов. `SetValue` слайдера вызывает
+	 * `OnValueChanged`, и без этого флага экран принимал бы собственную
+	 * инициализацию за действие игрока.
+	 */
+	bool bUpdatingControls = false;
 
 	/** Перетаскивание любого слайдера звука: применить без записи в слот. */
 	UFUNCTION() void HandleAudioSliderValue(float NewValue);
@@ -260,10 +293,44 @@ public:
 protected:
 	virtual void NativeOnInitialized() override;
 
+	/** Старт ролика при показе экрана. */
+	virtual void NativeOnActivated() override;
+
+	/** Остановка плеера: экран мог быть закрыт до конца ролика. */
+	virtual void NativeDestruct() override;
+
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Skip;
+
+	/** Полотно ролика: сюда ставится материал с MediaTexture или fallback-арт. */
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UImage> Img_Intro;
+
+	/**
+	 * Страховка от «вечного интро»: если медиа не открылось или событие конца
+	 * не пришло, экран всё равно уйдёт в хаб. 0 — выключить страховку.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Menu|Intro", meta = (ClampMin = "0"))
+	float MaxIntroDuration = 90.f;
 
 private:
 	UFUNCTION() void HandleSkipClicked();
+
+	/** Ролик доигран до конца — уходим в хаб. */
+	UFUNCTION() void HandleMediaEndReached();
+
+	/** Медиа не открылось (нет файла/кодека) — не задерживать игрока. */
+	UFUNCTION() void HandleMediaOpenFailed(FString FailedUrl);
+
+	/** Останавливает плеер и снимает подписки (идемпотентно). */
+	void StopIntroPlayback();
+
+	/** Плеер интро из темы; держим ссылку, чтобы отписаться и остановить. */
+	UPROPERTY(Transient)
+	TObjectPtr<UMediaPlayer> IntroPlayer;
+
+	/** Интро уже завершено — второй переход в хаб не нужен. */
+	bool bIntroFinished = false;
+
+	FTimerHandle IntroTimeoutTimer;
 };
 
 /** Экран выбора сложности при старте новой игры. */

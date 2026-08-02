@@ -1,6 +1,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "AudioDeviceHandle.h"
+#include "Containers/Ticker.h" // сторож музыки живёт на системном тикере
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "TacticsAudioTypes.h"
 #include "TacticsAudioSubsystem.generated.h"
@@ -20,7 +22,20 @@ class XRU1_API UTacticsAudioSettingsDataAsset : public UDataAsset
 	GENERATED_BODY()
 
 public:
-	/** SoundMix, через который применяются пользовательские громкости. */
+	/**
+	 * Стартовые громкости новой кампании и значения кнопки «Сбросить».
+	 * Здесь, а не в C++-дефолтах структуры: подбор громкости на слух — работа
+	 * дизайнера, ради неё не должно требоваться пересобирать проект.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Mixer")
+	FTacticsAudioSettings DefaultVolumes;
+
+	/**
+	 * SoundMix проекта. Пользовательские громкости через него НЕ идут (они
+	 * ставятся прямо в SoundClass); микс держится активным для будущих эффектов
+	 * вроде приглушения боя под реплику. Он же должен стоять в
+	 * Project Settings → Audio → Default Base Sound Mix.
+	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Mixer")
 	TObjectPtr<USoundMix> UserVolumeMix;
 
@@ -121,8 +136,9 @@ class XRU1_API UTacticsAudioSubsystem : public UGameInstanceSubsystem
 
 public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
+	virtual void Deinitialize() override;
 
-	/** Применяет громкости к SoundMix. Вызывается при старте и из меню настроек. */
+	/** Применяет громкости к SoundClass'ам. Зовётся при старте мира и из меню настроек. */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Audio")
 	void ApplyAudioSettings(const FTacticsAudioSettings& Settings);
 
@@ -130,7 +146,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Tactics|Audio")
 	const FTacticsAudioSettings& GetAudioSettings() const { return AppliedSettings; }
 
-	/** Перечитывает громкости из слота кампании и применяет их. */
+	/** Перечитывает громкости из UTacticsUserSettings и применяет их. */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Audio")
 	void ApplyAudioSettingsFromSave();
 
@@ -218,17 +234,90 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Tactics|Audio")
 	UTacticsAudioSettingsDataAsset* GetAudioSettingsAsset() const;
 
+	/** Стартовые громкости проекта: из ассета микшера, иначе C++-дефолты. */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Audio")
+	FTacticsAudioSettings GetDefaultAudioSettings() const;
+
+	/**
+	 * Полный дамп состояния звука в лог: ассет микшера, мир и аудио-устройство,
+	 * базовый микс, активные миксы с их override'ами, иерархия SoundClass,
+	 * сохранённые и применённые громкости, текущий музыкальный компонент.
+	 * Консоль: `xru1.Audio.Dump`.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Audio")
+	void DumpAudioState();
+
+	/**
+	 * Пауза боевого звука: реплика замирает и продолжится с того же места,
+	 * эффекты и голос глушатся. Интерфейс и музыка остаются слышимыми — иначе
+	 * меню паузы выглядит «сломавшим звук».
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Audio")
+	void SetGameplayAudioPaused(bool bPaused);
+
 private:
-	/** Ставит override громкости одного SoundClass в общий SoundMix. */
+	/** Ставит громкость одного SoundClass (прямо в его Properties). */
 	void ApplyClassVolume(USoundClass* SoundClass, float Volume);
 
+	/** Возвращает ассетам их исходные громкости (нужно редактору после PIE). */
+	void RestoreOriginalClassVolumes();
+
+	/** Громкости SoundClass, какими они были до вмешательства подсистемы. */
+	UPROPERTY(Transient)
+	TMap<TObjectPtr<USoundClass>, float> OriginalClassVolumes;
+
+	/** Мир получил аудио-устройство — переприменяем к нему громкости. */
+	void HandleWorldRegisteredToAudioDevice(const UWorld* World, Audio::FDeviceId DeviceId);
+
+	/** Мир, к аудио-устройству которого применяются микс и громкости. */
+	UWorld* GetAudioWorld() const;
+
+	/** Последний мир, зарегистрированный с аудио-устройством. */
+	TWeakObjectPtr<UWorld> AudioWorld;
+
+	FDelegateHandle AudioDeviceRegisteredHandle;
+
+	/**
+	 * Сторож музыки: системный тикер, живущий и на паузе. Пишет в лог ТОЛЬКО
+	 * смену состояния «играет ↔ молчит» вместе с подозреваемыми (мир на паузе,
+	 * приглушение, судьба компонента) — жалоба «музыка молча пропала» иначе не
+	 * расследуется постфактум.
+	 */
+	FTSTicker::FDelegateHandle MusicWatchdogHandle;
+	bool bMusicWasPlaying = false;
+
+	/** Музыку остановили НАМЕРЕННО (стингер исхода) — сторожу молчать. */
+	bool bMusicStoppedIntentionally = false;
+
+	/** Тик сторожа; всегда возвращает true (тикер живёт до Deinitialize). */
+	bool TickMusicWatchdog(float DeltaTime);
+
 	FTacticsAudioSettings AppliedSettings;
-	bool bMixPushed = false;
+
+	/** Приглушён ли звук паузой (transient-громкость устройства). */
+	bool bGameplayAudioPaused = false;
 
 	/** Активный музыкальный компонент; переживает travel (persist across level). */
-	TWeakObjectPtr<class UAudioComponent> MusicComponent;
+	/**
+	 * ⚠️ СИЛЬНАЯ ссылка обязательна. Компонент музыки создаётся с
+	 * `bAutoDestroy=false` и не принадлежит ни одному актору: слабая ссылка не
+	 * удерживает его от сборщика мусора, и музыка молча пропадала на первой же
+	 * подгрузке ассета (в логе — `музыка МОЛЧИТ | компонент=нет` рядом с
+	 * FlushAsyncLoading). Для звуков с bAutoDestroy=true это не нужно — их
+	 * держит аудио-движок, пока они играют.
+	 */
+	UPROPERTY(Transient)
+	TObjectPtr<class UAudioComponent> MusicComponent;
+
 	TWeakObjectPtr<USoundBase> CurrentMusicTrack;
 
 	/** Активная реплика: следующая обрывает её, чтобы фразы не накладывались. */
-	TWeakObjectPtr<class UAudioComponent> VoiceComponent;
+	/**
+	 * Голос создаётся с `bAutoDestroy=true` — пока звучит, его держит
+	 * аудио-движок. Сильная ссылка нужна, чтобы после конца фразы указатель
+	 * гарантированно вёл на «мёртвый» объект (IsValid=false), а не на память,
+	 * переиспользованную другим звуком.
+	 */
+	UPROPERTY(Transient)
+	TObjectPtr<class UAudioComponent> VoiceComponent;
 };

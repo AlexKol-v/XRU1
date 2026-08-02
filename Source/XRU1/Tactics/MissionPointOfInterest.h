@@ -64,9 +64,25 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Tactics|POI")
 	FOnPOIHoverChanged OnHoverChanged;
 
-	/** Заблокирована ли точка (требуемая миссия ещё не пройдена). Для серого маркера в BP. */
+	/**
+	 * Заблокирована ли точка. Источник правды — требования назначенной миссии
+	 * (`UTacticalScenarioDataAsset::RequiredMissions`); `RequiredCompletedMission`
+	 * ниже остаётся legacy-путём для точек без Scenario.
+	 */
 	UFUNCTION(BlueprintPure, Category = "Tactics|POI")
 	bool IsLocked() const;
+
+	/** Причина недоступности для игрока; пусто — точка доступна. */
+	UFUNCTION(BlueprintPure, Category = "Tactics|POI")
+	FText GetLockedReason() const;
+
+	/** Название: своё поле Title, иначе DisplayName миссии. */
+	UFUNCTION(BlueprintPure, Category = "Tactics|POI")
+	FText GetDisplayTitle() const;
+
+	/** Описание: своё поле Description, иначе BriefingText миссии. */
+	UFUNCTION(BlueprintPure, Category = "Tactics|POI")
+	FText GetDisplayDescription() const;
 
 	/** Загружает связанный уровень; у заблокированной точки шлёт OnSelectionDenied. */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|POI")

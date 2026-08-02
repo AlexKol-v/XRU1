@@ -9,6 +9,7 @@
 |---|---|---|
 | Тактическое ядро | `Source/XRU1/Tactics/` | ходы, AP, перемещение, укрытия, бой, AI, способности, камера, миссия и save |
 | Игровой UI | `Source/XRU1/UI/`, `UI/Menus/` | HUD, unit widgets, CommonUI-стеки и экраны |
+| Хаб | `Source/XRU1/Hub/` | голо-карта выбора миссий, её камера, контроллер и маркеры POI |
 | GAS-иерархия | `Characters/` | ASC, атрибуты и базовые combatant-классы, перенесённые из донора |
 | Интеракции | `Interaction/` | детектор объектов и prompt |
 | PCG | `PCG/` | вспомогательные PCG-ноды для окружения |
@@ -33,6 +34,9 @@
 | `UAIBehaviorProfileDataAsset` | единый DataAsset тюнинга perception/nav/alert/position/target/evaluators |
 | `UFogOfWarSubsystem` | player-facing gameplay visibility и безопасный список видимых врагов |
 | `UTacticsGameInstance` | save/UI/cover и выбранный scenario одной общей боевой карты |
+| `UGamePauseSubsystem` | единственный владелец паузы: стек причин, `SetGamePaused`, режим ввода и приглушение боевого звука |
+| `AHologramMapActor` / `AHubPOIMarker` | голо-карта хаба (вращение по yaw, автоспин) и маркеры миссий на её `RotationRoot` |
+| `AHubPlayerController` / `AHubCameraPawn` | ввод хаба (ПКМ-drag, ЛКМ-выбор, колесо, Q/E) и орбитальная камера |
 | `ATacticalScenarioDirector` | вход в scenario sublevel и запуск квеста после его загрузки |
 | `UTacticalQuestEvents` / `ATacticalQuestZone` | подтверждённые доменные события обучения и зоны тактических бойцов |
 | `UTacticalScenarioSubsystem` | реестр акторов сценария по `AnchorId` и единое включение staged-акторов |
@@ -210,11 +214,13 @@ quest-событий, поэтому отменённое действие не 
 
 | Блок | Файл | Роль |
 |---|---|---|
-| `UTacticsAudioSubsystem` | [TacticsAudioSubsystem.h](../Source/XRU1/Audio/TacticsAudioSubsystem.h) | воспроизведение 2D/3D/attached, применение громкостей через SoundMix |
-| `UTacticsAudioSettingsDataAsset` | там же | SoundMix, пять SoundClass и общие звуки интерфейса |
+| `UTacticsAudioSubsystem` | [TacticsAudioSubsystem.h](../Source/XRU1/Audio/TacticsAudioSubsystem.h) | воспроизведение 2D/3D/attached; громкости ставятся прямо в `SoundClass` (не через SoundMix — см. [09_UI_HUD §5.5](09_UI_HUD.md)) |
+| `UTacticsAudioSettingsDataAsset` | там же | дефолтные громкости, SoundMix, пять SoundClass и общие звуки интерфейса |
 | `UUnitAudioDataAsset` | [UnitAudioDataAsset.h](../Source/XRU1/Audio/UnitAudioDataAsset.h) | профиль класса: выстрел, боль, смерть, способности, шаги по поверхностям |
 | `UAnimNotify_UnitFootstep` | [AnimNotify_UnitFootstep.h](../Source/XRU1/Audio/AnimNotify_UnitFootstep.h) | шаг с выбором звука по физматериалу под ногой |
-| `FTacticsAudioSettings` / `FTacticsVideoSettings` | [TacticsAudioTypes.h](../Source/XRU1/Audio/TacticsAudioTypes.h) | пользовательские настройки в слоте кампании |
+| `FTacticsAudioSettings` / `FTacticsVideoSettings` | [TacticsAudioTypes.h](../Source/XRU1/Audio/TacticsAudioTypes.h) | структуры настроек; хранит их `UTacticsUserSettings`, а НЕ слот кампании |
+| `UTacticsUserSettings` | [TacticsUserSettings.h](../Source/XRU1/Tactics/TacticsUserSettings.h) | единственный источник правды настроек звука и изображения (`GameUserSettings.ini`) |
+| `UGamePauseSubsystem` | [GamePauseSubsystem.h](../Source/XRU1/Tactics/GamePauseSubsystem.h) | единственный владелец паузы: стек причин, мир, звук |
 
 `AUnitBase::PlayUnitSound(EUnitSoundEvent)` — единственный вход для звуков
 юнита; Blueprint ничего подключать не обязан. Громкости применяются

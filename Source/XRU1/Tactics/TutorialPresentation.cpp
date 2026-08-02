@@ -1,15 +1,46 @@
 #include "TutorialPresentation.h"
 
 #include "Engine/World.h"
+#include "Misc/Paths.h" // имя файла озвучки в логе такта
 #include "GameFramework/PlayerController.h"
 #include "ScenarioActorRegistry.h"
 #include "Sound/SoundBase.h"
 #include "TacticalCameraPawn.h"
+#include "Components/AudioComponent.h"
 #include "TacticsAudioSubsystem.h"
 #include "XRU1Log.h"
 
+void UTutorialPresentationSubsystem::RequestSkipBeat()
+{
+	if (!bBeatActive)
+	{
+		return;
+	}
+	bSkipRequested = true;
+
+	// Пропуск ОБРЫВАЕТ голос. Иначе реплика продолжает звучать поверх уже
+	// начавшегося следующего шага: игрок слышит инструкцию к тому, что сам
+	// только что перескочил, и связь «реплика ↔ шаг» рвётся. Естественное
+	// окончание такта голос по-прежнему не рубит — там фраза уже договорена.
+	if (ActiveVoiceComponent.IsValid())
+	{
+		ActiveVoiceComponent->Stop();
+		ActiveVoiceComponent = nullptr;
+	}
+	UE_LOG(LogXRU1Quest, Display, TEXT("[Beat] Игрок пропускает реплику %s — голос оборван"),
+		*ActiveBeat.BeatId.ToString());
+}
+
+bool UTutorialPresentationSubsystem::ConsumeSkipRequest()
+{
+	const bool bSkip = bSkipRequested;
+	bSkipRequested = false;
+	return bSkip;
+}
+
 void UTutorialPresentationSubsystem::StartBeat(const FTacticalTutorialBeat& Beat)
 {
+	bSkipRequested = false; // новая реплика — новый запрос пропуска
 	if (bBeatActive)
 	{
 		FinishBeat();
@@ -17,6 +48,14 @@ void UTutorialPresentationSubsystem::StartBeat(const FTacticalTutorialBeat& Beat
 
 	ActiveBeat = Beat;
 	bBeatActive = true;
+
+	UE_LOG(LogXRU1Quest, Display,
+		TEXT("[Beat] СТАРТ %s | %s | %.1f с | голос=%s | фокус=%s | ответ=%s | ввод заблокирован"),
+		*Beat.BeatId.ToString(),
+		Beat.Speaker.IsEmpty() ? TEXT("<без имени>") : *Beat.Speaker.ToString(),
+		Beat.Duration, *FPaths::GetBaseFilename(Beat.Voice.ToString()),
+		Beat.FocusAnchorId.IsNone() ? TEXT("нет") : *Beat.FocusAnchorId.ToString(),
+		Beat.HasFollowUp() ? TEXT("есть") : TEXT("нет"));
 
 	// Камера наводится здесь, а не в BP: точка задаётся стабильным AnchorId и
 	// потому переживает переименование актора в Outliner.
@@ -53,7 +92,13 @@ void UTutorialPresentationSubsystem::StartBeat(const FTacticalTutorialBeat& Beat
 			if (UTacticsAudioSubsystem* Audio = GameInstance
 				? GameInstance->GetSubsystem<UTacticsAudioSubsystem>() : nullptr)
 			{
-				Audio->PlayVoice2D(Voice);
+				// Новая реплика обрывает предыдущую: озвучен каждый шаг, и
+				// быстрый игрок уходит вперёд раньше, чем «Купол» договорил.
+				if (ActiveVoiceComponent.IsValid())
+				{
+					ActiveVoiceComponent->Stop();
+				}
+				ActiveVoiceComponent = Audio->PlayVoice2D(Voice);
 			}
 		}
 		else
@@ -76,6 +121,9 @@ void UTutorialPresentationSubsystem::FinishBeat()
 	bBeatActive = false;
 	const FTacticalTutorialBeat FinishedBeat = ActiveBeat;
 	ActiveBeat = FTacticalTutorialBeat();
+
+	UE_LOG(LogXRU1Quest, Display, TEXT("[Beat] КОНЕЦ %s — ввод разблокирован"),
+		*FinishedBeat.BeatId.ToString());
 
 	// Камеру отпускаем ровно на конце такта — накопленный фоновый интент
 	// (выбор бойца, follow) исполнится сразу же и без потери.

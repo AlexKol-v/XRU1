@@ -22,6 +22,13 @@ class XRU1_API UTacticsGameInstance : public UGameInstance
 
 public:
 	/**
+	 * Применяет пользовательские настройки при запуске игры, а не только при
+	 * загрузке кампании: громкость и качество не зависят от того, начал ли
+	 * игрок прохождение.
+	 */
+	virtual void Init() override;
+
+	/**
 	 * Единая UI-тема проекта (DA_TacticalHUDStyle): иконки, портреты, экранный
 	 * арт, палитра, размеры и отступы. Назначается один раз в BP-наследнике.
 	 */
@@ -145,4 +152,10 @@ public:
 private:
 	/** Валидация сценария, сброс quest runtime и новый RunId — общее для travel и in-place. */
 	bool PrepareScenarioRun(UTacticalScenarioDataAsset* Scenario);
+
+	/**
+	 * Снимает все причины паузы перед сменой уровня. Причина, взятая экраном
+	 * старого мира, иначе переживёт travel и заморозит новый.
+	 */
+	void ClearPauseBeforeTravel();
 };

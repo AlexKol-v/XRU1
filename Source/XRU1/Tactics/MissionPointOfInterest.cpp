@@ -30,6 +30,14 @@ AMissionPointOfInterest::AMissionPointOfInterest()
 	PopupWidget->SetWidgetSpace(EWidgetSpace::Screen);
 	PopupWidget->SetDrawAtDesiredSize(true);
 	PopupWidget->SetVisibility(false);
+	// Попап ОБЯЗАН быть прозрачным для курсора. Иначе он перекрывает HoverBounds,
+	// приходит OnEndCursorOver, попап гаснет, курсор снова на маркере — и точка
+	// мигает с частотой кадров (классическая петля WidgetComponent в UE).
+	PopupWidget->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	PopupWidget->SetGenerateOverlapEvents(false);
+	// Screen-space виджет не должен ни ловить ввод, ни забирать фокус окна:
+	// сам виджет дополнительно ставит себе HitTestInvisible (UPOIPopupWidget).
+	PopupWidget->SetWindowFocusable(false);
 }
 
 void AMissionPointOfInterest::BeginPlay()
@@ -69,7 +77,7 @@ void AMissionPointOfInterest::SetHovered(bool bHovered)
 	{
 		if (UPOIPopupWidget* Popup = Cast<UPOIPopupWidget>(PopupWidget->GetUserWidgetObject()))
 		{
-			Popup->SetupFromPOI(Title, Description, IsLocked());
+			Popup->SetupFromPOI(GetDisplayTitle(), GetDisplayDescription(), GetLockedReason());
 		}
 	}
 
@@ -79,19 +87,59 @@ void AMissionPointOfInterest::SetHovered(bool bHovered)
 
 bool AMissionPointOfInterest::IsLocked() const
 {
+	const UTacticsGameInstance* GI = GetGameInstance<UTacticsGameInstance>();
+	const UTacticsSaveGame* Save = GI ? GI->CurrentSave : nullptr;
+
+	// Требования принадлежат миссии: точка на карте — только её представитель.
+	if (Scenario)
+	{
+		return !Scenario->ArePrerequisitesMet(Save);
+	}
+
+	// Legacy-путь для точек без Scenario Data Asset.
 	if (RequiredCompletedMission == NAME_None)
 	{
 		return false;
 	}
-	if (const UTacticsGameInstance* GI = GetGameInstance<UTacticsGameInstance>())
+	if (Save)
 	{
-		if (GI->CurrentSave)
-		{
-			return !GI->CurrentSave->IsMissionCompleted(RequiredCompletedMission);
-		}
+		return !Save->IsMissionCompleted(RequiredCompletedMission);
 	}
-	// Кампании нет (прямой запуск хаба в PIE) — не блокируем.
 	return false;
+}
+
+FText AMissionPointOfInterest::GetLockedReason() const
+{
+	if (Scenario)
+	{
+		const UTacticsGameInstance* GI = GetGameInstance<UTacticsGameInstance>();
+		return Scenario->GetLockedReason(GI ? GI->CurrentSave : nullptr);
+	}
+	if (!IsLocked())
+	{
+		return FText::GetEmpty();
+	}
+	return FText::Format(
+		NSLOCTEXT("XRU1.POI", "LockedLegacy", "Недоступно: сначала пройдите «{0}»"),
+		FText::FromName(RequiredCompletedMission));
+}
+
+FText AMissionPointOfInterest::GetDisplayTitle() const
+{
+	if (!Title.IsEmpty())
+	{
+		return Title;
+	}
+	return Scenario ? Scenario->GetDisplayNameSafe() : FText::GetEmpty();
+}
+
+FText AMissionPointOfInterest::GetDisplayDescription() const
+{
+	if (!Description.IsEmpty())
+	{
+		return Description;
+	}
+	return Scenario ? Scenario->BriefingText : FText::GetEmpty();
 }
 
 void AMissionPointOfInterest::SelectPointOfInterest()
