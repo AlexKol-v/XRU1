@@ -112,6 +112,9 @@ Main Menu → New Game/Difficulty → Intro → Hub
       состояния через DMI) на `RotationRoot` карты, `AHubCameraPawn` +
       `AHubPlayerController`, `WBP_HubHUD` с карточкой точки и кнопкой
       «Начать операцию». `HubLevel` прописан в GameInstance.
+      Ассеты голограммы перенесены из донора в `Hub/Meshes`+`Hub/Materials`
+      (`SM_HoloTerrain`, `MI_Hologram_Terrain`; список — BRIEF_HubHologram §2.1);
+      открыто: подставить их в `TerrainMesh` вместо плейсхолдера.
 - [x] Интро проигрывает `TU_Intro.mp4`: `MP_Intro` → `MT_Intro` →
       `M_IntroVideo` (UI-domain) в теме; конец ролика, клик и таймаут ведут
       в хаб ровно один раз.

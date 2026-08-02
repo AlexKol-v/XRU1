@@ -20,6 +20,9 @@
 > 4. Меш голограммы на машине 2 отсутствует — стоит плейсхолдер (куб
 >    2400×2400×20 с `M_HubMapPlaceholder`). Замена — только поле `TerrainMesh`
 >    актора `HologramMap`, код не трогать.
+>
+> **2026-08-02: ассеты голограммы перенесены из донора** — см. §2.1. Осталось
+> подставить их в `TerrainMesh` (плейсхолдер пока на месте).
 
 ## 1. Что должно получиться
 
@@ -41,16 +44,30 @@
 | `UTacticsAudioSubsystem` | [TacticsAudioSubsystem.h](../../Source/XRU1/Audio/TacticsAudioSubsystem.h) | `PlayUIHover()`, `PlayUIClick()`, `PlayUIDenied()` |
 | `UPrimaryGameLayout` + `UGameUIManagerSubsystem` | `Source/XRU1/UI/` | Слои HUD/Menu для интерфейса хаба |
 
-**Голографический материал брать из донора** (только чтение, донор не править):
-`D:/UE5/UnrealProjects/cst-3d-gubkin-2026-04/Content/HologramShader/`
-— там `Materials/HologramShader/M_Hologram`, набор `MI_Hologram_*` и пример
-`BP_Hologram_Map/HologramMap`. Скопировать материал и нужные текстуры в
-`/Game/XRU1Game/Hub/Materials/` через Content Browser (Migrate или ручное
-копирование `.uasset` с последующим Fix Up Redirectors).
+### 2.1 Ассеты голограммы (перенесены 2026-08-02)
 
-Меш рельефа на момент написания брифа отсутствует. Работать на плейсхолдере
-(`SM_Cube` со скейлом или любой ландшафтный меш из `US_Military`), меш
-подставляется в одно поле `TerrainMesh` без правок кода.
+Источник — донор (только чтение), `Content/HologramShader/`. Перенесено
+переносом пакетов по исходным путям + `rename_asset` в целевые папки, поэтому
+все внутренние ссылки переписаны; проверено `asset_dependencies` — ни одной
+ссылки за пределы `/Game/XRU1Game`.
+
+| Ассет в проекте | Откуда у донора | Что это |
+|---|---|---|
+| `Hub/Meshes/SM_HoloTerrain` | `Map/free_colombia_3d_map_4k_texture/StaticMeshes/…` | меш рельефа (горы + равнина), габарит ≈ 1270×1715×86 uu, Nanite выключен |
+| `Hub/Materials/M_Hologram` | `Materials/HologramShader/M_Hologram` | базовый шейдер голограммы (родитель для своих инстансов) |
+| `Hub/Materials/M_HologramMap` | `Materials/HologramShader/M_Hologram1` | вариант шейдера с текстурной подложкой карты |
+| `Hub/Materials/MI_Hologram_Terrain` | `MI/MI_Hologram_26` | **эталонный вид донора** (его ставил `BP_Hologram_Map`) |
+| `Hub/Materials/MI_Hologram_Grid` | `MI/MI_Hologram_25` | чистая голосетка без подложки (дефолт на меше) |
+| `Hub/Materials/Textures/` (11 шт.) | `Textures/**`, `Map/**`, `sA_PickupSet_1/**` | шум/паттерны/вода/подложка `T_HoloTerrain_Color` |
+
+Не переносились: остальные 24 `MI_Hologram_*` (варианты для демо-объектов) и
+неиспользуемые текстуры — они тянули ещё ~100 МБ балласта; при нужде берутся из
+донора тем же способом. Пример-уровень `Maps/Hologram` и `BP_Hologram_Map` не
+нужны: их роль выполняет `AHologramMapActor`.
+
+⚠️ Материал голограммы — `Translucent`, поэтому Nanite у меша отключён. Если
+подставлять другой меш — снимать Nanite и у него, иначе Output Log ругается
+`Invalid material … used on Nanite static mesh`.
 
 ## 3. Новый C++ (написать)
 
@@ -97,7 +114,9 @@ AHologramMapActor : AActor
 ## 4. Blueprint и ассеты (собрать в редакторе)
 
 ### 4.1 `BP_HologramMap` (от `AHologramMapActor`)
-- `TerrainMesh` → плейсхолдер-меш, материал `MI_Hologram_Terrain`.
+- `TerrainMesh` → `SM_HoloTerrain`, материал `MI_Hologram_Terrain` (§2.1).
+  Меш меньше плейсхолдера — скейл подобрать по залу, POI-маркеры поднять на
+  новую высоту рельефа.
 - `GlowLight`: оранжевый (≈ `FLinearColor(1, 0.45, 0.1)`), интенсивность
   подобрать так, чтобы читался силуэт рельефа, но не засвечивался зал.
 
