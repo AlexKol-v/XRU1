@@ -53,6 +53,32 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Attack", meta = (ClampMin = "1"))
 	float FireActionTimeout = 10.f;
 
+	/**
+	 * Пауза между наводкой камеры и стартом стрелковой анимации (сек):
+	 * кадр «из-за плеча» успевает доехать и зафиксироваться, ПОТОМ выстрел.
+	 * Держать короткой: сообщество XCOM 2 (мод Stop Wasting My Time) массово
+	 * вырезает длинные паузы — зло именно задержки ПОСЛЕ действия, а не
+	 * короткий подлёт перед ним. 0 — прежнее поведение (montage сразу).
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Tactics|Attack", meta = (ClampMin = "0"))
+	float PreShotCameraSettleDelay = 0.75f;
+
+	/**
+	 * Удержание кадра ПОСЛЕ выстрела (сек): цифры урона и результат читаются,
+	 * потом транзакция закрывается и ход едет дальше. Тюнится в BP_GA_Attack.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Tactics|Attack", meta = (ClampMin = "0"))
+	float PostShotHoldDelay = 0.7f;
+
+	/**
+	 * Удержание кадра, когда цель УБИТА (сек). Отдельно и длиннее обычного:
+	 * смерть — это анимация падения, а не всплывшая цифра; на 0.7 с камера
+	 * уходила раньше, чем боец успевал упасть («камера перешла далее раньше,
+	 * чем умер юнит»). XCOM держит kill-cam заметно дольше обычного выстрела.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Tactics|Attack", meta = (ClampMin = "0"))
+	float PostKillHoldDelay = 1.8f;
+
 	/** Активна ли транзакция обычной атаки между reservation и terminal callback. */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Attack|Action")
 	bool IsFireActionInProgress() const { return FireAction.IsActive(); }
@@ -154,6 +180,21 @@ private:
 	/** Watchdog, не штатный сигнал окончания montage. */
 	FTimerHandle FireActionWatchdogTimer;
 
+	/** Отложенный старт презентации (см. PreShotCameraSettleDelay). */
+	FTimerHandle PresentationDelayTimer;
+
+	/** Форс, потреблённый этой атакой: abort без commit возвращает его юниту. */
+	FScriptedShotOverride ConsumedScriptedShot;
+	bool bConsumedScriptedShotValid = false;
+
+	/** Удержание кадра после выстрела (см. PostShotHoldDelay). */
+	FTimerHandle PostHoldTimer;
+
+	/** Транзакция, чей post-hold уже отработан (повторный Complete проходит). */
+	FGuid PostHoldDoneActionId;
+
+	void StartFireActionPresentation(FGuid ActionId);
+	void FinishPostShotHold(FGuid ActionId);
 	void HandleFireActionTimeout(FGuid ActionId);
 	void ClearFireActionWatchdog();
 	void RefundPreCommitActionPoints(const FTacticalFireActionContext& FinishedAction);

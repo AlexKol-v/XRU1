@@ -160,6 +160,23 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "HUD|Style")
 	bool bShowOnlySelectedCard = true;
 
+	/**
+	 * Класс карточки отряда для карточек, которые создаёт C++ (пересборка
+	 * состава и карточка действующего врага). Пусто — класс берётся у первой
+	 * карточки, построенной BP; но пока бой не начался, панель пуста и брать
+	 * образец неоткуда, поэтому надёжнее указать WBP_UnitPortrait явно.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "HUD|Style")
+	TSubclassOf<UUserWidget> PortraitCardClass;
+
+	/**
+	 * Как часто в фазу врага переоценивается видимость действующего врага для
+	 * его карточки, сек. Враг активируется за укрытием и становится виден уже
+	 * в движении — одной проверки в момент активации мало.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "HUD|Style", meta = (ClampMin = "0.05"))
+	float EnemyCardVisibilityCheckInterval = 0.25f;
+
 	// --- BP-хуки ---------------------------------------------------------------
 
 	/** Смена фазы хода (обновить «ВАШ ХОД / ХОД ПРОТИВНИКА», номер, таймер). */
@@ -234,6 +251,14 @@ private:
 	void HandleAttackClicked();
 
 	/**
+	 * TurnManager активировал врага в его фазу: показать карточку действующего
+	 * врага на панели отряда (низ-лево), без возможности клика. Скрытые туманом
+	 * враги карточку не получают (visibility gate 09_UI_HUD §6).
+	 */
+	UFUNCTION()
+	void HandleEnemyUnitActivated(AActor* Unit);
+
+	/**
 	 * После клика по ЛЮБОЙ кнопке HUD фокус клавиатуры возвращается игре.
 	 * Без этого UMG-кнопка оставляет фокус себе, и пробел «нажимает» её снова —
 	 * баг «пробел выполняет последнее нажатое действие» (завершить ход, глухую
@@ -282,9 +307,42 @@ private:
 	 */
 	void RebuildSquadPanel();
 
+	/**
+	 * Класс карточки отряда: явный PortraitCardClass, иначе кэш, иначе образец
+	 * у уже построенной BP панели. Нужен и пересборке состава, и карточке врага.
+	 */
+	UClass* ResolvePortraitCardClass();
+
+	/** Показывает карточку активного врага (создаётся из ResolvePortraitCardClass). */
+	void ShowActiveEnemyCard(AUnitBase* EnemyUnit);
+
+	/**
+	 * Переоценка видимости действующего врага: показывает карточку, когда он
+	 * вышел из тумана, и убирает её, когда снова скрылся. Зовётся по таймеру,
+	 * пока идёт активация врага.
+	 */
+	UFUNCTION()
+	void RefreshActiveEnemyCardVisibility();
+
+	/** Убирает карточку врага и возвращает обычную видимость карточек отряда. */
+	void ClearActiveEnemyCard();
+
+	/** Снимает карточку врага с панели без сброса ActiveEnemyUnit (для ребилда). */
+	void RemoveActiveEnemyCardFromPanel();
+
 	/** Класс карточки отряда, увиденный у панели BP (образец для пересборки). */
 	UPROPERTY(Transient)
 	TObjectPtr<UClass> CachedPortraitClass;
+
+	/** Живая карточка действующего врага в его фазу (nullptr вне фазы врага). */
+	UPROPERTY(Transient)
+	TObjectPtr<UUserWidget> ActiveEnemyCard;
+
+	/** Враг, чью карточку показываем (для восстановления после ребилда панели). */
+	TWeakObjectPtr<AUnitBase> ActiveEnemyUnit;
+
+	/** Периодическая переоценка видимости действующего врага (фаза Enemy). */
+	FTimerHandle EnemyCardVisibilityTimer;
 
 	/** Юниты обеих сторон, на чей OnUnitStateChanged мы подписаны (для отписки). */
 	TArray<TWeakObjectPtr<AUnitBase>> StateSubscribedUnits;

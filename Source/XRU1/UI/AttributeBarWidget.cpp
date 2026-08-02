@@ -1,9 +1,14 @@
 #include "AttributeBarWidget.h"
 
 #include "Blueprint/WidgetTree.h"
+#include "Components/Border.h"
+#include "Components/HorizontalBox.h"
+#include "Components/HorizontalBoxSlot.h"
 #include "Components/Overlay.h"
 #include "Components/OverlaySlot.h"
 #include "Components/ProgressBar.h"
+#include "Components/SizeBox.h"
+#include "Components/Spacer.h"
 #include "Components/TextBlock.h"
 #include "Styling/CoreStyle.h"
 #include "Styling/SlateTypes.h"
@@ -54,6 +59,19 @@ void UAttributeBarWidget::NativeOnInitialized()
         BarSlot->SetVerticalAlignment(VAlign_Fill);
     }
 
+    // Решётка секций лежит над заливкой, но под текстом процента.
+    if (bSegmented)
+    {
+        SegmentTicks = WidgetTree->ConstructWidget<UHorizontalBox>(
+            UHorizontalBox::StaticClass(), TEXT("SegmentTicks"));
+        SegmentTicks->SetVisibility(ESlateVisibility::HitTestInvisible);
+        if (UOverlaySlot* TicksSlot = Root->AddChildToOverlay(SegmentTicks))
+        {
+            TicksSlot->SetHorizontalAlignment(HAlign_Fill);
+            TicksSlot->SetVerticalAlignment(VAlign_Fill);
+        }
+    }
+
     PercentText = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass(), TEXT("Percent"));
     PercentText->SetFont(PercentFont);
     PercentText->SetColorAndOpacity(PercentColor);
@@ -88,6 +106,11 @@ void UAttributeBarWidget::UpdateBarVisual(float Value, float MaxValue, const FLi
     Bar->SetPercent(Percent);
     Bar->SetFillColorAndOpacity(Tint);
 
+    if (bSegmented)
+    {
+        RebuildSegments(MaxValue);
+    }
+
     if (bShowPercent && PercentText)
     {
         FFormatNamedArguments Args;
@@ -95,6 +118,53 @@ void UAttributeBarWidget::UpdateBarVisual(float Value, float MaxValue, const FLi
         Args.Add(TEXT("Value"),   FMath::FloorToInt(Value));
         Args.Add(TEXT("Max"),     FMath::FloorToInt(MaxValue));
         PercentText->SetText(FText::Format(PercentFormat, Args));
+    }
+}
+
+void UAttributeBarWidget::RebuildSegments(float MaxValue)
+{
+    if (!SegmentTicks || !WidgetTree || UnitsPerSegment <= KINDA_SMALL_NUMBER)
+    {
+        return;
+    }
+
+    // Количество секций от MaxHealth: 100 HP при 10 HP/секцию = 10 ячеек.
+    const int32 SegmentCount = FMath::Clamp(FMath::RoundToInt(MaxValue / UnitsPerSegment), 1, 50);
+    if (SegmentCount == BuiltSegmentCount)
+    {
+        return;
+    }
+    BuiltSegmentCount = SegmentCount;
+    SegmentTicks->ClearChildren();
+
+    // Одна секция — решётка не нужна вовсе.
+    if (SegmentCount < 2)
+    {
+        return;
+    }
+
+    for (int32 Index = 0; Index < SegmentCount; ++Index)
+    {
+        USpacer* Cell = WidgetTree->ConstructWidget<USpacer>(USpacer::StaticClass());
+        if (UHorizontalBoxSlot* CellSlot = SegmentTicks->AddChildToHorizontalBox(Cell))
+        {
+            CellSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+        }
+
+        if (Index < SegmentCount - 1)
+        {
+            USizeBox* TickFrame = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass());
+            TickFrame->SetWidthOverride(SegmentSeparatorThickness);
+            UBorder* Tick = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
+            Tick->SetBrushColor(SegmentSeparatorColor);
+            Tick->SetPadding(FMargin(0.f));
+            TickFrame->AddChild(Tick);
+            if (UHorizontalBoxSlot* TickSlot = SegmentTicks->AddChildToHorizontalBox(TickFrame))
+            {
+                TickSlot->SetSize(FSlateChildSize(ESlateSizeRule::Automatic));
+                TickSlot->SetVerticalAlignment(VAlign_Fill);
+            }
+        }
     }
 }
 

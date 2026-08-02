@@ -4,6 +4,16 @@
 работы: что уже собрано, что осталось руками, и **что физически может/не может
 агент** через MCP-мост UnrealClaude (проверено экспериментально 2026-07-30).
 
+> **2026-08-01: оба блокера сняты, экраны собраны.** Вёрстка всех пустых WBP
+> построена программно собственной editor-библиотекой
+> `UXRU1WidgetAuthoringLibrary` (вызов из Python через `execute_script`), а вся
+> привязка §2.3 реализована C++ авто-биндингом в `NativeOnInitialized`
+> (вариант §4 принят). Созданы `WBP_MissionResult` и `WBP_POIPopup`; CDO-поля
+> §2.1 проставлены Python-скриптом (`set_editor_property` на CDO умеет и
+> `TSoftObjectPtr`, и `FText` — ограничение касалось только `set_asset_property`).
+> Осталось: PIE-прогон чек-листа §4 брифа, затем `GameDefaultMap = L_MainMenu`.
+> Рецепты — [AGENT_UNREAL_TOOLING.md](AGENT_UNREAL_TOOLING.md) §5.2.3–5.2.4.
+
 ---
 
 ## 1. Что готово

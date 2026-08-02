@@ -78,7 +78,9 @@ void ATDCombatant::SetOverheadHUDVisible(bool bVisible)
 {
     if (HUDWidgetComponent)
     {
+        // ТОЛЬКО рендерное скрытие. SetVisibility(false) на WidgetComponent
+        // разрушал Slate-виджет: NativeDestruct снимал подписки на атрибуты/AP,
+        // и после показа оверхед «замерзал» (пипсы AP навсегда показывали 2).
         HUDWidgetComponent->SetHiddenInGame(!bVisible);
-        HUDWidgetComponent->SetVisibility(bVisible);
     }
 }

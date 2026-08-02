@@ -208,6 +208,9 @@ void UTurnManagerSubsystem::CheckCombatOutcome()
 
 void UTurnManagerSubsystem::BeginPhase(ETurnPhase Phase)
 {
+	UE_LOG(LogXRU1Turns, Display, TEXT("[Turns] ═══ Фаза → %s (ход %d) ═══"),
+		Phase == ETurnPhase::Player ? TEXT("ИГРОК") :
+		Phase == ETurnPhase::Enemy ? TEXT("ВРАГ") : TEXT("None"), TurnNumber);
 	CurrentPhase = Phase;
 	ResetActionPointsForSide(Phase == ETurnPhase::Player ? PlayerSide : EnemySide);
 
@@ -235,6 +238,15 @@ void UTurnManagerSubsystem::BeginPhase(ETurnPhase Phase)
 			? World->GetGameInstance()->GetSubsystem<UTacticsAudioSubsystem>() : nullptr)
 		{
 			Audio->PlayTurnStarted(Phase == ETurnPhase::Player);
+
+			// Тик заряда — только в начале хода игрока и только в последние ходы
+			// (GDD §13). Тикать каждый ход весь бой — шум, который перестают
+			// слышать ровно к тому моменту, когда он что-то значит.
+			const int32 Remaining = GetTurnsRemaining();
+			if (Phase == ETurnPhase::Player && Remaining > 0 && Remaining <= BombTickWarningTurns)
+			{
+				Audio->PlayBombTick();
+			}
 		}
 	}
 

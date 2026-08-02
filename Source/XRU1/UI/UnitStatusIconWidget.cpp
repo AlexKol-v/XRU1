@@ -1,5 +1,6 @@
 #include "UnitStatusIconWidget.h"
 
+#include "XRU1Log.h"
 #include "Blueprint/WidgetTree.h"
 #include "Brushes/SlateColorBrush.h"
 #include "Components/Border.h"
@@ -85,7 +86,7 @@ void UUnitStatusIconWidget::ApplyStyle(
 		(RequestedGlyphSize.X > AvailableGlyphSize.X ||
 		 RequestedGlyphSize.Y > AvailableGlyphSize.Y))
 	{
-		UE_LOG(LogTemp, Warning,
+		UE_LOG(LogXRU1UI, Warning,
 			TEXT("UnitStatusIconWidget: slot %.0fx%.0f мал для glyph %.0fx%.0f ")
 			TEXT("и background padding L%.0f T%.0f R%.0f B%.0f; glyph уменьшен"),
 			InSize.X, InSize.Y,

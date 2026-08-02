@@ -45,9 +45,25 @@ public class XRU1 : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });
 
+		// Editor-only: программная сборка вёрстки Widget Blueprint из кода
+		// (UI/Editor/XRU1WidgetAuthoringLibrary) — MCP-мост не умеет WidgetTree,
+		// поэтому агент строит экраны через собственную editor-библиотеку.
+		// StateTreeEditorModule (UncookedOnly) — структурные правки квест-графа
+		// (Tactics/Editor/XRU1StateTreeAuthoringLibrary): создать состояние из
+		// Python нельзя, Children/SubTrees не экспонированы.
+		if (Target.bBuildEditor)
+		{
+			PrivateDependencyModuleNames.AddRange(new string[] {
+				"UnrealEd",
+				"UMGEditor",
+				"StateTreeEditorModule"
+			});
+		}
+
 		PublicIncludePaths.AddRange(new string[] {
 			"XRU1",
 			"XRU1/Audio",
+			"XRU1/FX",
 			"XRU1/Characters",
 			"XRU1/UI",
 			"XRU1/Interaction",

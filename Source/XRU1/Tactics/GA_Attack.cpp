@@ -228,6 +228,7 @@ void UGA_Attack::ActivateAbility(
 	float ResolvedHitChance = ComputeAttackHitChance(Shooter, Target);
 	float ResolvedDamage = Shooter->ShotDamage;
 	FScriptedShotOverride ScriptedShot;
+	bConsumedScriptedShotValid = false;
 	if (Shooter->ConsumePendingScriptedShot(Target, ScriptedShot))
 	{
 		if (ScriptedShot.bOverrideHitChance)
@@ -238,6 +239,10 @@ void UGA_Attack::ActivateAbility(
 		{
 			ResolvedDamage = ScriptedShot.Damage;
 		}
+		// Abort до commit вернёт форс юниту — сорванный монтаж не должен
+		// сжигать учебное «гарантированное попадание» (см. GA_Overwatch v2.9).
+		ConsumedScriptedShot = ScriptedShot;
+		bConsumedScriptedShotValid = true;
 		UE_LOG(LogTacticsAttackAction, Log,
 			TEXT("[FireAction] Scripted shot %s → %s: chance=%.0f damage=%.0f"),
 			*GetNameSafe(Shooter), *GetNameSafe(Target), ResolvedHitChance, ResolvedDamage);
@@ -310,8 +315,46 @@ void UGA_Attack::ActivateAbility(
 
 	// Здесь НЕТ ResolveShot и EndAbility: BP/C++ coordinator должен доиграть
 	// StepOut/montage/ReturnToAnchor и вызвать terminal API.
+	//
+	// Камера наводится сразу, а старт montage (через BP-хук) откладывается на
+	// PreShotCameraSettleDelay: игрок успевает увидеть, КТО и В КОГО стреляет.
 	NotifyShotPresentation(Shooter, Target);
+	if (PreShotCameraSettleDelay > 0.f)
+	{
+		if (UWorld* World = Shooter->GetWorld())
+		{
+			UE_LOG(LogTacticsAttackAction, Display,
+				TEXT("[FireAction] Камера наведена, montage через %.2f с (settle) id=%s"),
+				PreShotCameraSettleDelay, *ActionId.ToString(EGuidFormats::Digits));
+			World->GetTimerManager().SetTimer(PresentationDelayTimer,
+				FTimerDelegate::CreateUObject(this, &UGA_Attack::StartFireActionPresentation, ActionId),
+				PreShotCameraSettleDelay, /*bLoop=*/false);
+			return;
+		}
+	}
 	OnFireActionStarted(Target, ActionId);
+}
+
+void UGA_Attack::StartFireActionPresentation(FGuid ActionId)
+{
+	// Транзакцию могли abort'нуть за время паузы — устаревший таймер молчит.
+	if (FireAction.Matches(ActionId))
+	{
+		UE_LOG(LogTacticsAttackAction, Display,
+			TEXT("[FireAction] Settle-пауза окончена → старт montage id=%s"),
+			*ActionId.ToString(EGuidFormats::Digits));
+		OnFireActionStarted(FireAction.Target.Get(), ActionId);
+	}
+}
+
+void UGA_Attack::FinishPostShotHold(FGuid ActionId)
+{
+	// Кадр удержан — доводим отложенный терминал той же транзакции.
+	if (FireAction.Matches(ActionId))
+	{
+		PostHoldDoneActionId = ActionId;
+		CompleteFireAction(ActionId);
+	}
 }
 
 void UGA_Attack::EndAbility(
@@ -321,6 +364,16 @@ void UGA_Attack::EndAbility(
 	bool bReplicateEndAbility,
 	bool bWasCancelled)
 {
+	// Отложенные таймеры презентации не должны пережить транзакцию.
+	if (const AActor* Avatar = GetAvatarActorFromActorInfo())
+	{
+		if (UWorld* World = Avatar->GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(PresentationDelayTimer);
+			World->GetTimerManager().ClearTimer(PostHoldTimer);
+		}
+	}
+
 	if (FireAction.IsActive())
 	{
 		const FTacticalFireActionContext FinishedAction = FireAction;
@@ -433,6 +486,7 @@ bool UGA_Attack::FireCommit(const FGuid& ActionId, bool& bOutHit)
 	// Guard ставится ДО callbacks/GE: смерть последней цели не должна позволить
 	// reentrant notify повторно применить урон или вернуть AP.
 	FireAction.MarkCommitStarted();
+	bConsumedScriptedShotValid = false; // форс исполнен — возврат не нужен
 	if (const APawn* ShooterPawn = Cast<APawn>(Shooter))
 	{
 		if (Cast<AUnitAIController>(ShooterPawn->GetController()))
@@ -459,6 +513,9 @@ bool UGA_Attack::FireCommit(const FGuid& ActionId, bool& bOutHit)
 		if (AUnitBase* ShooterUnit = Cast<AUnitBase>(Shooter))
 		{
 			ShooterUnit->PlayUnitSound(EUnitSoundEvent::Fire);
+			// Тот же commit рисует выстрел: трассер и вспышка не могут появиться
+			// у действия, которое так и не состоялось.
+			ShooterUnit->PlayShotVfx(Target, bOutHit, ShotOrigin);
 		}
 		OnShotFired(Target, bOutHit);
 		// Автоматически публикуем только атаки стороны игрока: обычный выстрел
@@ -492,9 +549,39 @@ bool UGA_Attack::CompleteFireAction(const FGuid& ActionId)
 		return AbortFireAction(ActionId);
 	}
 
+	// Удержание кадра после выстрела: терминал откладывается, транзакция и
+	// презентация остаются живыми — цифры урона читаются, потом ход едет дальше.
+	// Убитая цель держится дольше: игрок должен увидеть падение, а не только
+	// цифру урона. Смерть определяем по самой цели, а не по «нанесли много» —
+	// добивание чужим уроном в тот же кадр тоже считается.
+	const AActor* ShotTarget = FireAction.Target.Get();
+	const bool bTargetKilled = ShotTarget && !UTacticsCombatStatics::IsUnitAlive(ShotTarget);
+	const float HoldDelay = bTargetKilled ? PostKillHoldDelay : PostShotHoldDelay;
+
+	if (HoldDelay > 0.f && PostHoldDoneActionId != ActionId)
+	{
+		if (const AActor* Avatar = GetAvatarActorFromActorInfo())
+		{
+			if (UWorld* World = Avatar->GetWorld())
+			{
+				UE_LOG(LogTacticsAttackAction, Display,
+					TEXT("[FireAction] Кадр удерживается %.2f с после выстрела (%s) id=%s"),
+					HoldDelay, bTargetKilled ? TEXT("цель убита") : TEXT("post-hold"),
+					*ActionId.ToString(EGuidFormats::Digits));
+				World->GetTimerManager().SetTimer(PostHoldTimer,
+					FTimerDelegate::CreateUObject(this, &UGA_Attack::FinishPostShotHold, ActionId),
+					HoldDelay, /*bLoop=*/false);
+				return true;
+			}
+		}
+	}
+
 	ClearFireActionWatchdog();
 	FireAction.Reset();
 	EndShotPresentation();
+	UE_LOG(LogTacticsAttackAction, Display,
+		TEXT("[FireAction] Терминал: выстрел завершён штатно id=%s → камера возвращается"),
+		*ActionId.ToString(EGuidFormats::Digits));
 	OnFireActionTerminated(ActionId, /*bShotCommitted=*/true, /*bAborted=*/false);
 	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
 	CheckCombatOutcomeAfterAction();
@@ -510,6 +597,10 @@ bool UGA_Attack::AbortFireAction(const FGuid& ActionId)
 
 	const FTacticalFireActionContext FinishedAction = FireAction;
 	const bool bShotCommitted = FinishedAction.bShotCommitted;
+	UE_LOG(LogTacticsAttackAction, Display,
+		TEXT("[FireAction] ABORT id=%s committed=%d shooter=%s — транзакция прервана"),
+		*ActionId.ToString(EGuidFormats::Digits), bShotCommitted ? 1 : 0,
+		*GetNameSafe(FinishedAction.Shooter.Get()));
 	ClearFireActionWatchdog();
 	FireAction.Reset();
 	StopFireActionMontage(FinishedAction);
@@ -553,6 +644,20 @@ void UGA_Attack::ClearFireActionWatchdog()
 void UGA_Attack::RefundPreCommitActionPoints(
 	const FTacticalFireActionContext& FinishedAction)
 {
+	// Вместе с AP возвращается и потреблённый учебный форс: сорванная до
+	// commit атака не должна сжигать «гарантированное попадание» (v2.9).
+	if (!FinishedAction.bShotCommitted && bConsumedScriptedShotValid)
+	{
+		if (AUnitBase* ShooterUnit = Cast<AUnitBase>(FinishedAction.Shooter.Get()))
+		{
+			ShooterUnit->SetPendingScriptedShot(ConsumedScriptedShot, FinishedAction.Target.Get());
+			UE_LOG(LogTacticsAttackAction, Display,
+				TEXT("[FireAction] Форс возвращён %s после сорванной атаки"),
+				*GetNameSafe(ShooterUnit));
+		}
+		bConsumedScriptedShotValid = false;
+	}
+
 	if (!FinishedAction.bCostCommitted || FinishedAction.bShotCommitted ||
 		FinishedAction.ActionPointsBefore < 0)
 	{

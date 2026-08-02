@@ -86,9 +86,22 @@ class XRU1_API AEvacZone : public AActor
 public:
 	AEvacZone();
 
-	/** Радиус зоны (см). */
+	/** Радиус зоны (см). Используется, только пока ZoneExtent нулевой. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|Evac", meta = (ClampMin = "0"))
 	float ZoneRadius = 400.f;
+
+	/**
+	 * Прямоугольная зона (полуразмеры, см) в локальных осях актора — как у
+	 * ATacticalQuestZone. Ненулевой extent выключает круговой ZoneRadius: и
+	 * вход, и рамка считаются по прямоугольнику. Размер настраивается в
+	 * BP_EvacZone (v2.5 по фидбэку: эвакуация — область, а не круг).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|Evac")
+	FVector2D ZoneExtent = FVector2D::ZeroVector;
+
+	/** Материал постоянной рамки зоны (M_ZoneFrame). Пусто — рамка скрыта. */
+	UPROPERTY(EditAnywhere, Category = "Tactics|Evac")
+	TSoftObjectPtr<UMaterialInterface> FrameMaterial;
 
 	/** Активна ли зона с самого старта (туториал включает скриптом позже). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|Evac")
@@ -113,8 +126,19 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Evac")
 	bool TryEvacuate(AUnitBase* Unit);
 
+	/**
+	 * Эвакуация ВСЕХ бойцов игрока, стоящих в зоне (у каждого списывается
+	 * 1 ОД; без очков — остаётся). Правило популярного мода «Evac All» для
+	 * XCOM 2: индивидуальное нажатие каждым бойцом — рутина, одна кнопка
+	 * уводит всех, кто уже в зоне. Возвращает число эвакуированных.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Evac")
+	int32 TryEvacuateAllInside();
+
 	UPROPERTY(BlueprintAssignable, Category = "Tactics|Evac")
 	FOnUnitEvacuated OnUnitEvacuated;
+
+	virtual void OnConstruction(const FTransform& Transform) override;
 
 protected:
 	virtual void BeginPlay() override;
@@ -125,6 +149,10 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tactics|Evac")
 	TObjectPtr<USceneComponent> Root;
+
+	/** Постоянная рамка зоны — декаль по габаритам ZoneExtent (или радиуса). */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tactics|Evac")
+	TObjectPtr<class UDecalComponent> FrameDecal;
 
 	bool bActive = false;
 };

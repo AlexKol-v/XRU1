@@ -7,7 +7,14 @@
 #include "MenuWidgets.generated.h"
 
 class UTacticsGameInstance;
+class UTacticsAudioSubsystem;
 class UTacticalHUDStyleData;
+class UButton;
+class UCheckBox;
+class UComboBoxString;
+class UImage;
+class USlider;
+class UTextBlock;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnDifficultyChosen, EDifficultyLevel, Difficulty);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnMenuAction);
@@ -43,6 +50,27 @@ public:
 protected:
 	/** GameInstance проекта (nullptr, если проект настроен на другой класс). */
 	UTacticsGameInstance* GetTacticsGameInstance() const;
+
+	/** Подсистема звука UI (nullptr вне рантайма — Designer preview). */
+	UTacticsAudioSubsystem* GetAudioSubsystem() const;
+
+	/**
+	 * Вешает на кнопку звуки интерфейса (наведение/клик). AddUniqueDynamic:
+	 * повторный вызов безопасен. Действие кнопки биндится отдельно — мультикаст
+	 * позволяет иметь и звук, и обработчик на одном OnClicked.
+	 */
+	void RegisterButtonSounds(UButton* Button);
+
+	/** Общий обработчик «Назад» для кнопок Btn_Back всех экранов. */
+	UFUNCTION()
+	void HandleBackClicked();
+
+private:
+	UFUNCTION()
+	void HandleButtonHovered();
+
+	UFUNCTION()
+	void HandleButtonClicked();
 };
 
 /**
@@ -89,6 +117,31 @@ public:
 
 	/** Завершает игру. */
 	UFUNCTION(BlueprintCallable, Category = "Menu") void RequestQuit();
+
+protected:
+	/**
+	 * Авто-биндинг: кнопки с каноничными именами из Designer сами получают
+	 * обработчики Request* — граф WBP остаётся пустым (STATUS_MainMenu_UI §4).
+	 * Отсутствующий виджет просто пропускается.
+	 */
+	virtual void NativeOnInitialized() override;
+
+	/** Актуализирует доступность «Продолжить» при каждом показе экрана. */
+	virtual void NativeOnActivated() override;
+
+	// Имена совпадают с виджетами в WBP_MainMenu (уже сверстан).
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Continue;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_NewGame;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Settings;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_About;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Quit;
+
+private:
+	UFUNCTION() void HandleContinueClicked();
+	UFUNCTION() void HandleNewGameClicked();
+	UFUNCTION() void HandleSettingsClicked();
+	UFUNCTION() void HandleAboutClicked();
+	UFUNCTION() void HandleQuitClicked();
 };
 
 /**
@@ -126,6 +179,48 @@ public:
 	/** Возвращает и применяет значения по умолчанию. */
 	UFUNCTION(BlueprintCallable, Category = "Menu|Settings")
 	void ResetToDefaults();
+
+protected:
+	virtual void NativeOnInitialized() override;
+
+	/** Каждый показ экрана перечитывает контролы из слота (виджет ничего не хранит). */
+	virtual void NativeOnActivated() override;
+
+	// --- Звук: пять слайдеров 0..1 (имена из STATUS_MainMenu_UI §2.2) ---------
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<USlider> Sld_Master;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<USlider> Sld_Music;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<USlider> Sld_Sfx;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<USlider> Sld_UI;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<USlider> Sld_Voice;
+
+	// --- Изображение ----------------------------------------------------------
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UComboBoxString> Cmb_Quality;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<USlider> Sld_ResolutionScale;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UCheckBox> Chk_Fullscreen;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UCheckBox> Chk_VSync;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Apply;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Reset;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Back;
+
+private:
+	/** Собирает структуру из ВСЕХ пяти слайдеров (какой изменился — не важно). */
+	FTacticsAudioSettings CollectAudioSettings() const;
+
+	/** Собирает настройки изображения из контролов секции «Изображение». */
+	FTacticsVideoSettings CollectVideoSettings() const;
+
+	/** Расставляет контролы по текущему слоту кампании. */
+	void RefreshControlsFromSettings();
+
+	/** Перетаскивание любого слайдера звука: применить без записи в слот. */
+	UFUNCTION() void HandleAudioSliderValue(float NewValue);
+
+	/** Слайдер отпущен: то же значение, но с записью в слот. */
+	UFUNCTION() void HandleAudioCaptureEnd();
+
+	UFUNCTION() void HandleApplyClicked();
+	UFUNCTION() void HandleResetClicked();
 };
 
 /** Экран «Об авторе». Текстовые поля задаёт дизайнер в BP. */
@@ -140,6 +235,15 @@ public:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "About", meta = (MultiLine = true))
 	FText ProjectInfo;
+
+protected:
+	/** Тексты подставляются и в Designer-превью (PreConstruct). */
+	virtual void NativePreConstruct() override;
+	virtual void NativeOnInitialized() override;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UTextBlock> Txt_Author;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UTextBlock> Txt_ProjectInfo;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Back;
 };
 
 /** Экран проигрывания интро после выбора сложности. */
@@ -152,6 +256,14 @@ public:
 	/** Завершить/пропустить интро и перейти в хаб. */
 	UFUNCTION(BlueprintCallable, Category = "Menu|Intro")
 	void FinishIntro();
+
+protected:
+	virtual void NativeOnInitialized() override;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Skip;
+
+private:
+	UFUNCTION() void HandleSkipClicked();
 };
 
 /** Экран выбора сложности при старте новой игры. */
@@ -174,6 +286,20 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Menu")
 	void ChooseDifficulty(EDifficultyLevel Difficulty);
+
+protected:
+	virtual void NativeOnInitialized() override;
+
+	// Имена совпадают с виджетами в WBP_DifficultySelect (уже сверстан).
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Easy;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Medium;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Hard;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Back;
+
+private:
+	UFUNCTION() void HandleEasyClicked();
+	UFUNCTION() void HandleMediumClicked();
+	UFUNCTION() void HandleHardClicked();
 };
 
 /** Экран паузы во время миссии. */
@@ -191,4 +317,20 @@ public:
 
 	/** Снимает паузу и возвращает в главное меню (уровень MainMenuLevel из GameInstance). */
 	UFUNCTION(BlueprintCallable, Category = "Menu") void RequestReturnToMenu();
+
+	/** Экран настроек, открываемый из паузы (тот же WBP_Settings, что и в меню). */
+	UPROPERTY(EditDefaultsOnly, Category = "Menu|Screens")
+	TSubclassOf<UMenuScreenBase> SettingsScreenClass;
+
+protected:
+	virtual void NativeOnInitialized() override;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Resume;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Settings;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_ReturnToMenu;
+
+private:
+	UFUNCTION() void HandleResumeClicked();
+	UFUNCTION() void HandleSettingsClicked();
+	UFUNCTION() void HandleReturnToMenuClicked();
 };

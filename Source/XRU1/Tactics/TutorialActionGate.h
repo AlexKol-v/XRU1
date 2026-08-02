@@ -73,6 +73,14 @@ struct XRU1_API FTutorialActionPolicy
 	bool bSequentialDestinations = false;
 
 	/**
+	 * Владелец ДЕЙСТВИЯ: действие → якорь бойца, которому оно разрешено.
+	 * Действие без записи подчиняется общим правилам. Решает «Кадет нажал
+	 * Наблюдение вместо Танка»: в C0 Overwatch→Танк, Hunker→Кадет.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tutorial")
+	TMap<ETutorialAction, FName> ActionOwners;
+
+	/**
 	 * Scripted-действие: весь геймплейный ввод закрыт. Камера и пауза остаются —
 	 * игрок должен иметь возможность рассмотреть сцену и выйти в меню.
 	 */

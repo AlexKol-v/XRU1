@@ -5,6 +5,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "Components/SphereComponent.h"
 #include "Components/WidgetComponent.h"
+#include "POIPopupWidget.h"
 #include "Kismet/GameplayStatics.h"
 
 AMissionPointOfInterest::AMissionPointOfInterest()
@@ -61,6 +62,17 @@ void AMissionPointOfInterest::SetHovered(bool bHovered)
 		return;
 	}
 	bIsHovered = bHovered;
+
+	// Данные попапа обновляются при каждом показе: гейт RequiredCompletedMission
+	// мог открыться после возвращения из пройденного туториала.
+	if (bHovered)
+	{
+		if (UPOIPopupWidget* Popup = Cast<UPOIPopupWidget>(PopupWidget->GetUserWidgetObject()))
+		{
+			Popup->SetupFromPOI(Title, Description, IsLocked());
+		}
+	}
+
 	PopupWidget->SetVisibility(bHovered);
 	OnHoverChanged.Broadcast(bHovered);
 }

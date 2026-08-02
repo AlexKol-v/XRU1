@@ -33,6 +33,7 @@ public:
     virtual void ApplyStyle(const FVector2D& InSize, const FLinearColor& InColor);
 
 protected:
+    virtual void NativeConstruct() override;
     virtual void NativeDestruct() override;
 
     /**

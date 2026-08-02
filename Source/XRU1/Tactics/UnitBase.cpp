@@ -15,6 +15,11 @@
 #include "TDAttributeSet.h"
 #include "UnitAudioDataAsset.h"
 #include "UnitClasses.h"
+#include "UnitVfxDataAsset.h"
+#include "ShotTracerActor.h"
+#include "NiagaraComponent.h"
+#include "NiagaraFunctionLibrary.h"
+#include "PhysicalMaterials/PhysicalMaterial.h"
 #include "AbilitySystemComponent.h"
 #include "Abilities/GameplayAbility.h"
 #include "Animation/AnimMontage.h"       // длительность DeathMontage для рагдолла
@@ -151,7 +156,164 @@ void AUnitBase::PlayUnitSound(EUnitSoundEvent Event)
 	{
 		// Звук привязан к актору: боец во время выстрела делает StepOut и
 		// возвращается в anchor, и звук должен ехать вместе с ним.
-		Audio->PlayCueAttached(*Cue, this, AudioProfile->Attenuation);
+		Audio->PlayCueAttached(*Cue, this, AudioProfile->ResolveAttenuation());
+	}
+}
+
+FVector AUnitBase::GetMuzzleWorldLocation(const FVector& Fallback) const
+{
+	const UUnitVfxDataAsset* Profile = VfxProfile;
+	const FName SocketName = Profile ? Profile->MuzzleSocketName : NAME_None;
+	if (SocketName.IsNone())
+	{
+		return Fallback;
+	}
+
+	// Оружие — Child Actor («Gun» в BP юнита) и внутри само составное (рама,
+	// цевьё, прицелы), поэтому смотрим и себя, и все вложенные акторы.
+	TArray<AActor*> Actors;
+	Actors.Add(const_cast<AUnitBase*>(this));
+	TArray<AActor*> Attached;
+	GetAllChildActors(Attached, /*bIncludeDescendants=*/true);
+	Actors.Append(Attached);
+
+	// 1. Пустой Scene Component с этим именем или тегом — самый удобный способ
+	// для дизайнера: точку дула видно и двигают мышью прямо в BP оружия.
+	for (const AActor* Actor : Actors)
+	{
+		if (!Actor)
+		{
+			continue;
+		}
+		TArray<USceneComponent*> Components;
+		Actor->GetComponents<USceneComponent>(Components);
+		for (const USceneComponent* Component : Components)
+		{
+			if (!Component)
+			{
+				continue;
+			}
+			if (Component->GetFName() == SocketName || Component->ComponentHasTag(SocketName))
+			{
+				return Component->GetComponentLocation();
+			}
+		}
+	}
+
+	// 2. Сокет с тем же именем на любом меше (если он всё-таки заведён в скелете).
+	for (const AActor* Actor : Actors)
+	{
+		if (!Actor)
+		{
+			continue;
+		}
+		TArray<UMeshComponent*> Meshes;
+		Actor->GetComponents<UMeshComponent>(Meshes);
+		for (const UMeshComponent* Candidate : Meshes)
+		{
+			if (Candidate && Candidate->DoesSocketExist(SocketName))
+			{
+				return Candidate->GetSocketLocation(SocketName);
+			}
+		}
+	}
+	return Fallback;
+}
+
+void AUnitBase::PlayShotVfx(AActor* Target, bool bHit, const FVector& ShotOrigin)
+{
+	const UUnitVfxDataAsset* Profile = VfxProfile;
+	UWorld* World = GetWorld();
+	if (!Profile || !World || !Target)
+	{
+		return;
+	}
+
+	const FVector Muzzle = GetMuzzleWorldLocation(ShotOrigin);
+	FVector ImpactPoint = Target->GetActorLocation() + FVector(0.f, 0.f, 40.f);
+	if (!bHit && Profile->MissSpread > 0.f)
+	{
+		// Уводим мимо детерминированно относительно линии выстрела: вбок и вверх,
+		// как «пуля прошла рядом». Случайная сторона — чтобы промахи не выглядели
+		// одинаково.
+		const FVector Direction = (ImpactPoint - Muzzle).GetSafeNormal();
+		const FVector Side = FVector::CrossProduct(Direction, FVector::UpVector).GetSafeNormal();
+		const float Sign = FMath::RandBool() ? 1.f : -1.f;
+		ImpactPoint += Side * Profile->MissSpread * Sign
+			+ FVector(0.f, 0.f, Profile->MissSpread * 0.5f);
+	}
+
+	const FRotator AimRotation = (ImpactPoint - Muzzle).Rotation();
+	const FRotator ShotRotation = Profile->ShotRotationOffset.IsNearlyZero()
+		? AimRotation
+		: (AimRotation.Quaternion() * Profile->ShotRotationOffset.Quaternion()).Rotator();
+
+	if (Profile->MuzzleFlash)
+	{
+		UNiagaraFunctionLibrary::SpawnSystemAtLocation(World, Profile->MuzzleFlash,
+			Muzzle, ShotRotation);
+	}
+
+	if (Profile->Tracer)
+	{
+		if (Profile->bTracerFlies)
+		{
+			// Шлейф тянется за движущимся актором — единственный вариант, при
+			// котором ribbon-трассер визуально «летит» в цель.
+			AShotTracerActor::Launch(this, Profile->Tracer, Muzzle, ImpactPoint,
+				Profile->TracerSpeed);
+		}
+		else
+		{
+			UNiagaraComponent* TracerComponent = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+				World, Profile->Tracer, Muzzle, ShotRotation);
+			if (TracerComponent)
+			{
+				if (!Profile->TracerSpeedParameter.IsNone())
+				{
+					TracerComponent->SetFloatParameter(Profile->TracerSpeedParameter,
+						Profile->TracerSpeed);
+				}
+				// Beam-системе нужна конечная точка в мире, а не поворот.
+				if (!Profile->TracerEndParameter.IsNone())
+				{
+					TracerComponent->SetVectorParameter(Profile->TracerEndParameter, ImpactPoint);
+				}
+			}
+		}
+	}
+
+	// Эффект попадания: по бойцу — свой, по геометрии — по физматериалу под
+	// точкой промаха. Трассировка нужна только для промаха, у попадания цель
+	// известна.
+	UNiagaraSystem* ImpactSystem = nullptr;
+	FVector ImpactLocation = ImpactPoint;
+	FVector ImpactNormal = -ShotRotation.Vector();
+	if (bHit)
+	{
+		ImpactSystem = Profile->ImpactFlesh ? Profile->ImpactFlesh.Get() : Profile->DefaultImpact.Get();
+	}
+	else
+	{
+		FHitResult Hit;
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(ShotMissVfx), /*bTraceComplex=*/true, this);
+		Params.AddIgnoredActor(Target);
+		Params.bReturnPhysicalMaterial = true;
+		const FVector TraceEnd = Muzzle + (ImpactPoint - Muzzle).GetSafeNormal() * 6000.f;
+		if (World->LineTraceSingleByChannel(Hit, Muzzle, TraceEnd, ECC_Visibility, Params))
+		{
+			ImpactLocation = Hit.ImpactPoint;
+			ImpactNormal = Hit.ImpactNormal;
+			const EPhysicalSurface Surface = Hit.PhysMaterial.IsValid()
+				? Hit.PhysMaterial->SurfaceType.GetValue() : SurfaceType_Default;
+			ImpactSystem = Profile->FindImpact(Surface);
+		}
+	}
+
+	if (ImpactSystem)
+	{
+		UNiagaraFunctionLibrary::SpawnSystemAtLocation(World, ImpactSystem,
+			ImpactLocation, ImpactNormal.Rotation());
 	}
 }
 
@@ -1008,7 +1170,7 @@ void AUnitBase::HandleHealthChanged(const FOnAttributeChangeData& Data)
 	}
 }
 
-void AUnitBase::SetDowned(bool bNewDowned, float ReviveHealth)
+void AUnitBase::SetDowned(bool bNewDowned, float ReviveHealth, bool bPlaySound)
 {
 	if (bIsDead || bIsEvacuated || bIsDowned == bNewDowned)
 	{
@@ -1017,8 +1179,13 @@ void AUnitBase::SetDowned(bool bNewDowned, float ReviveHealth)
 
 	bIsDowned = bNewDowned;
 	// Звук ставится по подтверждённой смене состояния, а не по запуску montage:
-	// отменённое падение/подъём не должны оставить звук без события.
-	PlayUnitSound(bIsDowned ? EUnitSoundEvent::Downed : EUnitSoundEvent::Revive);
+	// отменённое падение/подъём не должны оставить звук без события. Сценарная
+	// РАССТАНОВКА (Клин лежит с самого старта) звук не даёт — иначе бой начинается
+	// с вскрика на пустом месте.
+	if (bPlaySound)
+	{
+		PlayUnitSound(bIsDowned ? EUnitSoundEvent::Downed : EUnitSoundEvent::Revive);
+	}
 	// Тяжелораненый лежит без шкалы; поднятый медиком получает её обратно.
 	SetOverheadHUDVisible(!bIsDowned);
 	UAbilitySystemComponent* ASC = GetAbilitySystemComponent();

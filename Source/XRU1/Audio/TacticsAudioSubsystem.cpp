@@ -1,5 +1,6 @@
 #include "TacticsAudioSubsystem.h"
 
+#include "Components/AudioComponent.h"
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
 #include "Sound/SoundBase.h"
@@ -164,5 +165,146 @@ void UTacticsAudioSubsystem::PlayTurnStarted(bool bPlayerTurn)
 	if (const UTacticsAudioSettingsDataAsset* Asset = GetAudioSettingsAsset())
 	{
 		PlayCue2D(bPlayerTurn ? Asset->TurnStartedPlayer : Asset->TurnStartedEnemy);
+	}
+}
+
+void UTacticsAudioSubsystem::PlayBombTick()
+{
+	if (const UTacticsAudioSettingsDataAsset* Asset = GetAudioSettingsAsset())
+	{
+		// Именно 2D: тик — это счётчик миссии, а не объект на карте. Игрок не
+		// должен «отъезжать камерой» от угрозы.
+		PlayCue2D(Asset->BombTick);
+	}
+}
+
+void UTacticsAudioSubsystem::PlayBombDefuse(const FVector& Location, bool bComplete)
+{
+	if (const UTacticsAudioSettingsDataAsset* Asset = GetAudioSettingsAsset())
+	{
+		PlayCueAtLocation(bComplete ? Asset->BombDisarmed : Asset->BombDefuseStep, Location);
+	}
+}
+
+void UTacticsAudioSubsystem::PlayEvacZoneActivated(const FVector& Location)
+{
+	if (const UTacticsAudioSettingsDataAsset* Asset = GetAudioSettingsAsset())
+	{
+		PlayCueAtLocation(Asset->EvacZoneActivated, Location);
+	}
+}
+
+void UTacticsAudioSubsystem::PlayEvacUnit(const FVector& Location)
+{
+	if (const UTacticsAudioSettingsDataAsset* Asset = GetAudioSettingsAsset())
+	{
+		PlayCueAtLocation(Asset->EvacUnit, Location);
+	}
+}
+
+UAudioComponent* UTacticsAudioSubsystem::PlayVoice2D(USoundBase* Voice, float VolumeMultiplier)
+{
+	if (!Voice || !GetWorld())
+	{
+		return nullptr;
+	}
+
+	if (UAudioComponent* Previous = VoiceComponent.Get())
+	{
+		Previous->Stop();
+	}
+
+	UAudioComponent* Component = UGameplayStatics::SpawnSound2D(GetWorld(), Voice,
+		VolumeMultiplier, /*PitchMultiplier=*/1.f, /*StartTime=*/0.f, /*ConcurrencySettings=*/nullptr,
+		/*bPersistAcrossLevelTransition=*/false, /*bAutoDestroy=*/true);
+	VoiceComponent = Component;
+	return Component;
+}
+
+void UTacticsAudioSubsystem::PlayMusic(USoundBase* Track, float FadeInTime)
+{
+	if (!Track || !GetWorld())
+	{
+		return;
+	}
+
+	UAudioComponent* Existing = MusicComponent.Get();
+	if (CurrentMusicTrack.Get() == Track && Existing && Existing->IsPlaying())
+	{
+		// Повторный вход в то же состояние (retry миссии) не перезапускает трек
+		// с нуля: рестарт музыки на ровном месте слышен сильнее, чем кажется.
+		return;
+	}
+
+	const UTacticsAudioSettingsDataAsset* Asset = GetAudioSettingsAsset();
+	const float Fade = FadeInTime >= 0.f ? FadeInTime : (Asset ? Asset->MusicFadeTime : 2.f);
+
+	if (Existing)
+	{
+		Existing->FadeOut(Fade, 0.f);
+	}
+
+	UAudioComponent* Component = UGameplayStatics::SpawnSound2D(GetWorld(), Track,
+		/*VolumeMultiplier=*/1.f, /*PitchMultiplier=*/1.f, /*StartTime=*/0.f,
+		/*ConcurrencySettings=*/nullptr, /*bPersistAcrossLevelTransition=*/true,
+		/*bAutoDestroy=*/false);
+	if (Component)
+	{
+		Component->FadeIn(Fade, 1.f);
+	}
+	MusicComponent = Component;
+	CurrentMusicTrack = Track;
+}
+
+void UTacticsAudioSubsystem::PlayMenuMusic()
+{
+	if (const UTacticsAudioSettingsDataAsset* Asset = GetAudioSettingsAsset())
+	{
+		PlayMusic(Asset->MenuMusic);
+	}
+}
+
+void UTacticsAudioSubsystem::PlayHubMusic()
+{
+	if (const UTacticsAudioSettingsDataAsset* Asset = GetAudioSettingsAsset())
+	{
+		PlayMusic(Asset->HubMusic);
+	}
+}
+
+void UTacticsAudioSubsystem::PlayCombatMusic()
+{
+	if (const UTacticsAudioSettingsDataAsset* Asset = GetAudioSettingsAsset())
+	{
+		PlayMusic(Asset->CombatMusic);
+	}
+}
+
+void UTacticsAudioSubsystem::StopMusic(float FadeOutTime)
+{
+	const UTacticsAudioSettingsDataAsset* Asset = GetAudioSettingsAsset();
+	const float Fade = FadeOutTime >= 0.f ? FadeOutTime : (Asset ? Asset->MusicFadeTime : 2.f);
+	if (UAudioComponent* Component = MusicComponent.Get())
+	{
+		Component->FadeOut(Fade, 0.f);
+	}
+	MusicComponent = nullptr;
+	CurrentMusicTrack = nullptr;
+}
+
+void UTacticsAudioSubsystem::PlayOutcomeStinger(bool bVictory)
+{
+	const UTacticsAudioSettingsDataAsset* Asset = GetAudioSettingsAsset();
+	if (!Asset || !GetWorld())
+	{
+		return;
+	}
+
+	// Боевой трек уходит быстро: стингер должен звучать в тишине, иначе
+	// смешивается с ритмом боя и не читается как «точка».
+	StopMusic(1.f);
+	if (USoundBase* Stinger = bVictory ? Asset->VictoryStinger : Asset->DefeatStinger)
+	{
+		UGameplayStatics::PlaySound2D(GetWorld(), Stinger);
 	}
 }

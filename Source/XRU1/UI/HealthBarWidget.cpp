@@ -6,6 +6,12 @@
 UHealthBarWidget::UHealthBarWidget()
 {
     BaseColor = FLinearColor::Red;
+
+    // Секционная шкала HP: по числу ячеек видно запас здоровья (GDD §9 —
+    // юниты 90–120 HP, секция = 10 HP). Наследники/WBP могут переопределить
+    // bSegmented/UnitsPerSegment в Class Defaults.
+    bSegmented = true;
+    UnitsPerSegment = 10.f;
 }
 
 void UHealthBarWidget::BindDelegates()

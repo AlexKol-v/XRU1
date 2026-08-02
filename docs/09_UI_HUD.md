@@ -1,6 +1,6 @@
 # UI и боевой HUD
 
-Актуально на 2026-07-29. Документ хранит архитектуру и открытый остаток, а не
+Актуально на 2026-08-01. Документ хранит архитектуру и открытый остаток, а не
 старые инструкции по сборке отдельных WBP.
 
 ## 1. Источник темы
@@ -32,9 +32,19 @@ WBP не должен дублировать эти значения, кроме
 - enemy counter; C++ уже предоставляет безопасный для тумана войны
   `GetVisibleEnemyCount`, но WBP ещё нужно перевести с полного alive count;
 - move range/path preview;
-- overhead HP/AP, cover и status widgets;
+- overhead HP/AP, cover и status widgets; HP-бар секционный (C++
+  `UAttributeBarWidget.bSegmented`, у `UHealthBarWidget` включён по умолчанию,
+  секция = 10 HP);
 - click-selection и обновление после AP, смерти/эвакуации;
-- единый command arbiter блокирует недопустимые действия/targeting conflicts.
+- единый command arbiter блокирует недопустимые действия/targeting conflicts;
+- floating боевой фидбек (2026-08-01): `UCombatFeedbackSubsystem` + Slate-оверлей
+  рисуют урон, «+лечение», `ПРОМАХ` и `НАБЛЮДЕНИЕ` над юнитами; вызовы — из
+  подтверждённых точек механики (`ResolveShotMechanics`, `UGA_Heal`,
+  `UGA_Overwatch`), настройки — тема «08. Боевой фидбек»;
+- карточка действующего врага (2026-08-01): в фазу Enemy `UTacticalHUDWidget`
+  по `OnEnemyUnitActivated` показывает в SquadPanel карточку активного врага
+  (HitTestInvisible, скрытые туманом враги отфильтрованы через
+  `UFogOfWarSubsystem`).
 
 Это считается готовой базой. Не пересобирать её по старым чек-листам.
 
@@ -57,9 +67,15 @@ AP, не вычисляет шанс и не завершает ability само
       `GetAliveEnemyCount` оставить только внутренним условием конца боя.
 - [ ] Пропускать enemy hover, target panel, overhead widgets, outline/custom
       depth, attack target list и camera focus через `UFogOfWarSubsystem`.
-- [ ] Floating feedback: урон/лечение, `ПРОМАХ`, `НАБЛЮДЕНИЕ`, недоступность.
-- [ ] Понятная карточка действующего врага в его фазу без возможности клика.
+- [x] Floating feedback: урон/лечение, `ПРОМАХ`, `НАБЛЮДЕНИЕ` (2026-08-01,
+      `UCombatFeedbackSubsystem`). Открыто: floating «недоступность» по отказу
+      команды.
+- [x] Понятная карточка действующего врага в его фазу без возможности клика
+      (2026-08-01). Открыто: PIE-проверка на туториале.
 - [ ] Причина disabled action рядом с кнопкой/tooltip, а не только в Output Log.
+- [ ] Секционный HP в карточке отряда: `WBP_UnitPortrait` рисует HP своим
+      ProgressBar в BP — заменить на child `WBP_UnitHealthBar` (секции придут
+      сами из C++).
 - [ ] Отдельный feedback зарядов/кулдауна классовой ability.
 - [ ] Цель миссии, таймер и evacuation state на tutorial/mission maps.
 - [ ] Проверка layout в 1920×1080, 2560×1440 и 16:10; safe margins.
@@ -76,14 +92,30 @@ Main Menu → New Game/Difficulty → Intro → Hub
 → Mission Briefing → Mission01 → Result/DemoComplete → Menu
 ```
 
-Открыто:
+Состояние 2026-08-01: вёрстка всех экранов меню собрана программно
+(`UXRU1WidgetAuthoringLibrary`, см. [agents/AGENT_UNREAL_TOOLING.md](agents/AGENT_UNREAL_TOOLING.md) §5.2.3),
+обработчики кнопок/слайдеров привязываются в C++ `NativeOnInitialized` по
+каноничным именам `Btn_*`/`Sld_*`/`Chk_*`/`Cmb_*`/`Txt_*` — графы WBP пустые,
+дизайнер может свободно менять раскладку, сохраняя имена.
 
-- [ ] `WBP_PrimaryGameLayout` с корректными CommonUI stacks.
-- [ ] Main Menu, difficulty, settings, about/credits.
-- [ ] `WBP_IntroPlayer` с skip/end переходом.
-- [ ] Hub POI popup и mission briefing.
-- [ ] Victory/defeat/result и DemoComplete.
-- [ ] Continue/save routing через `UTacticsGameInstance`/`UTacticsSaveGame`.
+- [x] Main Menu, difficulty (вёрстка пользователя), settings, about — вёрстка и
+      логика; ссылки Class Defaults проставлены.
+- [x] `WBP_IntroPlayer` со skip-переходом (полноэкранная прозрачная кнопка).
+      Открыто: MediaPlayer-видео вместо статичного фона.
+- [x] `WBP_MissionResult`: victory/defeat/timeout и DemoComplete-вариант
+      (победа в Kind=Mission), арт из темы; назначен в
+      `GM_Tactics.MissionResultWidgetClass`.
+- [x] `WBP_POIPopup` (Txt_Title/Txt_Description/Txt_Locked + C++
+      `UPOIPopupWidget::SetupFromPOI`). Открыто: сам `L_Hub` и назначение
+      `PopupWidgetClass` на расставленных POI.
+- [x] Пауза: `WBP_PauseMenuWidget` (Resume/Settings/ReturnToMenu),
+      `SettingsScreenClass` → `WBP_Settings`.
+- [ ] Mission briefing перед стартом сценария (сейчас его роль играет POI popup).
+- [ ] PIE-проверка полного цикла экранов по чек-листу
+      [agents/BRIEF_MainMenu.md](agents/BRIEF_MainMenu.md) §4; только после неё —
+      `GameDefaultMap = L_MainMenu`.
+- [ ] Continue/save routing через `UTacticsGameInstance`/`UTacticsSaveGame`
+      (код есть; проверить вживую «Продолжить» после созданной кампании).
 
 ## 6. Правила внесения изменений
 

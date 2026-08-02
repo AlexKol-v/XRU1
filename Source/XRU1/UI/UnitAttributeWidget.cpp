@@ -31,6 +31,21 @@ AActor* UUnitAttributeWidget::ResolveAvatarActor() const
     return Avatar ? Avatar : C->GetOwnerActor();
 }
 
+void UUnitAttributeWidget::NativeConstruct()
+{
+    Super::NativeConstruct();
+    // Самовосстановление после реконструкции Slate (WidgetComponent мог
+    // разрушить и пересоздать виджет): NativeDestruct снял подписки — без
+    // повторного Bind оверхед «замерзал» на последнем значении. Пере-Bind
+    // идемпотентен: Unbind перед Bind защищает от двойной подписки.
+    if (ASC.IsValid())
+    {
+        UnbindDelegates();
+        BindDelegates();
+        RefreshFromASC();
+    }
+}
+
 void UUnitAttributeWidget::NativeDestruct()
 {
     UnbindDelegates();

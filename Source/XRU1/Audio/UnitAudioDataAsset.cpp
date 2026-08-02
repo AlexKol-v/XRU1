@@ -26,14 +26,76 @@ USoundBase* FTacticsSoundCue::PickVariant() const
 	return Valid[FMath::RandRange(0, Valid.Num() - 1)];
 }
 
+namespace UnitAudio_Internal
+{
+	/** Защита от кольца ParentProfile → …: глубина наследования заведомо мала. */
+	constexpr int32 MaxParentDepth = 8;
+}
+
+const FTacticsSoundCue* UUnitAudioDataAsset::FindEvent(EUnitSoundEvent Event) const
+{
+	const UUnitAudioDataAsset* Profile = this;
+	for (int32 Depth = 0; Profile && Depth < UnitAudio_Internal::MaxParentDepth; ++Depth)
+	{
+		if (const FTacticsSoundCue* Found = Profile->Events.Find(Event))
+		{
+			// Пустая запись в дочернем профиле — это «звук намеренно выключен»
+			// только если в ней есть варианты; иначе спускаемся к родителю.
+			if (Found->IsValidCue())
+			{
+				return Found;
+			}
+		}
+		Profile = Profile->ParentProfile;
+	}
+	return nullptr;
+}
+
 const FTacticsSoundCue& UUnitAudioDataAsset::FindFootstep(EPhysicalSurface Surface) const
 {
-	if (const FTacticsSoundCue* Found = FootstepsBySurface.Find(Surface))
+	const UUnitAudioDataAsset* Profile = this;
+	for (int32 Depth = 0; Profile && Depth < UnitAudio_Internal::MaxParentDepth; ++Depth)
 	{
-		if (Found->IsValidCue())
+		if (const FTacticsSoundCue* Found = Profile->FootstepsBySurface.Find(Surface))
 		{
-			return *Found;
+			if (Found->IsValidCue())
+			{
+				return *Found;
+			}
 		}
+		if (Profile->DefaultFootstep.IsValidCue())
+		{
+			return Profile->DefaultFootstep;
+		}
+		Profile = Profile->ParentProfile;
 	}
 	return DefaultFootstep;
+}
+
+bool UUnitAudioDataAsset::UsesSurfaceFootsteps() const
+{
+	const UUnitAudioDataAsset* Profile = this;
+	for (int32 Depth = 0; Profile && Depth < UnitAudio_Internal::MaxParentDepth; ++Depth)
+	{
+		if (Profile->FootstepsBySurface.Num() > 0)
+		{
+			return true;
+		}
+		Profile = Profile->ParentProfile;
+	}
+	return false;
+}
+
+USoundAttenuation* UUnitAudioDataAsset::ResolveAttenuation() const
+{
+	const UUnitAudioDataAsset* Profile = this;
+	for (int32 Depth = 0; Profile && Depth < UnitAudio_Internal::MaxParentDepth; ++Depth)
+	{
+		if (Profile->Attenuation)
+		{
+			return Profile->Attenuation;
+		}
+		Profile = Profile->ParentProfile;
+	}
+	return nullptr;
 }

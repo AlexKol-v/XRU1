@@ -7,6 +7,7 @@
 #include "TacticalQuestEvents.h"
 #include "TacticalScenarioDataAsset.h"
 #include "TacticalScenarioDirector.h"
+#include "TacticsAudioSubsystem.h"
 #include "TurnManagerSubsystem.h"
 #include "TacticsGameInstance.h"
 #include "TacticsSaveGame.h"
@@ -247,6 +248,14 @@ void ATacticsGameMode::StartMissionCombat()
 	bCombatStarted = true;
 	TurnManager->StartCombat(Players, Enemies);
 
+	// Боевая музыка стартует с подтверждённым боем, а не с загрузкой уровня:
+	// в туториале между стримом сублевела и первым ходом проходит заметная пауза.
+	if (UTacticsAudioSubsystem* Audio = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UTacticsAudioSubsystem>() : nullptr)
+	{
+		Audio->PlayCombatMusic();
+	}
+
 	// HUD пушим после старта (лейаут игрока уже создан его контроллером).
 	if (TacticalHUDClass)
 	{
@@ -314,16 +323,36 @@ void ATacticsGameMode::CompleteSquadEvacuation()
 
 bool ATacticsGameMode::AreAllLivingPlayersEvacuated() const
 {
-	bool bAnyEvacuated = false;
-	for (const TObjectPtr<AUnitBase>& Unit : PlayerUnits)
+	// Источник состава — АКТУАЛЬНАЯ сторона игрока TurnManager, а не стартовый
+	// PlayerUnits: staged-бойцы туториола (Танк/Оса/Кадет) регистрируются в бою
+	// уже ПОСЛЕ старта сценария и в стартовый список не попадают — правило по
+	// нему никогда не видело ни одного эвакуированного (прогон 2026-08-01).
+	const UTurnManagerSubsystem* TurnManager = GetWorld()
+		? GetWorld()->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
+	if (!TurnManager)
 	{
+		return false;
+	}
+
+	bool bAnyEvacuated = false;
+	for (AActor* Actor : TurnManager->GetPlayerSideUnits())
+	{
+		const AUnitBase* Unit = Cast<AUnitBase>(Actor);
 		if (!Unit)
 		{
 			continue;
 		}
+		// Эвакуация проверяется ПЕРВОЙ: ушедший боец скрыт, и любые последующие
+		// фильтры «активности» не должны отнимать у него зачёт.
 		if (Unit->IsEvacuated())
 		{
 			bAnyEvacuated = true;
+			continue;
+		}
+		// Боец, снятый со сцены сценарием, в эвакуации не участвует (страховка:
+		// деактивация и так дерегистрирует из стороны).
+		if (!UTacticalScenarioSubsystem::IsActorScenarioActive(Unit))
+		{
 			continue;
 		}
 		// Живой (не Downed) юнит ещё на карте — эвакуация не закончена.
@@ -343,6 +372,14 @@ void ATacticsGameMode::HandleTurnLimitExpired()
 
 void ATacticsGameMode::HandleCombatEnded(bool bPlayerWon)
 {
+	// Стингер — на границе исхода боя, до всей result-машинерии: игрок слышит
+	// точку раньше, чем откроется экран, и это правильный порядок.
+	if (UTacticsAudioSubsystem* Audio = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UTacticsAudioSubsystem>() : nullptr)
+	{
+		Audio->PlayOutcomeStinger(bPlayerWon);
+	}
+
 	// Scenario run обязан иметь ровно один Director текущего поколения. Legacy
 	// direct PIE без ActiveScenario сохраняет прежний синхронный result path.
 	const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>();

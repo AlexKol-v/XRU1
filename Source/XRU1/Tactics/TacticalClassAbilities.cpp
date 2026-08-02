@@ -7,6 +7,7 @@
 #include "TacticsCombatStatics.h"
 #include "TacticalQuestEvents.h"
 #include "TurnManagerSubsystem.h"
+#include "CombatFeedbackSubsystem.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemGlobals.h"
 #include "Engine/World.h"
@@ -294,6 +295,12 @@ void UGA_Heal::ActivateAbility(
 
 	if (bMechanicsApplied)
 	{
+		// Всплывающее «+N» над подлеченным/поднятым бойцом.
+		if (UCombatFeedbackSubsystem* Feedback = UCombatFeedbackSubsystem::Get(Target))
+		{
+			const float Healed = TargetUnit->GetHealth() - HealthBefore;
+			Feedback->ShowHeal(Target, Healed > KINDA_SMALL_NUMBER ? Healed : ReviveHealth);
+		}
 		OnHealApplied(Target, bRevive);
 		if (Healer)
 		{

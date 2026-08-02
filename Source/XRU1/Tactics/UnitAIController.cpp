@@ -298,6 +298,7 @@ void AUnitAIController::OnPossess(APawn* InPawn)
 	AlertState = EUnitAlertState::Patrol;
 	bHasThreatLocation = false;
 	PatrolIndex = 0;
+	ClearScriptedTurnProgram();
 
 	// Валидация настройки BP — один раз при вселении. Второго прямого
 	// damage-pipeline нет: без GA атака безопасно отклоняется.
@@ -376,6 +377,64 @@ void AUnitAIController::AdvanceTurnStep()
 		ScheduleNextStep();
 		return;
 	}
+
+	// Сценарная ПРОГРАММА хода доминирует над всем остальным AI и проверяется
+	// ДО ОД: бесплатный шаг не тратит очки, а завершение программы обязано
+	// выставить флаг для задачи обучения даже при полностью сгоревших ОД.
+	if (ScriptedTurnProgram.Num() > 0)
+	{
+		if (const UTurnManagerSubsystem* TurnManager = GetWorld()
+			? GetWorld()->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
+			TurnManager && (!TurnManager->IsInCombat() || !TurnManager->IsUnitOnActiveSide(Unit)))
+		{
+			FinishUnitTurn();
+			return;
+		}
+		if (ScriptedTurnStepIndex >= ScriptedTurnProgram.Num())
+		{
+			// Все шаги исполнены: ход завершается, штатный AI в остаток ОД
+			// не подключается — иначе постановка кончалась бы свободным выстрелом.
+			ScriptedTurnProgram.Reset();
+			ScriptedTurnStepIndex = 0;
+			bScriptedTurnProgramExecuted = true;
+			FinishUnitTurn();
+			return;
+		}
+		if (StepScriptedProgram(Unit))
+		{
+			ScriptedStepFailedAttempts = 0;
+			return;
+		}
+		// Шаг не начался (точка недостижима бюджетом/контроллер занят). После
+		// нескольких попыток шаг ПРОПУСКАЕТСЯ: вечный повтор доводил задачу до
+		// Timeout, валил квест и отдавал остаток хода utility-AI (v2.9).
+		++ScriptedStepFailedAttempts;
+		if (ScriptedStepFailedAttempts >= 6)
+		{
+			const FScriptedTurnStep& FailedStep = ScriptedTurnProgram[ScriptedTurnStepIndex];
+			const AActor* Destination = FailedStep.Destination.Get();
+			UE_LOG(LogXRU1AI, Warning,
+				TEXT("[AI] %s: шаг %d программы не начался за %d попыток — ПРОПУСКАЮ ")
+				TEXT("(точка %s, прямая дистанция %.0f см; путь дороже бюджета?)"),
+				*GetNameSafe(Unit), ScriptedTurnStepIndex, ScriptedStepFailedAttempts,
+				*GetNameSafe(Destination),
+				Destination ? FVector::Dist2D(Unit->GetActorLocation(),
+					Destination->GetActorLocation()) : -1.f);
+			ScriptedStepFailedAttempts = 0;
+			++ScriptedTurnStepIndex;
+			ScheduleNextStep();
+			return;
+		}
+		if (ScriptedStepFailedAttempts == 1)
+		{
+			UE_LOG(LogXRU1AI, Warning,
+				TEXT("[AI] %s: шаг %d сценарной программы хода не начался — повторяю"),
+				*GetNameSafe(Unit), ScriptedTurnStepIndex);
+		}
+		ScheduleNextStep();
+		return;
+	}
+
 	if (!ActionPoints->HasActionsLeft())
 	{
 		FinishUnitTurn();
@@ -1704,6 +1763,130 @@ void AUnitAIController::ClearScriptedAttackOrder()
 	ScriptedAttackTarget.Reset();
 }
 
+void AUnitAIController::SetScriptedTurnProgram(TArray<FScriptedTurnStep> Steps)
+{
+	ScriptedTurnProgram = MoveTemp(Steps);
+	ScriptedTurnStepIndex = 0;
+	ScriptedStepFailedAttempts = 0;
+	bScriptedTurnProgramExecuted = false;
+}
+
+void AUnitAIController::ClearScriptedTurnProgram()
+{
+	ScriptedTurnProgram.Reset();
+	ScriptedTurnStepIndex = 0;
+	ScriptedStepFailedAttempts = 0;
+	bScriptedTurnProgramExecuted = false;
+}
+
+void AUnitAIController::CancelScriptedTurnProgram()
+{
+	const bool bTurnRunning = TurnFinishedDelegate.IsBound();
+	ClearScriptedTurnProgram();
+	// Ход постановочного юнита не отдаётся utility-AI: провал режиссуры не
+	// должен превращаться в свободный выстрел по отряду.
+	if (bTurnRunning)
+	{
+		StopMovement();
+		FinishUnitTurn();
+	}
+}
+
+bool AUnitAIController::StepScriptedProgram(AUnitBase* Unit)
+{
+	const FScriptedTurnStep& Step = ScriptedTurnProgram[ScriptedTurnStepIndex];
+	switch (Step.Type)
+	{
+	case EScriptedTurnStepType::MoveTo:
+	{
+		const AActor* Destination = Step.Destination.Get();
+		if (!Destination)
+		{
+			// Точка исчезла из мира — шаг невыполним, пропускаем с ошибкой в лог.
+			UE_LOG(LogXRU1AI, Error,
+				TEXT("[AI] %s: у шага %d программы хода нет точки — пропускаю"),
+				*GetNameSafe(Unit), ScriptedTurnStepIndex);
+			++ScriptedTurnStepIndex;
+			ScheduleNextStep();
+			return true;
+		}
+
+		if (Step.bFreeMove)
+		{
+			// Постановочный «выход»: общий occupancy-план без бюджета ОД.
+			// bTurnMoveInProgress взводится, чтобы settlement продолжил ход,
+			// но стоимость 0 — финализация ничего не спишет.
+			ATacticalPlayerController* PlayerController = GetWorld()
+				? Cast<ATacticalPlayerController>(GetWorld()->GetFirstPlayerController()) : nullptr;
+			FMoveOrderPlan Plan;
+			if (!PlayerController || !PlayerController->PlanMoveForUnit(Unit,
+					Destination->GetActorLocation(), /*MaxActionPoints=*/9, Plan) ||
+				Plan.PathPoints.Num() < 2)
+			{
+				return false;
+			}
+			PendingMoveActionPointCost = 0;
+			bTurnMoveInProgress = true;
+			if (MoveAlongRoute(Plan.PathPoints, 40.f) != EPathFollowingRequestResult::RequestSuccessful)
+			{
+				bTurnMoveInProgress = false;
+				PendingMoveActionPointCost = 1;
+				return false;
+			}
+			++ScriptedTurnStepIndex;
+			Unit->NotifyUnitStateChanged();
+			return true;
+		}
+
+		// Обычное перемещение в бюджет 1 ОД — «отбегание» оплачивается честно.
+		if (!MoveWithBudget(Unit, Destination->GetActorLocation(), 100.f))
+		{
+			return false;
+		}
+		++ScriptedTurnStepIndex;
+		return true;
+	}
+
+	case EScriptedTurnStepType::SelfAbility:
+	{
+		if (!Step.AbilityClass)
+		{
+			++ScriptedTurnStepIndex;
+			ScheduleNextStep();
+			return true;
+		}
+
+		// Голограммам на чистом AUnitBase способность могла не выдаваться при
+		// спавне (HunkerAbilityClass пуст) — выдаём грант на лету.
+		if (UAbilitySystemComponent* ASC = Unit->GetAbilitySystemComponent())
+		{
+			if (!ASC->FindAbilitySpecFromClass(Step.AbilityClass))
+			{
+				ASC->GiveAbility(FGameplayAbilitySpec(Step.AbilityClass, 1, INDEX_NONE, Unit));
+			}
+		}
+
+		if (TryActivateSelfAbility(Unit, Step.AbilityClass))
+		{
+			++ScriptedTurnStepIndex;
+			ScheduleNextStep();
+			return true;
+		}
+
+		// Отказ по правилам способности (например, оборона без укрытия) — шаг
+		// пропускаем, а не валим постановку: добивание C3 форсировано и от
+		// буффа не зависит. Причина остаётся в логе для расстановщика.
+		UE_LOG(LogXRU1AI, Warning,
+			TEXT("[AI] %s: сценарная способность %s отклонена (нет укрытия/ОД?) — пропускаю шаг"),
+			*GetNameSafe(Unit), *GetNameSafe(Step.AbilityClass));
+		++ScriptedTurnStepIndex;
+		ScheduleNextStep();
+		return true;
+	}
+	}
+	return false;
+}
+
 void AUnitAIController::StopRoute()
 {
 	RouteLegs.Reset();
@@ -1858,9 +2041,11 @@ void AUnitAIController::TryFinalizeMoveSettlement()
 
 		// Точка маршрута шага засчитывается ровно здесь — вместе с quest-событием,
 		// а не по факту выдачи приказа: отменённое перемещение маршрут не двигает.
+		// Гасим по ТОЧКЕ ПРИКАЗА, а не по финальной позиции: прижатие к укрытию
+		// и наклонная местность смещают бойца дальше допуска (жалоба по Осе).
 		if (UTutorialActionGateSubsystem* Gate = UTutorialActionGateSubsystem::Get(this))
 		{
-			Gate->NotifyDestinationReached(Unit->GetActorLocation(), Unit);
+			Gate->NotifyDestinationReached(PlayerOrderedDestination, Unit);
 		}
 	}
 
@@ -1872,7 +2057,12 @@ void AUnitAIController::TryFinalizeMoveSettlement()
 
 	if (UActionPointsComponent* ActionPoints = Unit->GetActionPoints())
 	{
-		ActionPoints->TrySpendActionPoint(FMath::Max(1, PendingMoveActionPointCost));
+		// Стоимость 0 — легальный «бесплатный» шаг сценарной программы хода
+		// (постановочный выход C1): финализация тогда ничего не списывает.
+		if (PendingMoveActionPointCost > 0)
+		{
+			ActionPoints->TrySpendActionPoint(PendingMoveActionPointCost);
+		}
 	}
 	PendingMoveActionPointCost = 1;
 	ScheduleNextStep();

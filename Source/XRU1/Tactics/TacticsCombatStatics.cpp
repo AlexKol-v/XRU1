@@ -12,6 +12,7 @@
 #include "UnitAIController.h"
 #include "TacticalPlayerController.h"
 #include "TacticalQuestEvents.h"
+#include "CombatFeedbackSubsystem.h"
 #include "TDCombatant.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemGlobals.h"
@@ -323,7 +324,22 @@ bool UTacticsCombatStatics::ResolveShotMechanics(AActor* Shooter, AActor* Target
 				const float FinalDamage = FMath::Abs(Damage) * FMath::FRandRange(0.9f, 1.1f);
 				Spec.Data->SetSetByCallerMagnitude(TacticsGameplayTags::Data_Damage, -FinalDamage);
 				TargetASC->ApplyGameplayEffectSpecToSelf(*Spec.Data);
+
+				// Подтверждённый факт урона — единственная честная точка для
+				// всплывающего числа (отменённый/сорванный выстрел не всплывёт).
+				if (UCombatFeedbackSubsystem* Feedback = UCombatFeedbackSubsystem::Get(Target))
+				{
+					Feedback->ShowDamage(Target, FinalDamage);
+				}
 			}
+		}
+	}
+	else
+	{
+		// Промах виден над целью, а не только в Output Log (09_UI_HUD §4).
+		if (UCombatFeedbackSubsystem* Feedback = UCombatFeedbackSubsystem::Get(Target))
+		{
+			Feedback->ShowMiss(Target);
 		}
 	}
 
@@ -1372,7 +1388,14 @@ void UTacticsCombatStatics::GetUnitObstacles(UWorld* World, const AActor* Ignore
 	for (TActorIterator<AUnitBase> It(World); It; ++It)
 	{
 		AUnitBase* Unit = *It;
-		if (Unit == Ignored || !IsUnitAlive(Unit))
+		if (Unit == Ignored)
+		{
+			continue;
+		}
+		// Мёртвые и эвакуированные проходимы. Downed ЖИВ и ЗАНИМАЕТ клетку:
+		// без диска медик мог встать прямо на лежащего и «поднять его в себя»
+		// — два бойца оказывались в одной точке.
+		if (!IsUnitAlive(Unit) && !IsUnitDowned(Unit))
 		{
 			continue;
 		}

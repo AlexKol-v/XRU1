@@ -81,6 +81,31 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Tactics|Overwatch", meta = (ClampMin = "0"))
 	float ReactionAimPenalty = 10.f;
 
+	/**
+	 * Пауза между наводкой камеры реакции и стартом стрелковой анимации (сек).
+	 * Реакция — внезапное событие: цель уже остановлена (mover на паузе), кадр
+	 * должен доехать, глаз — зафиксировать сцену; потом выстрел. Паузы ПОСЛЕ
+	 * выстрела не добавляем (урок мода Stop Wasting My Time для XCOM 2).
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Tactics|Overwatch", meta = (ClampMin = "0"))
+	float PreReactionCameraSettleDelay = 0.9f;
+
+	/**
+	 * Удержание кадра ПОСЛЕ реакционного выстрела (сек): цель всё это время
+	 * остаётся замершей (mover на паузе), урон читается — потом ход врага
+	 * продолжается. Тюнится в BP_GA_Overwatch.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Tactics|Overwatch", meta = (ClampMin = "0"))
+	float PostReactionHoldDelay = 0.9f;
+
+	/**
+	 * Удержание кадра, когда реакция УБИЛА цель (сек) — симметрично
+	 * `PostKillHoldDelay` у атаки: смерть это анимация падения, и уходить с
+	 * кадра раньше неё нельзя.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Tactics|Overwatch", meta = (ClampMin = "0"))
+	float PostReactionKillHoldDelay = 1.8f;
+
 	/** GE урона (по умолчанию UGE_ShotDamage с SetByCaller Data.Damage). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Overwatch")
 	TSubclassOf<UGameplayEffect> DamageEffect;
@@ -198,6 +223,18 @@ protected:
 	/** Watchdog вложенной реакции; не штатное окончание кадра/движения. */
 	FTimerHandle ReactionActionWatchdogTimer;
 
+	/** Отложенный старт презентации реакции (см. PreReactionCameraSettleDelay). */
+	FTimerHandle ReactionPresentationDelayTimer;
+
+	/** Удержание кадра после реакции (см. PostReactionHoldDelay). */
+	FTimerHandle ReactionPostHoldTimer;
+
+	/** Реакция, чей post-hold уже отработан. */
+	FGuid ReactionPostHoldDoneId;
+
+	void StartReactionPresentation(FGuid ActionId);
+	void FinishReactionPostHold(FGuid ActionId);
+
 	/** Движущаяся цель, которую эта реакция обязана отпустить ровно один раз. */
 	TWeakObjectPtr<AActor> PausedReactionMover;
 
@@ -212,8 +249,18 @@ protected:
 	 */
 	TMap<TObjectKey<AActor>, FVector> MoveStartLocations;
 
-	/** По кому уже отработали в ТЕКУЩЕМ его перемещении. */
+	/**
+	 * По кому уже отработали. v2.9: очищается ТОЛЬКО на границе фазы
+	 * (Activate/HandleTurnStarted), а не «когда цель встала»: пауза мовера
+	 * реакцией выглядела как остановка, метка стиралась, и после аборта
+	 * сорванного монтажа шла ВТОРАЯ реакция по той же цели — уже без форса
+	 * (промах 54.9% в логе 2026-08-02). Одна реакция на цель за фазу.
+	 */
 	TSet<TObjectKey<AActor>> ReactedThisMove;
+
+	/** Форс, потреблённый текущей реакцией: abort без commit возвращает его юниту. */
+	FScriptedShotOverride ConsumedScriptedShot;
+	bool bConsumedScriptedShotValid = false;
 
 	void HandleReactionActionTimeout(FGuid ActionId);
 	void ClearReactionActionWatchdog();

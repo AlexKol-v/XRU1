@@ -180,7 +180,7 @@ public:
 	 * Используется медиком и скриптами туториала.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|State")
-	void SetDowned(bool bNewDowned, float ReviveHealth = 30.f);
+	void SetDowned(bool bNewDowned, float ReviveHealth = 30.f, bool bPlaySound = true);
 
 	/** Поднимает тяжело раненого с указанным HP (обёртка для медика). */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|State")
@@ -450,11 +450,39 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Audio")
 	void PlayUnitSound(EUnitSoundEvent Event);
 
+	// --- Визуал выстрела --------------------------------------------------------
+
+	/**
+	 * Визуальный профиль стрельбы (вспышка/трассер/попадание). Назначается в BP
+	 * юнита; без него выстрел просто не рисуется — механика не меняется.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|VFX")
+	TObjectPtr<class UUnitVfxDataAsset> VfxProfile;
+
+	UFUNCTION(BlueprintPure, Category = "Tactics|VFX")
+	UUnitVfxDataAsset* GetVfxProfile() const { return VfxProfile; }
+
+	/**
+	 * Рисует выстрел: вспышка у дула, трассер и эффект попадания. Вызывается из
+	 * той же точки, что и `PlayUnitSound(Fire)`, то есть после подтверждённого
+	 * commit — отменённое действие не рисуется.
+	 *
+	 * При промахе конечная точка уводится в сторону от цели: игрок обязан
+	 * видеть разницу между «мимо» и «попал без урона».
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|VFX")
+	void PlayShotVfx(AActor* Target, bool bHit, const FVector& ShotOrigin);
+
+	/** Мировая точка вылета пули: сокет дула оружия либо переданный фолбэк. */
+	UFUNCTION(BlueprintPure, Category = "Tactics|VFX")
+	FVector GetMuzzleWorldLocation(const FVector& Fallback) const;
+
 	// --- Сценарный форс исхода выстрела (шаги A4/A7/B4) -----------------------
 
 	/**
-	 * Взводит форс на СЛЕДУЮЩИЙ выстрел этого юнита. Потребляется один раз при
-	 * активации GA_Attack; повторные выстрелы снова считаются по общим правилам.
+	 * Взводит форс на СЛЕДУЮЩИЙ выстрел этого юнита. Потребляется один раз —
+	 * при активации GA_Attack ЛИБО при Overwatch-реакции (GA_Overwatch,
+	 * шаг C1 туториала); повторные выстрелы снова считаются по общим правилам.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Scripted")
 	void SetPendingScriptedShot(const FScriptedShotOverride& Override, AActor* ScriptedTarget = nullptr);

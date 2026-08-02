@@ -1,6 +1,8 @@
 #include "TacticalHUDWidget.h"
+#include "XRU1Log.h"
 #include "FogOfWarSubsystem.h"
 #include "TacticalHUDStyleData.h"
+#include "TacticsAudioSubsystem.h"
 #include "TacticsGameInstance.h"
 #include "TacticalPlayerController.h"
 #include "TurnManagerSubsystem.h"
@@ -24,6 +26,7 @@
 #include "Components/SizeBox.h"
 #include "Styling/SlateTypes.h"
 #include "UObject/UnrealType.h"
+#include "Misc/ScopeExit.h"
 
 namespace
 {
@@ -394,8 +397,29 @@ void UTacticalHUDWidget::RefreshActionButtons()
 		Controller->CanIssueCommand(ETacticalPlayerCommand::HunkerDown));
 	SetEnabled(SkipBtn, Controller &&
 		Controller->CanIssueCommand(ETacticalPlayerCommand::SkipUnitTurn));
-	SetEnabled(AbilityBtn, Controller &&
-		Controller->CanIssueCommand(ETacticalPlayerCommand::ClassAbility));
+	// Пассивка Осы (ClassAbilityClass пуст): кнопка — ИНДИКАТОР «Прицела
+	// отряда». Горит, когда есть цель, достижимая только через зрение союзника
+	// (своей LOS нет) — пассивка сейчас реально действует; раньше кнопка была
+	// вечно серой и выглядела сломанной.
+	bool bAbilityEnabled = Controller &&
+		Controller->CanIssueCommand(ETacticalPlayerCommand::ClassAbility);
+	if (Selected && !Selected->ClassAbilityClass)
+	{
+		bAbilityEnabled = false;
+		if (const UTurnManagerSubsystem* Turns2 = GetTurnManager())
+		{
+			for (AActor* Enemy : Turns2->GetOpposingUnits(Selected))
+			{
+				if (UGA_Attack::CanTargetActor(Selected, Enemy) &&
+					!UTacticsCombatStatics::HasLineOfSight(Selected, Enemy))
+				{
+					bAbilityEnabled = true;
+					break;
+				}
+			}
+		}
+	}
+	SetEnabled(AbilityBtn, bAbilityEnabled);
 
 	// Контекстное F: вид интеракции определяет и доступность, и иконку.
 	const EInteractionKind Interaction = Controller
@@ -534,7 +558,28 @@ void UTacticalHUDWidget::UpdateTargetingBanner()
 
 void UTacticalHUDWidget::UpdateSquadCardVisibility(AUnitBase* Selected)
 {
-	if (!SquadPanel || !bShowOnlySelectedCard)
+	if (!SquadPanel)
+	{
+		return;
+	}
+
+	// Фаза врага с активной карточкой врага: панель показывает только её —
+	// карточки отряда скрываются независимо от bShowOnlySelectedCard.
+	if (ActiveEnemyCard && ActiveEnemyCard->GetParent() == SquadPanel)
+	{
+		for (int32 Index = 0; Index < SquadPanel->GetChildrenCount(); ++Index)
+		{
+			UWidget* Child = SquadPanel->GetChildAt(Index);
+			if (Child)
+			{
+				Child->SetVisibility(Child == ActiveEnemyCard
+					? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+			}
+		}
+		return;
+	}
+
+	if (!bShowOnlySelectedCard)
 	{
 		return;
 	}
@@ -551,7 +596,7 @@ void UTacticalHUDWidget::UpdateSquadCardVisibility(AUnitBase* Selected)
 		if (!bResolved && !bPortraitUnitLookupWarned)
 		{
 			bPortraitUnitLookupWarned = true;
-			UE_LOG(LogTemp, Warning, TEXT("[HUD] В %s нет переменной «Unit» — карточки отряда ")
+			UE_LOG(LogXRU1UI, Warning, TEXT("[HUD] В %s нет переменной «Unit» — карточки отряда ")
 				TEXT("показываются все (проверь имя переменной в WBP_UnitPortrait)"), *GetNameSafe(Card));
 		}
 
@@ -640,6 +685,8 @@ void UTacticalHUDWidget::NativeConstruct()
 		// не получают карточек, а убранные продолжают «гореть».
 		TurnManager->OnUnitsChanged.AddDynamic(this, &UTacticalHUDWidget::HandleCombatUnitsChanged);
 		TurnManager->OnTurnLimitChanged.AddDynamic(this, &UTacticalHUDWidget::HandleTurnLimitChanged);
+		// Карточка действующего врага в его фазу (низ-лево, кликать нельзя).
+		TurnManager->OnEnemyUnitActivated.AddDynamic(this, &UTacticalHUDWidget::HandleEnemyUnitActivated);
 
 		// Первичная инициализация индикаторов (бой мог начаться до создания HUD;
 		// подписка на юнитов — внутри HandleTurnStarted).
@@ -696,10 +743,22 @@ void UTacticalHUDWidget::HandleAnyButtonClickedResetFocus()
 	{
 		FSlateApplication::Get().SetAllUserFocusToGameViewport();
 	}
+
+	// Звук клика — здесь же: подписка уже рекурсивная по всем кнопкам HUD, и
+	// один хук дешевле, чем ручной вызов в каждом обработчике.
+	if (UTacticsAudioSubsystem* Audio = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UTacticsAudioSubsystem>() : nullptr)
+	{
+		Audio->PlayUIClick();
+	}
 }
 
 void UTacticalHUDWidget::NativeDestruct()
 {
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(EnemyCardVisibilityTimer);
+	}
 	if (AttackBtn)
 	{
 		AttackBtn->OnClicked.RemoveDynamic(this, &UTacticalHUDWidget::HandleAttackClicked);
@@ -710,6 +769,7 @@ void UTacticalHUDWidget::NativeDestruct()
 		TurnManager->OnCombatEnded.RemoveDynamic(this, &UTacticalHUDWidget::HandleCombatEnded);
 		TurnManager->OnTurnLimitChanged.RemoveDynamic(this, &UTacticalHUDWidget::HandleTurnLimitChanged);
 		TurnManager->OnUnitsChanged.RemoveDynamic(this, &UTacticalHUDWidget::HandleCombatUnitsChanged);
+		TurnManager->OnEnemyUnitActivated.RemoveDynamic(this, &UTacticalHUDWidget::HandleEnemyUnitActivated);
 	}
 	if (ATacticalPlayerController* Controller = GetTacticalController())
 	{
@@ -751,6 +811,12 @@ void UTacticalHUDWidget::HandleTurnStarted(ETurnPhase Phase)
 	// Ленивая идемпотентная подписка: покрывает «HUD создан до StartCombat»
 	// и юнитов, добавленных в бой после создания HUD.
 	SubscribeToUnitStates();
+
+	// Возврат хода игроку (или конец боя) убирает карточку действующего врага.
+	if (Phase != ETurnPhase::Enemy)
+	{
+		ClearActiveEnemyCard();
+	}
 
 	const UTurnManagerSubsystem* TurnManager = GetTurnManager();
 	OnPhaseChanged(Phase,
@@ -812,12 +878,20 @@ void UTacticalHUDWidget::RebuildSquadPanel()
 	{
 		return;
 	}
-	if (const UUserWidget* Sample = SquadPanel->GetChildrenCount() > 0
-			? Cast<UUserWidget>(SquadPanel->GetChildAt(0)) : nullptr)
+
+	// Карточка врага не входит в состав отряда: на время сравнения/пересборки
+	// снимается с панели и возвращается на любом пути выхода, пока идёт
+	// активация её врага.
+	RemoveActiveEnemyCardFromPanel();
+	ON_SCOPE_EXIT
 	{
-		CachedPortraitClass = Sample->GetClass();
-	}
-	UClass* CardClass = CachedPortraitClass;
+		if (ActiveEnemyUnit.IsValid())
+		{
+			ShowActiveEnemyCard(ActiveEnemyUnit.Get());
+		}
+	};
+
+	UClass* CardClass = ResolvePortraitCardClass();
 	if (!CardClass)
 	{
 		return;
@@ -867,13 +941,164 @@ void UTacticalHUDWidget::RebuildSquadPanel()
 		UnitProperty->SetObjectPropertyValue_InContainer(Card, Unit);
 		SquadPanel->AddChild(Card);
 	}
-	UE_LOG(LogTemp, Display, TEXT("[HUD] Панель отряда пересобрана: %d карточек"), Squad.Num());
+	UE_LOG(LogXRU1UI, Display, TEXT("[HUD] Панель отряда пересобрана: %d карточек"), Squad.Num());
 
 	ApplyPortraitCardLayout();
 	EnsureButtonsDontStealFocus();
 	if (const ATacticalPlayerController* Controller = GetTacticalController())
 	{
 		UpdateSquadCardVisibility(Controller->GetSelectedUnit());
+	}
+}
+
+// --- Карточка действующего врага (фаза Enemy) --------------------------------
+
+void UTacticalHUDWidget::HandleEnemyUnitActivated(AActor* Unit)
+{
+	AUnitBase* EnemyUnit = Cast<AUnitBase>(Unit);
+	if (!EnemyUnit)
+	{
+		return;
+	}
+
+	// Предыдущая карточка снимается сразу: активировался другой боец.
+	RemoveActiveEnemyCardFromPanel();
+	ActiveEnemyUnit = EnemyUnit;
+
+	// Видимость проверяется не только сейчас: враг часто активируется за
+	// укрытием и выходит из тумана уже в движении — тогда карточка появится
+	// по ходу его хода, а не «никогда».
+	RefreshActiveEnemyCardVisibility();
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().SetTimer(EnemyCardVisibilityTimer, this,
+			&UTacticalHUDWidget::RefreshActiveEnemyCardVisibility,
+			FMath::Max(0.05f, EnemyCardVisibilityCheckInterval), /*bLoop=*/true);
+	}
+}
+
+void UTacticalHUDWidget::RefreshActiveEnemyCardVisibility()
+{
+	AUnitBase* EnemyUnit = ActiveEnemyUnit.Get();
+	if (!EnemyUnit || !UTacticsCombatStatics::IsUnitAlive(EnemyUnit))
+	{
+		ClearActiveEnemyCard();
+		return;
+	}
+
+	// Туман войны: невидимый отряду враг не раскрывается карточкой (09_UI_HUD §6).
+	const UWorld* World = GetWorld();
+	const UFogOfWarSubsystem* Fog = World ? World->GetSubsystem<UFogOfWarSubsystem>() : nullptr;
+	const bool bVisible = !Fog || Fog->IsActorCurrentlyVisible(EnemyUnit);
+
+	// Пересоздаём и когда карточки нет, и когда BP пересобрал панель под нами
+	// (карточка жива, но уже не в SquadPanel — на экране её не видно).
+	if (bVisible && (!ActiveEnemyCard || ActiveEnemyCard->GetParent() != SquadPanel))
+	{
+		ShowActiveEnemyCard(EnemyUnit);
+	}
+	else if (!bVisible && ActiveEnemyCard)
+	{
+		// Ушёл обратно в туман — карточка гаснет, но враг остаётся отслеживаемым.
+		RemoveActiveEnemyCardFromPanel();
+		const ATacticalPlayerController* Controller = GetTacticalController();
+		UpdateSquadCardVisibility(Controller ? Controller->GetSelectedUnit() : nullptr);
+	}
+}
+
+UClass* UTacticalHUDWidget::ResolvePortraitCardClass()
+{
+	if (PortraitCardClass)
+	{
+		return PortraitCardClass;
+	}
+	if (CachedPortraitClass)
+	{
+		return CachedPortraitClass;
+	}
+	// Образец у уже построенной BP панели: класс карточки нигде больше не задан.
+	if (SquadPanel)
+	{
+		for (int32 Index = 0; Index < SquadPanel->GetChildrenCount(); ++Index)
+		{
+			if (const UUserWidget* Card = Cast<UUserWidget>(SquadPanel->GetChildAt(Index)))
+			{
+				CachedPortraitClass = Card->GetClass();
+				break;
+			}
+		}
+	}
+	return CachedPortraitClass;
+}
+
+void UTacticalHUDWidget::ShowActiveEnemyCard(AUnitBase* EnemyUnit)
+{
+	if (!SquadPanel || !EnemyUnit)
+	{
+		return;
+	}
+	UClass* CardClass = ResolvePortraitCardClass();
+	const FObjectProperty* UnitProperty = CardClass
+		? FindFProperty<FObjectProperty>(CardClass, TEXT("Unit")) : nullptr;
+	if (!UnitProperty)
+	{
+		// Тихий отказ раньше выглядел как «фича не работает» — теперь причина
+		// видна в логе (один раз, тем же флагом, что и у карточек отряда).
+		if (!bPortraitUnitLookupWarned)
+		{
+			bPortraitUnitLookupWarned = true;
+			UE_LOG(LogXRU1UI, Warning,
+				TEXT("[HUD] Карточка действующего врага не создана: %s. Задай PortraitCardClass ")
+				TEXT("в Class Defaults WBP_TacticalHUD."),
+				CardClass ? TEXT("в классе карточки нет переменной «Unit»")
+						  : TEXT("неизвестен класс карточки отряда"));
+		}
+		return;
+	}
+
+	// Карточка пересоздаётся на каждую активацию: Construct вложенного WBP
+	// читает Unit один раз, повторная смена значения его не обновила бы.
+	RemoveActiveEnemyCardFromPanel();
+	ActiveEnemyUnit = EnemyUnit;
+
+	UUserWidget* Card = CreateWidget<UUserWidget>(GetOwningPlayer(), CardClass);
+	if (!Card)
+	{
+		return;
+	}
+	UnitProperty->SetObjectPropertyValue_InContainer(Card, EnemyUnit);
+	SquadPanel->AddChild(Card);
+	// Кликать в карточку врага нельзя — только информирование.
+	Card->SetVisibility(ESlateVisibility::HitTestInvisible);
+	ActiveEnemyCard = Card;
+
+	ApplyPortraitCardLayout();
+	UpdateSquadCardVisibility(nullptr);
+}
+
+void UTacticalHUDWidget::RemoveActiveEnemyCardFromPanel()
+{
+	if (ActiveEnemyCard)
+	{
+		ActiveEnemyCard->RemoveFromParent();
+		ActiveEnemyCard = nullptr;
+	}
+}
+
+void UTacticalHUDWidget::ClearActiveEnemyCard()
+{
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(EnemyCardVisibilityTimer);
+	}
+	const bool bHadCard = ActiveEnemyCard != nullptr;
+	RemoveActiveEnemyCardFromPanel();
+	ActiveEnemyUnit.Reset();
+	if (bHadCard)
+	{
+		// Вернуть обычную XCOM-видимость карточек отряда.
+		const ATacticalPlayerController* Controller = GetTacticalController();
+		UpdateSquadCardVisibility(Controller ? Controller->GetSelectedUnit() : nullptr);
 	}
 }
 

@@ -156,12 +156,12 @@ script execution», либо правкой того же ini.
 
 | Ограничение | Детали и обход |
 |---|---|
-| **Верстать UMG** (WidgetTree) | `blueprint` домен видит только `EventGraph`; `graph_name:"WidgetTree"` → `Graph not found`. Python: `unreal.WidgetTree` **не экспонирован**, `get_editor_property('root_widget')` падает. **Обход только для чтения:** `unreal.find_object(bp,'WidgetTree')`, затем `unreal.find_object(tree,'Btn_Continue')` по известному имени. Создание виджетов — руками в Designer |
-| **Bound-события виджетов** (`OnClicked`) | `blueprint add_node` знает только `CallFunction`, `Branch`, `Event(BeginPlay/Tick/EndPlay)`, `VariableGet/Set`, `Sequence`, `Add/Subtract/Multiply/Divide`, `PrintString`. `K2Node_ComponentBoundEvent`, `Bind Event`, `Create Delegate` — нет. Python тоже нет: **классы `K2Node*` не экспонированы**. Обход: руками, либо авто-биндинг в C++ (`GetWidgetFromName` + `NativeOnInitialized`) |
-| `set_asset_property` для `TSoftObjectPtr<>` и `FText` | `Unsupported property type` при любом формате. Только руками в Class Defaults |
+| **Верстать UMG** (WidgetTree) | `blueprint` домен видит только `EventGraph`; `graph_name:"WidgetTree"` → `Graph not found`. Python: `unreal.WidgetTree` **не экспонирован**, `get_editor_property('root_widget')` падает. Чтение: `unreal.find_object(bp,'WidgetTree')`, затем `unreal.find_object(tree,'Btn_Continue')` по известному имени. **Запись СНЯТА 2026-08-01**: собственная editor-библиотека `UXRU1WidgetAuthoringLibrary` строит вёрстку из C++ и вызывается из Python — рецепт §5.2.3 |
+| **Bound-события виджетов** (`OnClicked`) | `blueprint add_node` знает только `CallFunction`, `Branch`, `Event(BeginPlay/Tick/EndPlay)`, `VariableGet/Set`, `Sequence`, `Add/Subtract/Multiply/Divide`, `PrintString`. `K2Node_ComponentBoundEvent`, `Bind Event`, `Create Delegate` — нет. Python тоже нет: **классы `K2Node*` не экспонированы**. **Принятый в проекте обход — авто-биндинг в C++** (`NativeOnInitialized` + `BindWidgetOptional` по каноничным именам): так работают все экраны меню (`MenuWidgets.cpp`), графы WBP пустые |
+| `set_asset_property` для `TSoftObjectPtr<>` и `FText` | `Unsupported property type` при любом формате. **Обход — Python на CDO** (§5.2.4): `set_editor_property` спокойно принимает и загруженный `UWorld` в `TSoftObjectPtr`, и `unreal.Text(...)` в `FText` |
 | Запуск PIE | в этом плагине нет управления Play-in-Editor (в официальном MCP от Epic для 5.8 — есть) |
 | `blueprint_query get_nodes` | максимум 100 нод, `offset` игнорируется. Длинный граф — только через `search_nodes` |
-| **Сборка StateTree** (состояния, задачи, переходы) | `UStateTree::EditorData` не читается через `get_editor_property`, но объект достаётся `unreal.find_object(st, 'StateTreeEditorData_0')`. Дальше тупик: `SubTrees` тоже protected, а задачи лежат во `FInstancedStruct`, который Python не собирает. `Schema` прочитать можно. **Графы StateTree — только руками** |
+| **Сборка StateTree** (состояния, задачи, переходы) | Создать НОВЫЕ states из Python нельзя (`SubTrees`/`Children` protected). Но **правка существующего графа возможна** (проверено 2026-08-01, машина 2): states достаются `find_object` по имени объекта, `Tasks`/`Transitions`/`TasksCompletion`/`Name` читаются и ПИШУТСЯ целыми массивами; значения ВНУТРИ `FInstancedStruct` правятся через `struct.export_text()` → замена текста → `struct.import_text()` (обходит и `CPF_DisableEditOnInstance`). Задачи можно копировать между states целыми элементами `StateTreeEditorNode` (не забыть новый GUID ноды). Полное чтение графа — `AssetTools.export_assets` в T3D (UTF-16). Рецепт — §5.4 |
 | Перенос акторов **в persistent** | `move_selected_actors_to_level`/`move_actors_to_level` принимают только `ULevelStreaming`, persistent им не является. Обход: сделать persistent текущим (`LevelEditorSubsystem.set_current_level_by_name`), пересоздать актора там и удалить исходный |
 
 ---
@@ -235,6 +235,111 @@ comp = actor.get_components_by_class(unreal.ScenarioActorIdComponent)[0]
 
 `unreal.Rotator(a, b, c)` — это `(roll, pitch, yaw)`; безопаснее задавать поля
 по именам.
+
+### 5.2.2 Чтение и правка StateTree из Python (2026-08-01)
+
+Чтение всего графа — текстовый экспорт (T3D в UTF-16, читается `open(..., encoding='utf-16')`):
+
+```python
+unreal.AssetToolsHelpers.get_asset_tools().export_assets(
+    ['/Game/XRU1Game/Quests/ST_Quest_Tutorial'], out_dir)
+```
+
+Правка значений (переходы, политика gate, каналы задач):
+
+```python
+st   = unreal.load_asset('/Game/XRU1Game/Quests/ST_Quest_Tutorial')
+ed   = unreal.find_object(st, 'StateTreeEditorData_0')
+root = unreal.find_object(ed, 'StateTreeState_0')      # имена объектов — из T3D
+state = unreal.find_object(root, 'StateTreeState_20')
+trs = state.get_editor_property('Transitions')
+t0 = trs[0]
+txt = t0.export_text()                                  # у ЛЮБОЙ StructBase
+t0.import_text(txt.replace(...))                        # обходит edit-флаги
+trs[0] = t0
+state.modify(); state.set_editor_property('Transitions', trs)
+```
+
+Ловушки:
+
+- `set_editor_property` на ПОЛЕ структуры (`link.set_editor_property('name',…)`)
+  падает «cannot be edited on instances» — менять только через
+  `export_text/import_text` и записывать массив целиком на state.
+- Новую задачу собрать «из воздуха» нельзя, но можно скопировать готовый
+  элемент `Tasks` из другого state (`el.copy()` → `import_text` с правками) —
+  обязательно заменить последний `ID=<hex32>` на свежий GUID.
+- **Компиляция**: `save_asset` дерево НЕ компилирует (компилирует тулкит по
+  Compile/Save в своём окне). Рабочий цикл: `save_asset` →
+  `EditorLoadingAndSavingUtils.reload_packages([pkg])` (PostLoad компилирует,
+  в логе `Compile StateTree … succeeded`) → ещё раз `save_asset`. Проверять
+  повторным T3D-экспортом: новые ID нод должны появиться в `IDToNodeMappings`.
+
+### 5.2.2a Создание СОСТОЯНИЙ StateTree — только через editor-библиотеку (2026-08-02)
+
+Значения правятся из Python (§5.2.2), но **новое состояние оттуда создать
+нельзя**: `Children`/`SubTrees` объявлены `UPROPERTY(Instanced)` без
+`EditDefaultsOnly`, и Python их не пишет. Пробел закрывает
+`UXRU1StateTreeAuthoringLibrary`
+([Source/XRU1/Tactics/Editor/](../../Source/XRU1/Tactics/Editor/XRU1StateTreeAuthoringLibrary.h)),
+собираемая только в editor-конфигурации (deps `StateTreeEditorModule`,
+UncookedOnly-модуль плагина):
+
+```python
+L = unreal.XRU1StateTreeAuthoringLibrary
+ASSET = '/Game/XRU1Game/Quests/ST_Quest_Tutorial'
+L.insert_pause_state_before(ASSET, 'B0_EnterSector', 'B0_Pause', 2.5)  # состояние с движковым Delay Task
+L.move_tasks_between_states(ASSET, 'B0_EnterSector', 'B0_Pause', [0, 1])
+for row in L.describe_states(ASSET):                                   # имена, задачи, переходы
+    print(row)
+```
+
+`insert_pause_state_before` идемпотентна (по имени нового состояния),
+перенаправляет НА паузу все переходы, которые вели в целевое состояние, и
+добавляет свой `OnStateCompleted → Target`. Ассет не сохраняет — обычный цикл
+`save_asset` → `reload_packages` → `save_asset` остаётся за вызывающим.
+
+⚠️ Пауза между шагами делается ТОЛЬКО отдельным состоянием: `Transition Delay`
+на completion-переходах движок молча сбрасывает (`StateTreeCompiler.cpp`,
+«Completion transitions cannot have delay»), а задержка внутри задачи не
+останавливает соседние задачи того же состояния.
+
+### 5.2.3 Вёрстка Widget Blueprint через editor-библиотеку (2026-08-01)
+
+MCP/Python не пишут в WidgetTree, но **C++ editor-код проекта — пишет**.
+В модуле есть `UXRU1WidgetAuthoringLibrary`
+([Source/XRU1/UI/Editor/](../../Source/XRU1/UI/Editor/XRU1WidgetAuthoringLibrary.h)):
+функции `Build*Layout(AssetPath, bOverwriteExisting)` строят вёрстку экранов
+прямо в WBP-ассете и компилируют его. Вызов из редактора:
+
+```python
+import unreal
+ok = unreal.XRU1WidgetAuthoringLibrary.build_settings_menu_layout(
+    '/Game/XRU1Game/UI/Menus/WBP_Settings', False)   # False = не трогать рукотворную вёрстку
+unreal.EditorAssetLibrary.save_asset('/Game/XRU1Game/UI/Menus/WBP_Settings')
+```
+
+Ключевые API внутри (для новых функций): `Blueprint->WidgetTree->ConstructWidget<T>()`,
+слоты через `Cast<UOverlaySlot/UVerticalBoxSlot/...>(Widget->Slot)`, затем
+`FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified` +
+`FKismetEditorUtilities::CompileBlueprint`. Зависимости `UnrealEd`/`UMGEditor`
+подключены в `XRU1.Build.cs` под `Target.bBuildEditor`. Новый WBP создаётся из
+Python фабрикой: `unreal.WidgetBlueprintFactory()` +
+`factory.set_editor_property('parent_class', unreal.MissionResultWidget)` +
+`AssetTools.create_asset(...)`.
+
+⚠️ В комментариях UHT-заголовков не писать `Btn_*/Sld_*` слитно — «`*` + `/`»
+закрывает блочный комментарий и ломает компиляцию (пойман 2026-08-01).
+
+### 5.2.4 `TSoftObjectPtr` и `FText` на CDO из Python (2026-08-01)
+
+`set_asset_property` их не берёт, Python на CDO — берёт:
+
+```python
+cdo = unreal.load_object(None, '/Game/XRU1Game/Core/BP_TacticsGameInstance.Default__BP_TacticsGameInstance_C')
+cdo.set_editor_property('MainMenuLevel', unreal.load_asset('/Game/XRU1Game/Maps/L_MainMenu'))  # TSoftObjectPtr<UWorld>
+cdo.set_editor_property('AuthorName', unreal.Text('Aleksei Beer'))                             # FText
+unreal.EditorAssetLibrary.save_asset('/Game/XRU1Game/Core/BP_TacticsGameInstance')
+```
 
 ### 5.3 Уровни при живом пользователе
 

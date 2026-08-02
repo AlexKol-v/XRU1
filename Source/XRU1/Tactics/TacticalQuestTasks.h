@@ -6,7 +6,10 @@
 #include "TutorialActionGate.h"
 #include "TutorialPresentation.h"
 #include "TacticsTypes.h"
+#include "Templates/SubclassOf.h"
 #include "TacticalQuestTasks.generated.h"
+
+class UTacticalAbility;
 
 // Задачи обучения XRU1 для StateTree.
 //
@@ -28,6 +31,15 @@ struct FTacticalTask_ObjectiveInstanceData
 	/** Точный leaf-канал подтверждённого результата. */
 	UPROPERTY(EditAnywhere, Category = "Quest")
 	FGameplayTag EventChannel;
+
+	/**
+	 * Второй допустимый leaf (пусто — только основной). Адаптивность шагов
+	 * движения: точку можно ставить КУДА УГОДНО — перебежка засчитывается и
+	 * `Settled.Open`, и `Settled.InCover`, если рядом с точкой оказалась
+	 * преграда. Сравнение всегда точное.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Quest")
+	FGameplayTag EventChannelAlt;
 
 	/**
 	 * Tactical-шаги слушают leaf: один выстрел публикует Attack.* И
@@ -157,6 +169,10 @@ struct FTacticalTask_SetScenarioActorActiveInstanceData
  * Единая точка «проявления» голограммы: presentation, collision, tick и участие
  * в сторонах боя переключаются вместе. Скрытый, но живой для perception актор
  * ломал бы укрытия и AI.
+ *
+ * Задача МГНОВЕННАЯ. Пауза перед активацией делается отдельным состоянием с
+ * движковым `Delay Task` (см. docs/11 §5.0.11): задержка внутри задачи не
+ * останавливает соседние задачи состояния и потому не является паузой шага.
  */
 USTRUCT(meta = (DisplayName = "Set Scenario Actor Active", Category = "XRU1 Tutorial"))
 struct XRU1_API FTacticalTask_SetScenarioActorActive : public FStateTreeTaskCommonBase
@@ -174,6 +190,41 @@ struct XRU1_API FTacticalTask_SetScenarioActorActive : public FStateTreeTaskComm
 	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context,
 		const FStateTreeTransitionResult& Transition) const override;
 	virtual void ExitState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+};
+
+// --- Восстановление очков действия ----------------------------------------------
+
+USTRUCT()
+struct FTacticalTask_SetActionPointsInstanceData
+{
+	GENERATED_BODY()
+
+	/** AnchorId бойцов, которым восстановить очки (пусто — никому). */
+	UPROPERTY(EditAnywhere, Category = "Scenario")
+	TArray<FName> AnchorIds;
+};
+
+/**
+ * Полный запас ОД названным бойцам при входе в состояние. Режиссёрская
+ * «дозаправка»: Оса после выстрела B5 начинает C0 с полными очками, Кадет
+ * после фланга C3 сразу идёт к бомбе — без лишнего «нажмите Enter, чтобы
+ * продолжить». Возвращает Succeeded сразу (задача-действие).
+ */
+USTRUCT(meta = (DisplayName = "Set Action Points", Category = "XRU1 Tutorial"))
+struct XRU1_API FTacticalTask_SetActionPoints : public FStateTreeTaskCommonBase
+{
+	GENERATED_BODY()
+
+	FTacticalTask_SetActionPoints();
+
+	using FInstanceDataType = FTacticalTask_SetActionPointsInstanceData;
+	virtual const UStruct* GetInstanceDataType() const override
+	{
+		return FInstanceDataType::StaticStruct();
+	}
+
+	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context,
 		const FStateTreeTransitionResult& Transition) const override;
 };
 
@@ -251,6 +302,15 @@ struct FTacticalTask_TutorialBeatInstanceData
 
 	UPROPERTY()
 	float ElapsedTime = 0.f;
+
+	/**
+	 * Такт показан и ещё не закрыт. Закрытие происходит по `Beat.Duration` в
+	 * Tick, а НЕ в ExitState: выход из состояния наступает только когда шаг
+	 * выполнен игроком целиком, и субтитр с удержанием камеры жили бы всё это
+	 * время.
+	 */
+	UPROPERTY()
+	bool bBeatStarted = false;
 };
 
 /**
@@ -341,6 +401,78 @@ struct XRU1_API FTacticalTask_ScriptedMove : public FStateTreeTaskCommonBase
 	FTacticalTask_ScriptedMove();
 
 	using FInstanceDataType = FTacticalTask_ScriptedMoveInstanceData;
+	virtual const UStruct* GetInstanceDataType() const override
+	{
+		return FInstanceDataType::StaticStruct();
+	}
+
+	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+	virtual EStateTreeRunStatus Tick(FStateTreeExecutionContext& Context,
+		const float DeltaTime) const override;
+	virtual void ExitState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+};
+
+// --- Сценарный ход врага ---------------------------------------------------------
+
+USTRUCT()
+struct FTacticalTask_ScriptedEnemyTurnInstanceData
+{
+	GENERATED_BODY()
+
+	/** AnchorId врага, чей ближайший ход играется по программе. */
+	UPROPERTY(EditAnywhere, Category = "Scripted")
+	FName UnitAnchorId;
+
+	/** Первый шаг: постановочный выход к якорю БЕЗ траты ОД (пусто — нет шага). */
+	UPROPERTY(EditAnywhere, Category = "Scripted")
+	FName FreeMoveAnchorId;
+
+	/** Второй шаг: перебежка к якорю за 1 ОД (пусто — нет шага). */
+	UPROPERTY(EditAnywhere, Category = "Scripted")
+	FName PaidMoveAnchorId;
+
+	/**
+	 * Финальный шаг: способность на себе за свои ОД (обычно Глухая оборона).
+	 * Недостающий грант выдаётся на лету; отказ способности шаг не валит.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Scripted")
+	TSubclassOf<UTacticalAbility> FinishAbility;
+
+	/** Провал шага, если программа не исполнилась за это время (сек). */
+	UPROPERTY(EditAnywhere, Category = "Scripted", meta = (ClampMin = "1"))
+	float Timeout = 60.f;
+
+	/** Камера сопровождает врага, пока программа исполняется. */
+	UPROPERTY(EditAnywhere, Category = "Scripted")
+	bool bCameraFollowUnit = true;
+
+	UPROPERTY()
+	float ElapsedTime = 0.f;
+
+	UPROPERTY()
+	bool bProgramSet = false;
+
+	UPROPERTY()
+	bool bCameraAttached = false;
+};
+
+/**
+ * Сценарная программа ближайшего ХОДА врага (шаг C1): бесплатный «выход
+ * из-за укрытия» (Наблюдение игрока реагирует штатно) → перебежка за 1 ОД →
+ * способность (Глухая оборона). Программа исполняется в фазу врага вместо
+ * utility-AI, свободного выстрела в остаток ОД не бывает; задача держит
+ * состояние до полного исполнения. Арминг — в фазу игрока (инвариант §5.3-3).
+ */
+USTRUCT(meta = (DisplayName = "Scripted Enemy Turn", Category = "XRU1 Tutorial"))
+struct XRU1_API FTacticalTask_ScriptedEnemyTurn : public FStateTreeTaskCommonBase
+{
+	GENERATED_BODY()
+
+	FTacticalTask_ScriptedEnemyTurn();
+
+	using FInstanceDataType = FTacticalTask_ScriptedEnemyTurnInstanceData;
 	virtual const UStruct* GetInstanceDataType() const override
 	{
 		return FInstanceDataType::StaticStruct();

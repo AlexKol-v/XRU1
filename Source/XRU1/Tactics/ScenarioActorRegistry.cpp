@@ -247,7 +247,8 @@ void UTacticalScenarioSubsystem::ApplyStartDowned(UScenarioActorIdComponent* Com
 		return;
 	}
 	Component->bDownedApplied = true;
-	Unit->SetDowned(true);
+	// Тихо: это стартовая расстановка сценария, а не полученный в бою урон.
+	Unit->SetDowned(true, /*ReviveHealth=*/30.f, /*bPlaySound=*/false);
 }
 
 // --- AScenarioAnchorPoint ------------------------------------------------------

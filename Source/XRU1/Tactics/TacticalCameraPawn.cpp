@@ -6,6 +6,7 @@
 #include "Camera/CameraComponent.h"
 #include "Components/PostProcessComponent.h"
 #include "Engine/World.h"
+#include "GameFramework/WorldSettings.h" // GetEffectiveTimeDilation — камера живёт в реальном времени
 #include "Engine/HitResult.h"
 #include "Engine/EngineTypes.h"
 #include "CollisionQueryParams.h"
@@ -61,7 +62,13 @@ void ATacticalCameraPawn::AddPanInput(const FVector2D& Input)
 		return;
 	}
 
-	// Ручная панорама разрывает автофокус/следование и кадр выстрела (как в XCOM).
+	// Ручная панорама разрывает автофокус/следование, кадр выстрела и
+	// режиссёрское удержание (как в XCOM: тронул камеру — она твоя).
+	if (bShotFraming || FollowTarget.IsValid() || bDirectorHold)
+	{
+		UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] Ручная панорама игрока — рвёт автокамеру"));
+	}
+	BreakDirectorHold();
 	ClearFollowTarget();
 	AbandonShotFraming();
 	bHasFocusGoal = false;
@@ -82,8 +89,10 @@ void ATacticalCameraPawn::AddRotationStep(float Direction)
 		// Нормализуем сразу, иначе yaw копится без ограничений (см. Tick).
 		// TacticalYaw — постоянный выбор игрока; action-camera меняет только
 		// TargetYaw и после себя всегда возвращается к TacticalYaw.
-		if (bShotFraming)
+		if (bShotFraming || bDirectorHold)
 		{
+			UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] Ручной поворот игрока — рвёт автокамеру"));
+			BreakDirectorHold();
 			AbandonShotFraming();
 		}
 
@@ -127,8 +136,10 @@ void ATacticalCameraPawn::ReportCameraAdjustment(float YawDelta, float ZoomDelta
 
 void ATacticalCameraPawn::AddZoomInput(float Input)
 {
-	if (!FMath::IsNearlyZero(Input) && bShotFraming)
+	if (!FMath::IsNearlyZero(Input) && (bShotFraming || bDirectorHold))
 	{
+		UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] Ручной зум игрока — рвёт автокамеру"));
+		BreakDirectorHold();
 		AbandonShotFraming();
 	}
 
@@ -153,6 +164,27 @@ void ATacticalCameraPawn::FocusOnActor(const AActor* Target, bool bInstant)
 
 void ATacticalCameraPawn::FocusOnLocation(const FVector& Location, bool bInstant)
 {
+	// Монополия кадра презентации / режиссёрского такта: фоновый фокус
+	// (автовыбор бойца, новый шаг) откладывается до снятия удержания, а не
+	// уводит камеру с выстрела или с показываемой игроку точки.
+	if (ShouldDeferAmbientIntent())
+	{
+		UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] Focus → %s ОТЛОЖЕН: камерой владеет %s"),
+			*Location.ToCompactString(),
+			IsPlayingPresentationFrame() ? TEXT("кадр выстрела") : TEXT("режиссура такта"));
+		bHasPendingCameraIntent = true;
+		bPendingIntentIsFollow = false;
+		bPendingIntentIsDirected = bMarkingDirectedIntent;
+		PendingFocusLocation = Location;
+		bPendingFocusInstant = bInstant; // мгновенный фокус обязан остаться мгновенным
+		PendingFollowTarget = nullptr;
+		return;
+	}
+
+	UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] Focus → %s instant=%d (кадр=%d follow=%s)"),
+		*Location.ToCompactString(), bInstant ? 1 : 0, bShotFraming ? 1 : 0,
+		*GetNameSafe(FollowTarget.Get()));
+
 	// Новый интент камеры перечёркивает кадр выстрела: без этого истёкший таймер
 	// кадра «вернул бы» камеру назад посреди уже начатого фокуса.
 	AbandonShotFraming();
@@ -185,6 +217,24 @@ void ATacticalCameraPawn::FocusOnLocation(const FVector& Location, bool bInstant
 
 void ATacticalCameraPawn::SetFollowTarget(const AActor* Target)
 {
+	// Монополия кадра презентации / такта: подхват врага «вышел из-за угла» и
+	// follow чужого хода ждут конца выстрела. Именно этот вызов срывал кадр
+	// реакции наблюдения сразу после его построения (лог 2026-08-02).
+	if (ShouldDeferAmbientIntent())
+	{
+		UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] Follow → %s ОТЛОЖЕН: камерой владеет %s"),
+			*GetNameSafe(Target),
+			IsPlayingPresentationFrame() ? TEXT("кадр выстрела") : TEXT("режиссура такта"));
+		bHasPendingCameraIntent = true;
+		bPendingIntentIsFollow = true;
+		bPendingIntentIsDirected = false; // follow — всегда фон
+		PendingFollowTarget = Target;
+		return;
+	}
+
+	UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] Follow → %s (был %s, кадр=%d)"),
+		*GetNameSafe(Target), *GetNameSafe(FollowTarget.Get()), bShotFraming ? 1 : 0);
+
 	// Следование — новый интент: кадр выстрела (например, предыдущего врага)
 	// бросаем, иначе его таймер потом дёрнет камеру с сопровождаемого юнита.
 	AbandonShotFraming();
@@ -199,8 +249,19 @@ void ATacticalCameraPawn::SetFollowTarget(const AActor* Target)
 
 void ATacticalCameraPawn::ClearFollowTarget()
 {
+	// Отмена следования во время удержания отменяет и отложенный follow —
+	// иначе снятие удержания вернуло бы отменённое сопровождение.
+	if (ShouldDeferAmbientIntent() && bHasPendingCameraIntent && bPendingIntentIsFollow)
+	{
+		UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] Отложенный follow отменён"));
+		bHasPendingCameraIntent = false;
+		PendingFollowTarget = nullptr;
+	}
+
 	if (FollowTarget.IsValid())
 	{
+		UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] Follow снят (был %s)"),
+			*GetNameSafe(FollowTarget.Get()));
 		FollowTarget = nullptr;
 		bHasFocusGoal = false;
 	}
@@ -209,6 +270,18 @@ void ATacticalCameraPawn::ClearFollowTarget()
 void ATacticalCameraPawn::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+
+	// Камера — режиссура, а не мир: она обязана жить в РЕАЛЬНОМ времени.
+	// Slow-mo реакции (SetGlobalTimeDilation) замедляет DeltaSeconds, и камера
+	// летела к кадру в 4 раза медленнее, тогда как таймеры презентации
+	// (умноженные на дилатацию) шли в реальном темпе — монтаж стартовал, пока
+	// камера была на полпути. Раздилатированная дельта выравнивает оба мира.
+	const AWorldSettings* WorldSettings = GetWorldSettings();
+	const float Dilation = WorldSettings ? WorldSettings->GetEffectiveTimeDilation() : 1.f;
+	if (Dilation > KINDA_SMALL_NUMBER)
+	{
+		DeltaSeconds /= Dilation;
+	}
 
 	// Плавная доводка поворота к целевому значению по КРАТЧАЙШЕЙ дуге:
 	// GetRelativeRotation() всегда возвращает Yaw, нормализованный в (-180,180],
@@ -262,12 +335,25 @@ void ATacticalCameraPawn::Tick(float DeltaSeconds)
 		}
 	}
 
+	// Страховка режиссёрского удержания: владелец мог не отпустить (такт живёт
+	// в состоянии, которое ждёт игрока). Камера не имеет права зависнуть.
+	if (bDirectorHold && DirectorHoldTimeLeft > 0.f)
+	{
+		DirectorHoldTimeLeft -= DeltaSeconds;
+		if (DirectorHoldTimeLeft <= 0.f)
+		{
+			UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] РЕЖИССУРА: удержание истекло по времени"));
+			ReleaseDirectorHold();
+		}
+	}
+
 	// Кадр выстрела с конечной длительностью сам себя снимает.
 	if (bShotFraming && ShotFrameTimeLeft >= 0.f)
 	{
 		ShotFrameTimeLeft -= DeltaSeconds;
 		if (ShotFrameTimeLeft <= 0.f)
 		{
+			UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] Таймер кадра выстрела истёк → возврат ракурса"));
 			ClearShotFraming();
 		}
 	}
@@ -277,7 +363,8 @@ void ATacticalCameraPawn::Tick(float DeltaSeconds)
 
 void ATacticalCameraPawn::FrameShot(const AActor* Shooter, const AActor* Target)
 {
-	EnterShotFraming(Shooter, Target, -1.f); // держим до ClearShotFraming
+	// Прицеливание: фоновые интенты такой кадр перебивают.
+	EnterShotFraming(Shooter, Target, -1.f, /*bPresentation=*/false);
 }
 
 void ATacticalCameraPawn::FrameShotForDuration(const AActor* Shooter, const AActor* Target, float Duration)
@@ -285,11 +372,103 @@ void ATacticalCameraPawn::FrameShotForDuration(const AActor* Shooter, const AAct
 	const float ResolvedDuration = Duration < 0.f
 		? -1.f
 		: (Duration > 0.f ? Duration : ShotFrameDuration);
-	EnterShotFraming(Shooter, Target, ResolvedDuration);
+	EnterShotFraming(Shooter, Target, ResolvedDuration, /*bPresentation=*/true);
 }
 
-void ATacticalCameraPawn::EnterShotFraming(const AActor* Shooter, const AActor* Target, float Duration)
+void ATacticalCameraPawn::FocusOnLocationDirected(const FVector& Location, float HoldDuration)
 {
+	// Режиссура сильнее прежней режиссуры: новый такт — новый владелец взгляда.
+	// Кадр выстрела при этом не рвём: если он ещё живёт, фокус такта исполнится
+	// сразу после него (как отложенный, но с пометкой «режиссёрский»).
+	bDirectorHold = false;
+	UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] РЕЖИССУРА: взгляд удержан на %s (%.1f с)"),
+		*Location.ToCompactString(), HoldDuration);
+	{
+		TGuardValue<bool> DirectedGuard(bMarkingDirectedIntent, true);
+		FocusOnLocation(Location);
+	}
+	bDirectorHold = true;
+	DirectorHoldTimeLeft = HoldDuration > 0.f ? HoldDuration : -1.f;
+}
+
+void ATacticalCameraPawn::ReleaseDirectorHold()
+{
+	if (!bDirectorHold)
+	{
+		return;
+	}
+	bDirectorHold = false;
+	DirectorHoldTimeLeft = -1.f;
+	UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] РЕЖИССУРА: удержание снято"));
+	ApplyPendingCameraIntent();
+}
+
+void ATacticalCameraPawn::BreakDirectorHold()
+{
+	if (!bDirectorHold && !bHasPendingCameraIntent)
+	{
+		return;
+	}
+	UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] РЕЖИССУРА: прервана игроком"));
+	bDirectorHold = false;
+	DirectorHoldTimeLeft = -1.f;
+	bHasPendingCameraIntent = false;
+	PendingFollowTarget = nullptr;
+}
+
+bool ATacticalCameraPawn::ApplyPendingCameraIntent()
+{
+	if (!bHasPendingCameraIntent)
+	{
+		return false;
+	}
+	// ⚠️ Порядок владения: кадр выстрела > режиссура такта > фон. Пока живёт
+	// кадр презентации, НИКАКОЙ отложенный интент не исполняется — иначе снятие
+	// режиссёрского удержания посреди выстрела бросало кадр (лог: такт B5
+	// закончился на Commit и увёл камеру до смерти цели). Интент остаётся
+	// накопленным, его исполнит ClearShotFraming терминала.
+	if (IsPlayingPresentationFrame())
+	{
+		return false;
+	}
+	// Кадр кончился, но такт ещё говорит — фоновый интент продолжает ждать.
+	// Исполняем сразу только сам режиссёрский фокус.
+	if (bDirectorHold && !bPendingIntentIsDirected)
+	{
+		return false;
+	}
+	bHasPendingCameraIntent = false;
+	// Сам вызов не должен снова уйти в отложенные.
+	TGuardValue<bool> ApplyGuard(bApplyingPendingIntent, true);
+
+	// Кадра уже нет — вызовы отработают обычным путём (монополия снята).
+	if (bPendingIntentIsFollow)
+	{
+		const AActor* Target = PendingFollowTarget.Get();
+		PendingFollowTarget = nullptr;
+		UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] Исполняю отложенный follow → %s"),
+			*GetNameSafe(Target));
+		if (!Target)
+		{
+			return false; // цель погибла за время кадра — держим возврат кадра
+		}
+		SetFollowTarget(Target);
+		return true;
+	}
+
+	UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] Исполняю отложенный focus → %s (instant=%d)"),
+		*PendingFocusLocation.ToCompactString(), bPendingFocusInstant ? 1 : 0);
+	FocusOnLocation(PendingFocusLocation, bPendingFocusInstant);
+	return true;
+}
+
+void ATacticalCameraPawn::EnterShotFraming(const AActor* Shooter, const AActor* Target,
+	float Duration, bool bPresentation)
+{
+	// ⚠️ Признак монополии выставляется ТОЛЬКО после проверки участников: если
+	// выставить его в FrameShot* до неё, вызов с пустой целью (кадр не
+	// строится) молча понизил бы ЖИВОЙ кадр презентации до прицеливания, и
+	// фоновый интент увёл бы камеру с выстрела.
 	if (!Shooter || !Target)
 	{
 		return;
@@ -310,7 +489,13 @@ void ATacticalCameraPawn::EnterShotFraming(const AActor* Shooter, const AActor* 
 			: GetActorLocation();
 	}
 	bShotFraming = true;
+	bPresentationFrame = bPresentation;
 	ShotFrameTimeLeft = Duration;
+
+	UE_LOG(LogXRU1Camera, Display,
+		TEXT("[Camera] Кадр выстрела: %s → %s, duration=%.2f (−1 = до терминала), dist2D=%.0f"),
+		*GetNameSafe(Shooter), *GetNameSafe(Target), Duration,
+		FVector::Dist2D(Shooter->GetActorLocation(), Target->GetActorLocation()));
 
 	// --- Что кадр ОБЯЗАН показать: грудь стрелка и грудь цели ------------------
 	// Обе точки участвуют и в проверке видимости, и в решении «влезают ли в FOV».
@@ -335,7 +520,15 @@ void ATacticalCameraPawn::EnterShotFraming(const AActor* Shooter, const AActor* 
 	const float Lift = FMath::Lerp(ShotFrameHeightNear, ShotFrameHeightFar, FarAlpha);
 	const float Bias = FMath::Lerp(ShotFrameTargetBias, ShotFrameTargetBiasFar, FarAlpha);
 
-	const FVector LookPoint = FMath::Lerp(ShooterAim, TargetAim, Bias);
+	// --- Дальний (squadsight) выстрел: кадр строится ВОКРУГ ЦЕЛИ ---------------
+	// На такой дистанции «из-за плеча» физически не может показать обоих: цель
+	// вырождается в точку, а зритель должен увидеть попадание и урон. Камера
+	// встаёт на линию выстрела рядом с целью, стрелок остаётся за камерой.
+	const bool bLongShot = Dist > ShotFrameTargetOnlyDistance;
+	const FVector CameraAnchor = bLongShot ? TargetAim : ShooterAim;
+	const float BackDistance = bLongShot ? ShotFrameLongShotBack : Back;
+
+	const FVector LookPoint = bLongShot ? TargetAim : FMath::Lerp(ShooterAim, TargetAim, Bias);
 
 	// --- ПРАВИЛО 180°: пара сменилась — ось съёмки можно выбрать заново --------
 	if (LastFramedShooter.Get() != Shooter || LastFramedTarget.Get() != Target)
@@ -350,7 +543,7 @@ void ATacticalCameraPawn::EnterShotFraming(const AActor* Shooter, const AActor* 
 	//
 	// Выбираем МИНИМАЛЬНЫЙ штраф (схема XCOM `X2Camera_OverTheShoulder`), а не
 	// максимальный балл: у них так, и веса переносятся без пересчёта знаков.
-	FVector BestCam = ShooterAim - Axis * Back + Side * Shoulder + FVector(0.f, 0.f, Lift);
+	FVector BestCam = CameraAnchor - Axis * BackDistance + Side * Shoulder + FVector(0.f, 0.f, Lift);
 	float BestPenalty = FLT_MAX;
 	float BestSideSign = LastShoulderSign != 0.f ? LastShoulderSign : 1.f;
 
@@ -361,23 +554,40 @@ void ATacticalCameraPawn::EnterShotFraming(const AActor* Shooter, const AActor* 
 		{
 			for (const float SideSign : {1.f, -1.f})
 			{
-				FVector Cam = ShooterAim
-					- Axis * Back
-					+ Side * (Shoulder * SideSign)
-					+ FVector(0.f, 0.f, Lift + Step * ShotFrameClearanceLift);
-
-				Cam = FitSubjectsInFrame(Cam, LookPoint, ShooterAim, TargetAim);
-				Cam = PullCameraOutOfGeometry(LookPoint, Cam);
-
-				// Подъём — тоже компромисс: чем выше камера, тем меньше «из-за
-				// плеча» и больше «сверху». Штраф порядка веса закрытого корпуса.
-				const float Penalty = ScoreShotCandidate(Cam, LookPoint, ShooterAim, TargetAim, SideSign)
-					+ Step * PenaltyShooterWaistBlocked;
-				if (Penalty < BestPenalty)
+				// Дальний кадр пробует ОБА конца оси: со стороны стрелка и
+				// обратный ракурс из-за цели. Стрелка в таком кадре нет, линия
+				// 180° не читается, а цель за укрытием со «своей» стороны часто
+				// не видна вообще (лог B5: penalty 96 = цель закрыта, камеру
+				// вжало в геометрию на 2.6 м). Обратный ракурс чуть штрафуется,
+				// чтобы при равных условиях побеждал естественный.
+				const int32 AxisVariants = bLongShot ? 2 : 1;
+				for (int32 AxisIndex = 0; AxisIndex < AxisVariants; ++AxisIndex)
 				{
-					BestPenalty = Penalty;
-					BestCam = Cam;
-					BestSideSign = SideSign;
+					const float AxisSign = AxisIndex == 0 ? -1.f : 1.f;
+					FVector Cam = CameraAnchor
+						+ Axis * (BackDistance * AxisSign)
+						+ Side * (Shoulder * SideSign)
+						+ FVector(0.f, 0.f, Lift + Step * ShotFrameClearanceLift);
+
+					// В дальнем кадре в поле зрения обязана поместиться только
+					// цель: «влезь и стрелок» отгоняло камеру на десятки метров.
+					Cam = FitSubjectsInFrame(Cam, LookPoint,
+						bLongShot ? TargetAim : ShooterAim, TargetAim);
+					Cam = PullCameraOutOfGeometry(LookPoint, Cam);
+
+					// Подъём — тоже компромисс: чем выше камера, тем меньше
+					// «из-за плеча» и больше «сверху». Штраф порядка веса
+					// закрытого корпуса.
+					const float Penalty = ScoreShotCandidate(Cam, LookPoint, ShooterAim, TargetAim,
+						SideSign, /*bIgnoreShooter=*/bLongShot)
+						+ Step * PenaltyShooterWaistBlocked
+						+ (AxisIndex == 1 ? PenaltyShooterHeadBlocked : 0.f);
+					if (Penalty < BestPenalty)
+					{
+						BestPenalty = Penalty;
+						BestCam = Cam;
+						BestSideSign = SideSign;
+					}
 				}
 			}
 			// Кадр чистый — дальше поднимать незачем (подъём сам штрафуется).
@@ -432,6 +642,13 @@ void ATacticalCameraPawn::EnterShotFraming(const AActor* Shooter, const AActor* 
 	FollowTarget = nullptr;
 	FocusGoal = LookPoint; // XY доводится полётом пешки, Z — через PivotWorldZ
 	bHasFocusGoal = true;
+
+	UE_LOG(LogXRU1Camera, Display,
+		TEXT("[Camera] Кадр построен (%s, %s): cam=%s look=%s arm=%.0f yaw=%.0f pitch=%.0f penalty=%.1f плечо=%+.0f"),
+		bLongShot ? TEXT("дальний: вокруг цели") : TEXT("из-за плеча"),
+		bPresentationFrame ? TEXT("презентация") : TEXT("прицеливание"),
+		*BestCam.ToCompactString(), *LookPoint.ToCompactString(), Arm,
+		TargetYaw, TargetPitch, BestPenalty, BestSideSign);
 }
 
 bool ATacticalCameraPawn::IsSegmentClear(const FVector& From, const FVector& To, float* OutBlockedFraction) const
@@ -543,7 +760,8 @@ FVector ATacticalCameraPawn::PullCameraOutOfGeometry(const FVector& LookPoint, c
 }
 
 float ATacticalCameraPawn::ScoreShotCandidate(const FVector& CamPos, const FVector& LookPoint,
-	const FVector& ShooterAim, const FVector& TargetAim, float SideSign) const
+	const FVector& ShooterAim, const FVector& TargetAim, float SideSign,
+	bool bIgnoreShooter) const
 {
 	// ⚠️ ШТРАФ, а не балл: чем МЕНЬШЕ, тем лучше. Так устроен
 	// `X2Camera_OverTheShoulder` в XCOM, и веса переносятся один в один.
@@ -558,6 +776,20 @@ float ATacticalCameraPawn::ScoreShotCandidate(const FVector& CamPos, const FVect
 	// (2) СТРЕЛОК — раздельно голова и корпус, как в XCOM. Разделение не
 	// формальность: «видно каску над укрытием» и «видно бойца целиком» — разные
 	// кадры, и первый допустим, а раньше обе ситуации считались одинаково.
+	// В дальнем кадре стрелок за камерой — его проверки исключены целиком.
+	if (bIgnoreShooter)
+	{
+		if (!IsSegmentClear(CamPos, LookPoint))
+		{
+			Penalty += PenaltyBlockedStart;
+		}
+		if (LastShoulderSign != 0.f && SideSign * LastShoulderSign < 0.f)
+		{
+			Penalty += PenaltyCrosscut;
+		}
+		return Penalty;
+	}
+
 	const FVector ShooterHead = ShooterAim + FVector(0.f, 0.f, 55.f);
 	const FVector ShooterWaist = ShooterAim - FVector(0.f, 0.f, 35.f);
 	const bool bHeadClear = IsSegmentClear(CamPos, ShooterHead);
@@ -596,8 +828,17 @@ void ATacticalCameraPawn::AbandonShotFraming()
 	{
 		return;
 	}
+	// Кто перечеркнул кадр — видно по предыдущей строке лога (Focus/Follow/ввод).
+	UE_LOG(LogXRU1Camera, Display,
+		TEXT("[Camera] Кадр выстрела БРОШЕН (timeLeft=%.2f, презентация=%d) — новый интент взгляда"),
+		ShotFrameTimeLeft, bPresentationFrame ? 1 : 0);
 	bShotFraming = false;
+	bPresentationFrame = false;
 	ShotFrameTimeLeft = -1.f;
+	// Кадр перечёркнут явным интентом (ввод игрока/новый кадр) — отложенный
+	// запрос устарел вместе с ним.
+	bHasPendingCameraIntent = false;
+	PendingFollowTarget = nullptr;
 
 	// Новый focus/follow/pan может перечеркнуть ПОЗИЦИЮ старого кадра, но не имеет
 	// права превращать временный yaw/zoom action-camera в глобальный ракурс.
@@ -617,7 +858,11 @@ void ATacticalCameraPawn::ClearShotFraming()
 	{
 		return;
 	}
+	UE_LOG(LogXRU1Camera, Display,
+		TEXT("[Camera] Кадр выстрела снят штатно → возврат к pre-shot %s (timeLeft=%.2f)"),
+		*PreShotLocation.ToCompactString(), ShotFrameTimeLeft);
 	bShotFraming = false;
+	bPresentationFrame = false;
 	ShotFrameTimeLeft = -1.f;
 
 	// Полный возврат ракурса (XCOM): поворот, наклон, зум, высота обзора и
@@ -628,4 +873,8 @@ void ATacticalCameraPawn::ClearShotFraming()
 	PivotWorldZ = PreShotPivotZ;
 	FocusGoal = PreShotLocation;
 	bHasFocusGoal = true;
+
+	// Интент, накопленный за время презентации, свежее возврата к pre-shot:
+	// исполняем его ПОВЕРХ (новый шаг обучения уже выбрал, куда смотреть).
+	ApplyPendingCameraIntent();
 }

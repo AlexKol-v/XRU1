@@ -16,6 +16,7 @@
 #include "MoveRangeVisualizer.h"
 #include "TacticalCameraPawn.h"
 #include "TacticalPlayerController.h"
+#include "TacticsCombatStatics.h"
 #include "TacticalQuestEvents.h"
 #include "TacticalQuestZone.h"
 #include "UnitAIController.h"
@@ -145,9 +146,15 @@ EStateTreeRunStatus FTacticalTask_Objective::Tick(
 
 	Context.ForEachEvent([&Inst](const FStateTreeEvent& Event)
 	{
-		const bool bChannelMatches = Inst.bRequireExactChannel
+		bool bChannelMatches = Inst.bRequireExactChannel
 			? Event.Tag == Inst.EventChannel
 			: Event.Tag.MatchesTag(Inst.EventChannel);
+		// Второй допустимый leaf (адаптивность Open/InCover): всегда точное
+		// сравнение — широкий parent здесь дал бы ложные зачёты.
+		if (!bChannelMatches && Inst.EventChannelAlt.IsValid())
+		{
+			bChannelMatches = Event.Tag == Inst.EventChannelAlt;
+		}
 		if (!bChannelMatches)
 		{
 			return EStateTreeLoopEvents::Next;
@@ -271,14 +278,16 @@ EStateTreeRunStatus FTacticalTask_SetScenarioActorActive::EnterState(
 		return EStateTreeRunStatus::Failed;
 	}
 
+	// Мгновенная задача-действие. Пауза перед секцией — ОТДЕЛЬНОЕ состояние с
+	// движковым Delay Task: задержка внутри задачи тормозит только её саму,
+	// соседние задачи состояния (gate, подсказка) стартуют всё равно.
 	for (const FName& AnchorId : Inst.AnchorIds)
 	{
 		Registry->SetScenarioActorActive(AnchorId, Inst.bActive);
 	}
 
-	// Задача-действие всегда завершается успехом: удержание состояния — работа
-	// objective/beat, а не побочного эффекта. Возврат прежнего состояния при
-	// bRestoreOnExit делает ExitState, который вызывается в любом случае.
+	// Удержание состояния — работа objective/beat, а не побочного эффекта.
+	// Возврат прежнего состояния при bRestoreOnExit делает ExitState.
 	return EStateTreeRunStatus::Succeeded;
 }
 
@@ -299,6 +308,42 @@ void FTacticalTask_SetScenarioActorActive::ExitState(
 			Registry->SetScenarioActorActive(AnchorId, !Inst.bActive);
 		}
 	}
+}
+
+// --- FTacticalTask_SetActionPoints ----------------------------------------------
+
+FTacticalTask_SetActionPoints::FTacticalTask_SetActionPoints()
+{
+	bShouldCallTick = false;
+	bShouldCallTickOnlyOnEvents = false;
+}
+
+EStateTreeRunStatus FTacticalTask_SetActionPoints::EnterState(
+	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
+{
+	const FInstanceDataType& Inst = Context.GetInstanceData(*this);
+	UTacticalScenarioSubsystem* Registry =
+		TacticalQuestTasks_Internal::GetScenarioRegistry(Context);
+	if (!Registry)
+	{
+		return EStateTreeRunStatus::Failed;
+	}
+
+	for (const FName& AnchorId : Inst.AnchorIds)
+	{
+		AUnitBase* Unit = Cast<AUnitBase>(Registry->FindScenarioActor(AnchorId));
+		UActionPointsComponent* ActionPoints = Unit ? Unit->GetActionPoints() : nullptr;
+		if (!ActionPoints)
+		{
+			UE_LOG(LogXRU1Quest, Error,
+				TEXT("[Tutorial] Set Action Points: боец %s не найден или без ОД-компонента"),
+				*AnchorId.ToString());
+			continue;
+		}
+		ActionPoints->ResetForNewTurn();
+		Unit->NotifyUnitStateChanged();
+	}
+	return EStateTreeRunStatus::Succeeded;
 }
 
 // --- FTacticalTask_ScriptedShot ------------------------------------------------
@@ -416,12 +461,14 @@ EStateTreeRunStatus FTacticalTask_TutorialBeat::EnterState(
 {
 	FInstanceDataType& Inst = Context.GetInstanceData(*this);
 	Inst.ElapsedTime = 0.f;
+	Inst.bBeatStarted = false;
 
 	UWorld* World = TacticalQuestTasks_Internal::GetWorld(Context);
 	if (UTutorialPresentationSubsystem* Presentation = World
 		? World->GetSubsystem<UTutorialPresentationSubsystem>() : nullptr)
 	{
 		Presentation->StartBeat(Inst.Beat);
+		Inst.bBeatStarted = true;
 		return EStateTreeRunStatus::Running;
 	}
 	return EStateTreeRunStatus::Failed;
@@ -431,15 +478,43 @@ EStateTreeRunStatus FTacticalTask_TutorialBeat::Tick(
 	FStateTreeExecutionContext& Context, const float DeltaTime) const
 {
 	FInstanceDataType& Inst = Context.GetInstanceData(*this);
+	// Такт уже закрыт своим Tick — состояние ещё живёт (ждёт игрока), но
+	// пересчитывать нечего.
+	if (!Inst.bBeatStarted)
+	{
+		return EStateTreeRunStatus::Succeeded;
+	}
 	Inst.ElapsedTime += DeltaTime;
-	return Inst.ElapsedTime >= FMath::Max(0.1f, Inst.Beat.Duration)
-		? EStateTreeRunStatus::Succeeded
-		: EStateTreeRunStatus::Running;
+
+	if (Inst.ElapsedTime < FMath::Max(0.1f, Inst.Beat.Duration))
+	{
+		return EStateTreeRunStatus::Running;
+	}
+
+	// Такт закрываем ЗДЕСЬ, по своей длительности, а не в ExitState: выход из
+	// состояния наступает только когда шаг целиком выполнен игроком (в C0 это
+	// четыре цели), и субтитр с режиссёрским удержанием камеры жили всё это
+	// время — камера переставала слушаться выбора бойца.
+	UWorld* World = TacticalQuestTasks_Internal::GetWorld(Context);
+	if (UTutorialPresentationSubsystem* Presentation = World
+		? World->GetSubsystem<UTutorialPresentationSubsystem>() : nullptr)
+	{
+		Presentation->FinishBeat();
+	}
+	Inst.bBeatStarted = false; // ExitState уже нечего закрывать
+	return EStateTreeRunStatus::Succeeded;
 }
 
 void FTacticalTask_TutorialBeat::ExitState(
 	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
 {
+	// Такт, не доживший до показа (выход в паузе), нечем завершать — FinishBeat
+	// снял бы чужой активный такт.
+	FInstanceDataType& Inst = Context.GetInstanceData(*this);
+	if (!Inst.bBeatStarted)
+	{
+		return;
+	}
 	UWorld* World = TacticalQuestTasks_Internal::GetWorld(Context);
 	if (UTutorialPresentationSubsystem* Presentation = World
 		? World->GetSubsystem<UTutorialPresentationSubsystem>() : nullptr)
@@ -656,6 +731,195 @@ void FTacticalTask_ScriptedMove::ExitState(
 
 	// Камеру отпускаем строго парно к своему SetFollowTarget: следующий шаг
 	// (второй Scripted Move или Beat) сразу поставит свой фокус поверх.
+	if (Inst.bCameraAttached)
+	{
+		if (const UWorld* World = TacticalQuestTasks_Internal::GetWorld(Context))
+		{
+			const APlayerController* PlayerController = World->GetFirstPlayerController();
+			if (ATacticalCameraPawn* Camera = PlayerController
+					? Cast<ATacticalCameraPawn>(PlayerController->GetPawn()) : nullptr)
+			{
+				Camera->ClearFollowTarget();
+			}
+		}
+	}
+}
+
+// --- FTacticalTask_ScriptedEnemyTurn --------------------------------------------
+
+namespace
+{
+	/** Собрать программу хода из непустых полей задачи. */
+	TArray<FScriptedTurnStep> BuildScriptedTurnProgram(
+		const FTacticalTask_ScriptedEnemyTurnInstanceData& Inst,
+		UTacticalScenarioSubsystem* Registry)
+	{
+		TArray<FScriptedTurnStep> Steps;
+		if (!Inst.FreeMoveAnchorId.IsNone())
+		{
+			FScriptedTurnStep Step;
+			Step.Type = EScriptedTurnStepType::MoveTo;
+			Step.Destination = Registry->FindScenarioActor(Inst.FreeMoveAnchorId);
+			Step.bFreeMove = true;
+			Steps.Add(Step);
+		}
+		if (!Inst.PaidMoveAnchorId.IsNone())
+		{
+			FScriptedTurnStep Step;
+			Step.Type = EScriptedTurnStepType::MoveTo;
+			Step.Destination = Registry->FindScenarioActor(Inst.PaidMoveAnchorId);
+			Steps.Add(Step);
+		}
+		if (Inst.FinishAbility)
+		{
+			FScriptedTurnStep Step;
+			Step.Type = EScriptedTurnStepType::SelfAbility;
+			Step.AbilityClass = Inst.FinishAbility;
+			Steps.Add(Step);
+		}
+		return Steps;
+	}
+}
+
+FTacticalTask_ScriptedEnemyTurn::FTacticalTask_ScriptedEnemyTurn()
+{
+	bShouldCallTick = true;
+}
+
+EStateTreeRunStatus FTacticalTask_ScriptedEnemyTurn::EnterState(
+	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
+{
+	FInstanceDataType& Inst = Context.GetInstanceData(*this);
+	Inst.ElapsedTime = 0.f;
+	Inst.bProgramSet = false;
+	Inst.bCameraAttached = false;
+
+	UTacticalScenarioSubsystem* Registry =
+		TacticalQuestTasks_Internal::GetScenarioRegistry(Context);
+	AUnitBase* Unit = Registry
+		? Cast<AUnitBase>(Registry->FindScenarioActor(Inst.UnitAnchorId)) : nullptr;
+	if (!Unit)
+	{
+		UE_LOG(LogXRU1Quest, Error,
+			TEXT("[Tutorial] Scripted Enemy Turn: боец %s не найден"),
+			*Inst.UnitAnchorId.ToString());
+		return EStateTreeRunStatus::Failed;
+	}
+
+	// Деактивированного включаем сами — как Scripted Move: у выключенного нет
+	// контроллера/тика, и программа молча висела бы до таймаута.
+	if (!UTacticalScenarioSubsystem::IsActorScenarioActive(Unit))
+	{
+		Registry->SetActorScenarioActive(Unit, true);
+		UE_LOG(LogXRU1Quest, Display,
+			TEXT("[Tutorial] Scripted Enemy Turn: %s был деактивирован — включён автоматически"),
+			*Inst.UnitAnchorId.ToString());
+	}
+
+	// Контроллер мог ещё не заспавниться после активации — Tick повторит.
+	if (AUnitAIController* AI = Cast<AUnitAIController>(Unit->GetController()))
+	{
+		AI->SetScriptedTurnProgram(BuildScriptedTurnProgram(Inst, Registry));
+		Inst.bProgramSet = true;
+	}
+	return EStateTreeRunStatus::Running;
+}
+
+EStateTreeRunStatus FTacticalTask_ScriptedEnemyTurn::Tick(
+	FStateTreeExecutionContext& Context, const float DeltaTime) const
+{
+	FInstanceDataType& Inst = Context.GetInstanceData(*this);
+	Inst.ElapsedTime += DeltaTime;
+
+	UTacticalScenarioSubsystem* Registry =
+		TacticalQuestTasks_Internal::GetScenarioRegistry(Context);
+	AUnitBase* Unit = Registry
+		? Cast<AUnitBase>(Registry->FindScenarioActor(Inst.UnitAnchorId)) : nullptr;
+	AUnitAIController* AI = Unit ? Cast<AUnitAIController>(Unit->GetController()) : nullptr;
+
+	// Смерть исполнителя посреди программы — постановка сорвана: дальше шаги
+	// секции без него не сыграть, честный Failed уронит сценарий на рестарт.
+	if (!Unit || !UTacticsCombatStatics::IsUnitAlive(Unit))
+	{
+		UE_LOG(LogXRU1Quest, Error,
+			TEXT("[Tutorial] Scripted Enemy Turn: %s погиб до завершения программы"),
+			*Inst.UnitAnchorId.ToString());
+		return EStateTreeRunStatus::Failed;
+	}
+
+	// Программа обязана СТОЯТЬ, пока не исполнена, — декларативно, каждый тик.
+	// Одноразовый флаг терял постановку: OnPossess только что заспавненного
+	// контроллера вызывал ClearScriptedTurnProgram ПОСЛЕ первой постановки, и
+	// ход Holo_D шёл штатным AI (Investigate на шум — лог 2026-08-02).
+	if (AI && !AI->WasScriptedTurnProgramExecuted() && !AI->HasScriptedTurnProgram())
+	{
+		AI->SetScriptedTurnProgram(BuildScriptedTurnProgram(Inst, Registry));
+		Inst.bProgramSet = true;
+	}
+
+	// Камера цепляется в момент, когда программа реально пошла (его фаза), а не
+	// при армировании в ход игрока — иначе фокус улетал бы на стоящего врага.
+	// Реакционный выстрел ВЛАДЕЕТ камерой монопольно: на время реакции follow
+	// отпускается (иначе он перетягивал кадр обратно на бегущего врага и
+	// реакция «дёргалась»), после — цепляется заново этим же Tick'ом.
+	if (const UWorld* World = TacticalQuestTasks_Internal::GetWorld(Context))
+	{
+		const APlayerController* PC = World->GetFirstPlayerController();
+		const ATacticalPlayerController* TacticalPC = Cast<ATacticalPlayerController>(PC);
+		ATacticalCameraPawn* Camera = PC
+			? Cast<ATacticalCameraPawn>(PC->GetPawn()) : nullptr;
+		const bool bReaction = TacticalPC && TacticalPC->IsReactionShotPlaying();
+		if (Camera && Inst.bCameraFollowUnit)
+		{
+			if (bReaction && Inst.bCameraAttached)
+			{
+				Camera->ClearFollowTarget();
+				Inst.bCameraAttached = false;
+			}
+			else if (!bReaction && !Inst.bCameraAttached &&
+				AI && AI->IsScriptedTurnProgramStarted())
+			{
+				Camera->SetFollowTarget(Unit);
+				Inst.bCameraAttached = true;
+			}
+		}
+	}
+
+	if (Inst.bProgramSet && AI && AI->WasScriptedTurnProgramExecuted())
+	{
+		return EStateTreeRunStatus::Succeeded;
+	}
+
+	if (Inst.ElapsedTime >= Inst.Timeout)
+	{
+		UE_LOG(LogXRU1Quest, Error,
+			TEXT("[Tutorial] Scripted Enemy Turn: %s не исполнил программу за %.1f с — шаг провален"),
+			*Inst.UnitAnchorId.ToString(), Inst.Timeout);
+		return EStateTreeRunStatus::Failed;
+	}
+	return EStateTreeRunStatus::Running;
+}
+
+void FTacticalTask_ScriptedEnemyTurn::ExitState(
+	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
+{
+	FInstanceDataType& Inst = Context.GetInstanceData(*this);
+	UTacticalScenarioSubsystem* Registry =
+		TacticalQuestTasks_Internal::GetScenarioRegistry(Context);
+	AUnitBase* Unit = Registry
+		? Cast<AUnitBase>(Registry->FindScenarioActor(Inst.UnitAnchorId)) : nullptr;
+
+	// Недоигранную программу снимаем ВМЕСТЕ с ходом: чужой шаг не должен
+	// получить врага с живым приказом, а остаток его ОД — не достаётся
+	// utility-AI (свободный выстрел по Кадету после провала, лог 2026-08-02).
+	if (AUnitAIController* AI = Unit ? Cast<AUnitAIController>(Unit->GetController()) : nullptr)
+	{
+		if (AI->HasScriptedTurnProgram())
+		{
+			AI->CancelScriptedTurnProgram();
+		}
+	}
+
 	if (Inst.bCameraAttached)
 	{
 		if (const UWorld* World = TacticalQuestTasks_Internal::GetWorld(Context))

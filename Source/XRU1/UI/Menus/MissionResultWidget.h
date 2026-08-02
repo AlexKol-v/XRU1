@@ -38,11 +38,35 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Menu")
 	void GoToMainMenu();
 
+	/**
+	 * Победа в боевой миссии (не туториале) = демо пройдено: экран показывает
+	 * DemoComplete-арт и текст вместо обычного результата (GDD §4).
+	 */
+	UFUNCTION(BlueprintPure, Category = "Menu")
+	bool IsDemoComplete() const;
+
 protected:
 	/** BP-хук: результат готов — обновить тексты/показать статистику. */
 	UFUNCTION(BlueprintImplementableEvent, Category = "Menu")
 	void OnResultReady(bool bInVictory, bool bInDefeatByTimeout);
 
+	virtual void NativeOnInitialized() override;
+
+	/** C++-заполнение текстов/арта по результату; работает без BP-графа. */
+	void UpdateResultVisuals();
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UTextBlock> Txt_ResultTitle;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UTextBlock> Txt_ResultSubtitle;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UImage> Img_ResultArt;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Retry;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_ToHub;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_ToMenu;
+
 	bool bVictory = false;
 	bool bDefeatByTimeout = false;
+
+private:
+	UFUNCTION() void HandleRetryClicked();
+	UFUNCTION() void HandleToHubClicked();
+	UFUNCTION() void HandleToMenuClicked();
 };

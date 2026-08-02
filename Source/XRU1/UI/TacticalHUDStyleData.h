@@ -547,6 +547,44 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "06. Палитра|Панели")
 	FLinearColor MutedTextColor = FLinearColor(0.55f, 0.65f, 0.69f, 1.f);
 
+	// --- Боевой фидбек: всплывающий текст над юнитами -----------------------
+
+	/** Время жизни всплывающей надписи, сек. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "08. Боевой фидбек", meta = (ClampMin = "0.2"))
+	float FloatingTextDuration = 1.4f;
+
+	/** Скорость подъёма надписи, slate-px/сек. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "08. Боевой фидбек", meta = (ClampMin = "0"))
+	float FloatingTextRiseSpeed = 42.f;
+
+	/** Размер шрифта статусов («ПРОМАХ», «НАБЛЮДЕНИЕ»). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "08. Боевой фидбек", meta = (ClampMin = "8"))
+	int32 FloatingTextFontSize = 16;
+
+	/** Размер шрифта чисел урона/лечения. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "08. Боевой фидбек", meta = (ClampMin = "8"))
+	int32 FloatingDamageFontSize = 20;
+
+	/** Подъём точки привязки над центром актора, см (над головой юнита). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "08. Боевой фидбек")
+	float FloatingTextWorldZOffset = 120.f;
+
+	/** Цвет чисел урона. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "08. Боевой фидбек")
+	FLinearColor FloatingDamageColor = FLinearColor(1.f, 0.25f, 0.2f, 1.f);
+
+	/** Цвет чисел лечения. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "08. Боевой фидбек")
+	FLinearColor FloatingHealColor = FLinearColor(0.08f, 0.72f, 0.36f, 1.f);
+
+	/** Цвет надписи «ПРОМАХ». */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "08. Боевой фидбек")
+	FLinearColor FloatingMissColor = FLinearColor(0.85f, 0.9f, 0.95f, 1.f);
+
+	/** Цвет статусных надписей («НАБЛЮДЕНИЕ» и т.п.). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "08. Боевой фидбек")
+	FLinearColor FloatingStatusColor = FLinearColor(0.72f, 0.94f, 1.f, 1.f);
+
 	// --- CommonUI style assets для меню -------------------------------------
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "07. CommonUI|Кнопки")

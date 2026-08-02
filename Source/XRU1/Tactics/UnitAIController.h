@@ -13,6 +13,38 @@ class UAIActionEvaluator;
 class UAIBehaviorProfileDataAsset;
 class AUnitBase;
 
+/** Тип шага сценарной программы хода (см. SetScriptedTurnProgram). */
+UENUM()
+enum class EScriptedTurnStepType : uint8
+{
+	/** Перемещение к точке (bFreeMove — постановочный рывок без списания ОД). */
+	MoveTo,
+	/** Активация способности на себе (Глухая оборона / Наблюдение). */
+	SelfAbility
+};
+
+/** Один шаг сценарной программы хода врага (туториол, шаг C1). */
+USTRUCT()
+struct FScriptedTurnStep
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	EScriptedTurnStepType Type = EScriptedTurnStepType::MoveTo;
+
+	/** Точка назначения для MoveTo (якорь сценария). */
+	UPROPERTY()
+	TWeakObjectPtr<const AActor> Destination;
+
+	/** MoveTo: не списывать ОД («выход из-за угла» — режиссура, а не трата хода). */
+	UPROPERTY()
+	bool bFreeMove = false;
+
+	/** SelfAbility: класс способности; недостающий грант выдаётся на лету. */
+	UPROPERTY()
+	TSubclassOf<class UTacticalAbility> AbilityClass;
+};
+
 /** Уровень тревоги AI-юнита (упрощённая модель XCOM: green/yellow/red alert). */
 UENUM(BlueprintType)
 enum class EUnitAlertState : uint8
@@ -638,8 +670,17 @@ public:
 	 * Токен «этот маршрут заказал игрок». Ставится ATacticalPlayerController сразу
 	 * после принятого MoveAlongRoute. Только помеченное перемещение публикует
 	 * `Movement.Settled.*`: служебный подшаг стрелка и маршрут AI — не приказ.
+	 *
+	 * OrderedDestination — точка, КУДА игрок приказал идти (последняя вершина
+	 * плана). Точка шага обучения гасится по НЕЙ, а не по финальной позиции:
+	 * прижатие к укрытию/наклон смещали бойца дальше допуска, и точка «не
+	 * засчитывалась» (лог Осы 2026-08-01), оставаясь вечно открытой.
 	 */
-	void MarkPlayerOrderedMove() { bPlayerOrderedMove = true; }
+	void MarkPlayerOrderedMove(const FVector& OrderedDestination)
+	{
+		bPlayerOrderedMove = true;
+		PlayerOrderedDestination = OrderedDestination;
+	}
 
 	/**
 	 * Сценарный приказ обучения: в свою ближайшую активацию юнит обязан стрелять
@@ -655,6 +696,33 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Tactics|AI|Scripted")
 	bool HasScriptedAttackOrder() const { return ScriptedAttackTarget.IsValid(); }
+
+	/**
+	 * Сценарная ПРОГРАММА ближайшего хода: юнит исполняет шаги по порядку
+	 * ВМЕСТО utility-AI и по исчерпании программы завершает ход — свободного
+	 * выстрела в остаток ОД не бывает. Ставится задачей обучения (шаг C1:
+	 * бесплатный выход под Наблюдение → отбегание за укрытие → Глухая оборона).
+	 */
+	void SetScriptedTurnProgram(TArray<FScriptedTurnStep> Steps);
+	void ClearScriptedTurnProgram();
+
+	/**
+	 * Снять программу И корректно завершить ход юнита, если он сейчас идёт:
+	 * остаток ОД НЕ отдаётся utility-AI (после провала постановки Holo_D
+	 * стрелял в Кадета с 44.5% — лог 2026-08-02).
+	 */
+	void CancelScriptedTurnProgram();
+
+	bool HasScriptedTurnProgram() const { return ScriptedTurnProgram.Num() > 0; }
+
+	/** Программа начала исполняться (выдан хотя бы первый приказ). */
+	bool IsScriptedTurnProgramStarted() const
+	{
+		return ScriptedTurnProgram.Num() > 0 && ScriptedTurnStepIndex > 0;
+	}
+
+	/** Программа исполнена целиком (флаг живёт до следующего Set/Clear). */
+	bool WasScriptedTurnProgramExecuted() const { return bScriptedTurnProgramExecuted; }
 
 protected:
 
@@ -762,6 +830,9 @@ protected:
 	/** Текущий маршрут заказан игроком (см. MarkPlayerOrderedMove). */
 	bool bPlayerOrderedMove = false;
 
+	/** Точка приказа игрока — по ней гасится точка шага обучения. */
+	FVector PlayerOrderedDestination = FVector::ZeroVector;
+
 	/**
 	 * Все пригодные предложения последнего решения по убыванию скора.
 	 * Нужен фолбэк: провалившееся исполнение лучшего варианта не должно съедать
@@ -771,6 +842,23 @@ protected:
 
 	/** Цель сценарного приказа обучения (см. SetScriptedAttackOrder). */
 	TWeakObjectPtr<AActor> ScriptedAttackTarget;
+
+	// --- Сценарная программа хода (см. SetScriptedTurnProgram) ----------------
+
+	/** Шаги программы; исполняются в AdvanceTurnStep вместо utility-AI. */
+	TArray<FScriptedTurnStep> ScriptedTurnProgram;
+
+	/** Индекс СЛЕДУЮЩЕГО не начатого шага программы. */
+	int32 ScriptedTurnStepIndex = 0;
+
+	/** Программа исполнена целиком (читает задача обучения). */
+	bool bScriptedTurnProgramExecuted = false;
+
+	/** Неудачные попытки начать ТЕКУЩИЙ шаг — после лимита шаг пропускается. */
+	int32 ScriptedStepFailedAttempts = 0;
+
+	/** Исполнение текущего шага программы. false — шаг не начался, повторим. */
+	bool StepScriptedProgram(AUnitBase* Unit);
 
 	/**
 	 * Стоимость запланированного перемещения в AP. Раньше финализация всегда

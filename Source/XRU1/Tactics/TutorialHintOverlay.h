@@ -31,7 +31,9 @@ private:
 	FText GetQuestTitle() const;
 	FText GetObjectiveLines() const;
 	FText GetDenialText() const;
+	FText GetBeatSubtitle() const;
 	EVisibility GetTitleVisibility() const;
 	EVisibility GetObjectiveVisibility() const;
 	EVisibility GetDenialVisibility() const;
+	EVisibility GetSubtitleVisibility() const;
 };

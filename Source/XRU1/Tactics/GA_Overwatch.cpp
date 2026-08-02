@@ -9,6 +9,7 @@
 #include "UnitAIController.h"
 #include "TacticalPlayerController.h"
 #include "TacticalQuestEvents.h"
+#include "CombatFeedbackSubsystem.h"
 #include "AbilitySystemComponent.h"
 #include "Perception/AIPerceptionComponent.h"
 #include "GameFramework/Actor.h"
@@ -17,6 +18,7 @@
 #include "TimerManager.h"
 #include "Animation/AnimInstance.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Kismet/GameplayStatics.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogTacticsOverwatchAction, Log, All);
 
@@ -121,6 +123,12 @@ void UGA_Overwatch::ActivateAbility(
 	{
 		Unit->NotifyUnitStateChanged();
 		Unit->PlayUnitSound(EUnitSoundEvent::OverwatchEnter);
+		// Всплывающее «НАБЛЮДЕНИЕ» над взведённым бойцом (09_UI_HUD §4).
+		if (UCombatFeedbackSubsystem* Feedback = UCombatFeedbackSubsystem::Get(Unit))
+		{
+			Feedback->ShowStatusText(Unit,
+				NSLOCTEXT("XRU1.Feedback", "OverwatchArmed", "НАБЛЮДЕНИЕ"));
+		}
 		if (UTacticalQuestEvents::IsPlayerSideUnit(Unit, Unit))
 		{
 			UTacticalQuestEvents::BroadcastQuestEvent(Unit,
@@ -152,6 +160,8 @@ void UGA_Overwatch::EndAbility(
 			TurnManager->OnCombatEnded.RemoveDynamic(this, &UGA_Overwatch::HandleCombatEnded);
 		}
 		World->GetTimerManager().ClearTimer(ReactionCheckTimer);
+		World->GetTimerManager().ClearTimer(ReactionPresentationDelayTimer);
+		World->GetTimerManager().ClearTimer(ReactionPostHoldTimer);
 	}
 
 	if (ReactionAction.IsActive())
@@ -270,12 +280,13 @@ void UGA_Overwatch::CheckMovingTargets()
 		}
 		const TObjectKey<AActor> Key(Enemy);
 
-		// Встал — перемещение закончилось: следующее будет считаться заново, и по
-		// нему снова можно отработать (за пределами лимита MaxReactionShots).
+		// Встал — точка старта следующего перемещения посчитается заново.
+		// ReactedThisMove здесь НЕ чистим (v2.9): пауза мовера реакцией
+		// выглядела как остановка, метка стиралась, и по той же цели уходила
+		// вторая реакция без форса. Одна реакция на цель за фазу.
 		if (!UTacticsCombatStatics::IsUnitInTransit(Enemy))
 		{
 			MoveStartLocations.Remove(Key);
-			ReactedThisMove.Remove(Key);
 			continue;
 		}
 
@@ -409,9 +420,37 @@ bool UGA_Overwatch::BeginReactionAction(AActor* Target)
 
 	const float Aim = FMath::Max(0.f,
 		UGA_Attack::ComputeEffectiveAim(Unit, Target) - ReactionAimPenalty);
-	const float ResolvedHitChance = UTacticsCombatStatics::ComputeHitChance(Unit, Target, Aim);
+	float ResolvedHitChance = UTacticsCombatStatics::ComputeHitChance(Unit, Target, Aim);
+	float ReactionDamage = Unit->ShotDamage;
+
+	// Сценарный форс обучения действует и на реакционный выстрел: «следующий
+	// выстрел бойца» — это и Overwatch-реакция (шаг C1 туториала требует
+	// гарантированные «пол-HP» по Holo_D). Форс меняет только числа snapshot'а,
+	// roll/GE/камера/quest-события остаются общим pipeline — как в GA_Attack.
+	FScriptedShotOverride ScriptedShot;
+	bConsumedScriptedShotValid = false;
+	if (Unit->ConsumePendingScriptedShot(Target, ScriptedShot))
+	{
+		if (ScriptedShot.bOverrideHitChance)
+		{
+			ResolvedHitChance = ScriptedShot.HitChancePercent;
+		}
+		if (ScriptedShot.bOverrideDamage)
+		{
+			ReactionDamage = ScriptedShot.Damage;
+		}
+		// Запоминаем потреблённый форс: abort сорванного монтажа ДО commit
+		// обязан вернуть его юниту, иначе повторная попытка идёт с общим
+		// шансом и учебное «гарантированное попадание» превращается в промах.
+		ConsumedScriptedShot = ScriptedShot;
+		bConsumedScriptedShotValid = true;
+		UE_LOG(LogTacticsOverwatchAction, Log,
+			TEXT("[ReactionAction] Scripted reaction %s → %s: chance=%.0f damage=%.0f"),
+			*GetNameSafe(Unit), *GetNameSafe(Target), ResolvedHitChance, ReactionDamage);
+	}
+
 	ReactionAction.Begin(Unit, Target, FiringEyeLocation, ResolvedHitChance,
-		Unit->ShotDamage, Unit->AttackRange, DamageEffect);
+		ReactionDamage, Unit->AttackRange, DamageEffect);
 	const UCoverDetectionComponent* Cover = Unit->GetCoverDetection();
 	ReactionAction.SetPresentation(FireMontage, FiringStance, Unit->GetActorLocation(),
 		PresentationRootLocation,
@@ -461,8 +500,55 @@ bool UGA_Overwatch::BeginReactionAction(AActor* Target)
 		TEXT("[ReactionAction] Begin id=%s shooter=%s target=%s chance=%.1f paused=%d"),
 		*ActionId.ToString(EGuidFormats::Digits), *GetNameSafe(Unit), *GetNameSafe(Target),
 		ResolvedHitChance, PausedReactionMover.IsValid() ? 1 : 0);
+
+	// Цель уже замерла, камера наведена — короткая пауза, ПОТОМ выстрел:
+	// иначе кадр «дёргается и сразу едет дальше» (фидбэк по реакции Танка).
+	// Таймер живёт в ИГРОВОМ времени, а slow-mo реакции уже включён — без
+	// умножения на дилатацию «0.9 с» растягивались в несколько реальных секунд
+	// («овервотч ушёл в паузу», лог 2026-08-02).
+	if (PreReactionCameraSettleDelay > 0.f)
+	{
+		if (UWorld* World = Unit->GetWorld())
+		{
+			const float Dilation = FMath::Max(0.05f, UGameplayStatics::GetGlobalTimeDilation(World));
+			World->GetTimerManager().SetTimer(ReactionPresentationDelayTimer,
+				FTimerDelegate::CreateUObject(this, &UGA_Overwatch::StartReactionPresentation, ActionId),
+				PreReactionCameraSettleDelay * Dilation, /*bLoop=*/false);
+			return true;
+		}
+	}
 	OnReactionActionStarted(Target, ActionId);
 	return true;
+}
+
+void UGA_Overwatch::StartReactionPresentation(FGuid ActionId)
+{
+	// Реакцию могли abort'нуть за время паузы — устаревший таймер молчит.
+	if (ReactionAction.Matches(ActionId))
+	{
+		UE_LOG(LogTacticsOverwatchAction, Display,
+			TEXT("[ReactionAction] Presentation start id=%s (после паузы %.2f с)"),
+			*ActionId.ToString(EGuidFormats::Digits), PreReactionCameraSettleDelay);
+		OnReactionActionStarted(ReactionAction.Target.Get(), ActionId);
+	}
+	else
+	{
+		UE_LOG(LogTacticsOverwatchAction, Warning,
+			TEXT("[ReactionAction] Presentation start id=%s ОТМЕНЁН: транзакция уже закрыта"),
+			*ActionId.ToString(EGuidFormats::Digits));
+	}
+}
+
+void UGA_Overwatch::FinishReactionPostHold(FGuid ActionId)
+{
+	if (ReactionAction.Matches(ActionId))
+	{
+		UE_LOG(LogTacticsOverwatchAction, Display,
+			TEXT("[ReactionAction] Post-hold %.2f с истёк id=%s → терминал"),
+			PostReactionHoldDelay, *ActionId.ToString(EGuidFormats::Digits));
+		ReactionPostHoldDoneId = ActionId;
+		CompleteReactionAction(ActionId);
+	}
 }
 
 bool UGA_Overwatch::FireCommit(const FGuid& ActionId, bool& bOutHit)
@@ -494,6 +580,7 @@ bool UGA_Overwatch::FireCommit(const FGuid& ActionId, bool& bOutHit)
 	const TSubclassOf<UGameplayEffect> EffectClass = ReactionAction.DamageEffectClass;
 
 	ReactionAction.MarkCommitStarted();
+	bConsumedScriptedShotValid = false; // форс исполнен — возврат больше не нужен
 	++ReactionShotsUsed;
 	bOutHit = UTacticsCombatStatics::ResolveShotMechanics(
 		Shooter, Target, HitChance, Damage, EffectClass, ShotOrigin);
@@ -503,6 +590,7 @@ bool UGA_Overwatch::FireCommit(const FGuid& ActionId, bool& bOutHit)
 		if (AUnitBase* ShooterUnit = Cast<AUnitBase>(Shooter))
 		{
 			ShooterUnit->PlayUnitSound(EUnitSoundEvent::ReactionFire);
+			ShooterUnit->PlayShotVfx(Target, bOutHit, ShotOrigin);
 		}
 		OnReactionShot(Target, bOutHit);
 		if (UTacticalQuestEvents::IsPlayerSideUnit(Shooter, Shooter))
@@ -530,6 +618,36 @@ bool UGA_Overwatch::CompleteReactionAction(const FGuid& ActionId)
 		return AbortReactionAction(ActionId);
 	}
 
+	// Удержание кадра: цель остаётся замершей, урон читается — потом резюм.
+	// Slow-mo ещё активен (его снимает терминал) — умножаем на дилатацию.
+	// Убитая реакцией цель держится дольше (симметрично GA_Attack): падение —
+	// это анимация, а не мгновенная цифра.
+	const AActor* ReactionTarget = ReactionAction.Target.Get();
+	const bool bTargetKilled = ReactionTarget && !UTacticsCombatStatics::IsUnitAlive(ReactionTarget);
+	const float HoldDelay = bTargetKilled ? PostReactionKillHoldDelay : PostReactionHoldDelay;
+
+	if (HoldDelay > 0.f && ReactionPostHoldDoneId != ActionId)
+	{
+		if (const AActor* Avatar = GetAvatarActorFromActorInfo())
+		{
+			if (UWorld* World = Avatar->GetWorld())
+			{
+				const float Dilation = FMath::Max(0.05f, UGameplayStatics::GetGlobalTimeDilation(World));
+				UE_LOG(LogTacticsOverwatchAction, Display,
+					TEXT("[ReactionAction] Кадр удерживается %.2f с (%s) id=%s"),
+					HoldDelay, bTargetKilled ? TEXT("цель убита") : TEXT("post-hold"),
+					*ActionId.ToString(EGuidFormats::Digits));
+				World->GetTimerManager().SetTimer(ReactionPostHoldTimer,
+					FTimerDelegate::CreateUObject(this, &UGA_Overwatch::FinishReactionPostHold, ActionId),
+					HoldDelay * Dilation, /*bLoop=*/false);
+				return true;
+			}
+		}
+	}
+
+	UE_LOG(LogTacticsOverwatchAction, Display,
+		TEXT("[ReactionAction] Complete id=%s: камера/мовер/худы возвращаются"),
+		*ActionId.ToString(EGuidFormats::Digits));
 	ClearReactionActionWatchdog();
 	ReactionAction.Reset();
 	ReleaseReactionSlot(this);
@@ -554,6 +672,27 @@ bool UGA_Overwatch::AbortReactionAction(const FGuid& ActionId)
 
 	const FTacticalFireActionContext FinishedAction = ReactionAction;
 	const bool bShotCommitted = FinishedAction.bShotCommitted;
+
+	// Abort раньше был немым — источник сорванной транзакции не находился по логу.
+	UE_LOG(LogTacticsOverwatchAction, Display,
+		TEXT("[ReactionAction] ABORT id=%s phase=%d committed=%d shooter=%s target=%s"),
+		*ActionId.ToString(EGuidFormats::Digits), static_cast<int32>(FinishedAction.Phase),
+		bShotCommitted ? 1 : 0, *GetNameSafe(FinishedAction.Shooter.Get()),
+		*GetNameSafe(FinishedAction.Target.Get()));
+
+	// Сорванная ДО выстрела реакция возвращает потреблённый форс: учебное
+	// «гарантированное попадание» не должно сгорать на прерванном монтаже.
+	if (!bShotCommitted && bConsumedScriptedShotValid)
+	{
+		if (AUnitBase* ShooterUnit = Cast<AUnitBase>(FinishedAction.Shooter.Get()))
+		{
+			ShooterUnit->SetPendingScriptedShot(ConsumedScriptedShot, FinishedAction.Target.Get());
+			UE_LOG(LogTacticsOverwatchAction, Display,
+				TEXT("[ReactionAction] Форс возвращён %s после сорванной реакции"),
+				*GetNameSafe(ShooterUnit));
+		}
+	}
+	bConsumedScriptedShotValid = false;
 	ClearReactionActionWatchdog();
 	ReactionAction.Reset();
 	ReleaseReactionSlot(this);

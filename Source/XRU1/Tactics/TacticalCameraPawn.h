@@ -75,13 +75,55 @@ public:
 	void FrameShot(const AActor* Shooter, const AActor* Target);
 
 	/**
-	 * То же, но на время (сек): кадр самого выстрела — держится, пока летит
-	 * пуля и играет реакция, затем камера сама возвращает прежние поворот и
-	 * зум. Зовётся и для выстрела игрока, и для выстрела врага — иначе игрок
-	 * не видит, в кого враг стреляет.
+	 * КАДР ПРЕЗЕНТАЦИИ выстрела (Duration в сек; −1 — держать до
+	 * ClearShotFraming). Зовётся и для выстрела игрока, и для выстрела врага, и
+	 * для реакции наблюдения — иначе игрок не видит, в кого стреляют.
+	 *
+	 * ⚠️ В отличие от кадра прицеливания этот кадр МОНОПОЛЕН: пока он живёт,
+	 * фоновые интенты взгляда (фокус на выбранном бойце, подхват вышедшего из-за
+	 * угла врага, follow чужого хода) НЕ выполняются сразу, а запоминаются и
+	 * применяются в момент снятия кадра. Без этого произвольный тик уводил
+	 * камеру посреди выстрела — «камера улетает раньше, чем напишет урон» и
+	 * «реакция наблюдения без кадра» (оба пойманы в логе 2026-08-02).
+	 * Ручной ввод игрока и новый кадр монополию перебивают.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
 	void FrameShotForDuration(const AActor* Shooter, const AActor* Target, float Duration);
+
+	/** Живёт ли монопольный кадр презентации (см. FrameShotForDuration). */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Camera")
+	bool IsPlayingPresentationFrame() const { return bShotFraming && bPresentationFrame; }
+
+	/**
+	 * РЕЖИССЁРСКИЙ ФОКУС: навести камеру и удержать взгляд, пока такт не
+	 * закончится (`ReleaseDirectorHold`). Пока удержание активно, фоновые
+	 * интенты (автовыбор следующего бойца, подхват врага) откладываются — тем
+	 * же механизмом, что и в кадре выстрела.
+	 *
+	 * Иначе показ «куда идти» не работает в принципе: в логе D1 такт навёл
+	 * камеру на зону эвакуации, и в том же кадре дозревший автопереход выбора
+	 * бойца увёл её обратно к Танку — игрок зоны не увидел.
+	 *
+	 * `HoldDuration` (сек) — СТРАХОВКА: удержание снимается само, даже если
+	 * владелец забыл его отпустить. Без неё один незакрытый такт вешал камеру
+	 * на весь шаг — «камера перестала фокусироваться на юнитах» (лог C0:
+	 * ExitState задачи такта наступает только при выходе из СОСТОЯНИЯ, а шаг
+	 * живёт до выполнения игроком всех целей). ≤ 0 — держать до явного снятия.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
+	void FocusOnLocationDirected(const FVector& Location, float HoldDuration = -1.f);
+
+	/** Снять режиссёрское удержание и исполнить накопленный фоновый интент. */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
+	void ReleaseDirectorHold();
+
+	/**
+	 * Игрок взял камеру сам (панорама/поворот/зум): удержание снимается, а
+	 * накопленный фоновый интент ВЫБРАСЫВАЕТСЯ — иначе камера прыгнула бы из-под
+	 * руки игрока к отложенной цели.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
+	void BreakDirectorHold();
 
 	/** Снимает кадр и возвращает постоянный пользовательский ракурс и позицию до кадра. */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
@@ -217,6 +259,26 @@ public:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "0", ClampMax = "1"))
 	float ShotFrameTargetBiasFar = 0.5f;
+
+	/**
+	 * Дистанция (см), дальше которой кадр строится ВОКРУГ ЦЕЛИ, а не из-за
+	 * плеча стрелка.
+	 *
+	 * Так делает XCOM на squadsight-выстрелах, и по той же причине: на 35 м
+	 * «из-за плеча» показывает спину стрелка крупно и цель в несколько
+	 * пикселей где-то в дымке — попадание, цифру урона и смерть цели зритель
+	 * просто не видит (жалоба «снайпер стреляет странно», лог 2026-08-02:
+	 * dist=3588, штраф 64 = цель вообще закрыта). Дальний кадр ставит камеру
+	 * рядом с целью на линии выстрела: стрелок остаётся за камерой, зато виден
+	 * тот, в кого прилетает. Значение по умолчанию — чуть ниже обзора отряда
+	 * (2500 см): дальше него цель для стрелка и так «не своя».
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "0"))
+	float ShotFrameTargetOnlyDistance = 2400.f;
+
+	/** Отступ камеры от ЦЕЛИ по линии выстрела в дальнем кадре (см). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "100"))
+	float ShotFrameLongShotBack = 700.f;
 
 	/**
 	 * Доля полу-FOV, в которую ОБЯЗАНЫ поместиться и стрелок, и цель. < 1 —
@@ -398,6 +460,47 @@ protected:
 	/** Остаток времени кадра (< 0 — держать до ClearShotFraming). */
 	float ShotFrameTimeLeft = -1.f;
 
+	/** Текущий кадр — монопольная презентация выстрела, а не прицеливание. */
+	bool bPresentationFrame = false;
+
+	/** Камеру держит режиссура такта (см. FocusOnLocationDirected). */
+	bool bDirectorHold = false;
+
+	/** Остаток страховочного удержания, сек (< 0 — до явного снятия). */
+	float DirectorHoldTimeLeft = -1.f;
+
+	// --- Отложенный интент взгляда (монополия кадра презентации) --------------
+	// Фоновый запрос (фокус/следование), пришедший во время презентации, не
+	// теряется и не рвёт кадр: он исполняется в момент снятия кадра. Это делает
+	// владение камерой однозначным — арбитраж живёт в самой камере, а не в
+	// десятке проверок `if (IsFramingShot())` по вызывающим.
+
+	bool bHasPendingCameraIntent = false;
+	bool bPendingIntentIsFollow = false;
+	TWeakObjectPtr<const AActor> PendingFollowTarget;
+	FVector PendingFocusLocation = FVector::ZeroVector;
+
+	/** Отложенный фокус был мгновенным (телепорт камеры), а не полётом. */
+	bool bPendingFocusInstant = false;
+
+	/** Идёт исполнение отложенного интента — сам себя откладывать он не должен. */
+	bool bApplyingPendingIntent = false;
+
+	/** Отложенный интент поставила режиссура такта, а не фон. */
+	bool bPendingIntentIsDirected = false;
+
+	/** Текущий вызов Focus* — режиссёрский (см. FocusOnLocationDirected). */
+	bool bMarkingDirectedIntent = false;
+
+	/** Единственная проверка «камера сейчас занята и фоновый интент ждёт». */
+	bool ShouldDeferAmbientIntent() const
+	{
+		return !bApplyingPendingIntent && (IsPlayingPresentationFrame() || bDirectorHold);
+	}
+
+	/** Применить отложенный интент (если есть) — зовётся при снятии удержания. */
+	bool ApplyPendingCameraIntent();
+
 	/**
 	 * Ракурс ДО кадра для параметров, которыми игрок напрямую не управляет.
 	 * Yaw/zoom хранятся отдельно в TacticalYaw/TacticalZoom и потому не могут
@@ -406,8 +509,13 @@ protected:
 	float PreShotPitch = -55.f;
 	FVector PreShotLocation = FVector::ZeroVector;
 
-	/** Общая часть FrameShot/FrameShotForDuration. */
-	void EnterShotFraming(const AActor* Shooter, const AActor* Target, float Duration);
+	/**
+	 * Общая часть FrameShot/FrameShotForDuration. `bPresentation` — монопольный
+	 * кадр совершённого выстрела (см. FrameShotForDuration); выставляется здесь,
+	 * ПОСЛЕ проверки участников, чтобы неудавшийся вызов не понизил живой кадр.
+	 */
+	void EnterShotFraming(const AActor* Shooter, const AActor* Target, float Duration,
+		bool bPresentation);
 
 	/**
 	 * Свободен ли отрезок между двумя точками по геометрии мира. Юниты
@@ -432,9 +540,13 @@ protected:
 	 * отдельно: цель, голову стрелка, его корпус, «камера в стене» и пересечение
 	 * оси съёмки. Именно отсутствие раздельных проверок давало кадры, где вместо
 	 * врага стена или вместо боя — спина.
+	 *
+	 * `bIgnoreShooter` — дальний (squadsight) кадр: стрелок в нём заведомо за
+	 * камерой, и его «невидимость» не повод портить ракурс на цели.
 	 */
 	float ScoreShotCandidate(const FVector& CamPos, const FVector& LookPoint,
-		const FVector& ShooterAim, const FVector& TargetAim, float SideSign) const;
+		const FVector& ShooterAim, const FVector& TargetAim, float SideSign,
+		bool bIgnoreShooter) const;
 
 	/**
 	 * СТОРОНА СЪЁМКИ прошлого кадра (+1/−1) — ось правила 180°. 0 — кадра ещё не

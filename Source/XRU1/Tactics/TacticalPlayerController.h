@@ -173,6 +173,13 @@ public:
 	FText GetTutorialDenialText() const;
 
 	/**
+	 * Субтитр активного такта в формате «Купол: реплика». Пусто, если такт не
+	 * идёт или у него нет текста. Голос играет presentation-подсистема; здесь
+	 * только текстовая дорожка, поэтому реплика читается и без озвучки.
+	 */
+	FText GetTutorialBeatSubtitle() const;
+
+	/**
 	 * Сценарий поставил стартовую камеру (InitialCameraAnchorId): первый
 	 * автофокус на центр отряда при старте боя пропускается, ракурс — за
 	 * режиссурой. Зовёт ATacticalScenarioDirector после телепорта камеры.
@@ -200,6 +207,9 @@ public:
 	 */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Control")
 	bool IsPlayerPhase() const;
+
+	/** Играется ли сейчас реакционный выстрел (модальное окно камеры). */
+	bool IsReactionShotPlaying() const { return bReactionPlaying; }
 
 	/**
 	 * Единый арбитр команд: фаза, выбранный юнит, движение, модальный targeting,
@@ -565,6 +575,16 @@ protected:
 	void BeginAbilityTargetingVisuals();
 	void ClearAbilityTargetingVisuals();
 
+	/** Кольца «встань сюда» вокруг Downed союзников, пока выбран медик. */
+	TArray<TWeakObjectPtr<class UDecalComponent>> ReviveRingDecals;
+
+	/**
+	 * Показ/скрытие колец радиуса подъёма у лежащих союзников. Игрок в A9 видит
+	 * при ДВИЖЕНИИ медика, куда именно нужно дойти (радиус лечения 200 см), а не
+	 * угадывает «вплотную». Перестраивается при смене выбора и политики шага.
+	 */
+	void RefreshDownedReviveRings();
+
 	/** Последний отказ Action Gate — оверлей показывает его 3 секунды. */
 	FText LastDenialReason;
 	float LastDenialTimeSeconds = -100.f;
@@ -618,6 +638,18 @@ protected:
 
 	/** Откат побочных эффектов покидаемого режима (камера, подсветка, баннер). */
 	void ExitTargetingMode(EPlayerTargetingMode OldMode);
+
+	/**
+	 * Показ/скрытие оверхед-худов живого отряда (не трогает Downed/врагов).
+	 * Прицеливание атаки прячет их: полосы своего бойца загораживали прицел.
+	 */
+	void SetSquadOverheadHUDVisible(bool bVisible);
+
+	/** Декларативный владелец видимости худов отряда (PlayerTick). */
+	void UpdateSquadOverheadVisibility();
+
+	/** Текущее применённое состояние скрытия худов отряда. */
+	bool bSquadOverheadHidden = false;
 
 	/** Установка побочных эффектов входимого режима. */
 	void EnterTargetingMode(EPlayerTargetingMode NewMode);

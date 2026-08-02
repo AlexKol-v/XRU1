@@ -38,24 +38,28 @@ void UAnimNotify_UnitFootstep::Notify(USkeletalMeshComponent* MeshComp,
 		? MeshComp->GetSocketLocation(FootSocket)
 		: Unit->GetActorLocation();
 
-	FHitResult Hit;
-	FCollisionQueryParams Params(SCENE_QUERY_STAT(XRU1Footstep), /*bTraceComplex=*/true, Unit);
-	// bReturnPhysicalMaterial — единственная причина этого трейса: без него мы не
-	// узнаем, бетон под ногой или трава.
-	Params.bReturnPhysicalMaterial = true;
-
+	// Трейс делаем ТОЛЬКО если профиль реально различает поверхности. При «одном
+	// звуке шага везде» (наш текущий случай) луч под каждую ногу — чистые траты.
 	EPhysicalSurface Surface = SurfaceType_Default;
-	if (World->LineTraceSingleByChannel(Hit, FootLocation,
-		FootLocation - FVector(0.f, 0.f, TraceDistance), ECC_Visibility, Params))
+	if (AudioProfile->UsesSurfaceFootsteps())
 	{
-		Surface = UPhysicalMaterial::DetermineSurfaceType(Hit.PhysMaterial.Get());
+		FHitResult Hit;
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(XRU1Footstep), /*bTraceComplex=*/true, Unit);
+		// bReturnPhysicalMaterial — единственная причина этого трейса: без него мы
+		// не узнаем, бетон под ногой или трава.
+		Params.bReturnPhysicalMaterial = true;
+		if (World->LineTraceSingleByChannel(Hit, FootLocation,
+			FootLocation - FVector(0.f, 0.f, TraceDistance), ECC_Visibility, Params))
+		{
+			Surface = UPhysicalMaterial::DetermineSurfaceType(Hit.PhysMaterial.Get());
+		}
 	}
 
 	if (UTacticsAudioSubsystem* Audio = World->GetGameInstance()
 		? World->GetGameInstance()->GetSubsystem<UTacticsAudioSubsystem>() : nullptr)
 	{
 		Audio->PlayCueAtLocation(AudioProfile->FindFootstep(Surface), FootLocation,
-			AudioProfile->Attenuation);
+			AudioProfile->ResolveAttenuation());
 	}
 }
 

@@ -6,6 +6,7 @@
 #include "Styling/SlateTypes.h"
 #include "AttributeBarWidget.generated.h"
 
+class UHorizontalBox;
 class UOverlay;
 class UProgressBar;
 class UTextBlock;
@@ -49,6 +50,29 @@ protected:
     UPROPERTY(EditAnywhere, Category = "Style")
     TObjectPtr<USlateWidgetStyleAsset> BarStyleAsset;
 
+    /**
+     * Секционный режим: поверх заливки рисуется решётка из разделителей, и
+     * полоса читается как набор ячеек по UnitsPerSegment HP (как в XCOM:
+     * Chimera Squad) — количество оставшихся секций видно с одного взгляда.
+     * Сам ProgressBar и вся логика процентов/цветов не меняются.
+     */
+    UPROPERTY(EditAnywhere, Category = "Style|Segments")
+    bool bSegmented = false;
+
+    /** Сколько единиц атрибута приходится на одну секцию. */
+    UPROPERTY(EditAnywhere, Category = "Style|Segments",
+              meta = (EditCondition = "bSegmented", ClampMin = "1"))
+    float UnitsPerSegment = 10.f;
+
+    /** Толщина разделителя между секциями, px. */
+    UPROPERTY(EditAnywhere, Category = "Style|Segments",
+              meta = (EditCondition = "bSegmented", ClampMin = "1"))
+    float SegmentSeparatorThickness = 2.f;
+
+    /** Цвет разделителей (тёмный «вырез» в заливке). */
+    UPROPERTY(EditAnywhere, Category = "Style|Segments", meta = (EditCondition = "bSegmented"))
+    FLinearColor SegmentSeparatorColor = FLinearColor(0.f, 0.f, 0.f, 0.85f);
+
     /** Показывать ли текст процента поверх бара. */
     UPROPERTY(EditAnywhere, Category = "Style|Percent")
     bool bShowPercent = false;
@@ -76,4 +100,15 @@ protected:
 
     UPROPERTY(Transient)
     TObjectPtr<UTextBlock> PercentText;
+
+    /** Решётка разделителей секций (между Bar и PercentText в Overlay). */
+    UPROPERTY(Transient)
+    TObjectPtr<UHorizontalBox> SegmentTicks;
+
+private:
+    /** Перестраивает решётку при смене количества секций (MaxValue изменился). */
+    void RebuildSegments(float MaxValue);
+
+    /** Сколько секций построено сейчас (-1 — ещё не строилась). */
+    int32 BuiltSegmentCount = -1;
 };

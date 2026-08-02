@@ -21,6 +21,7 @@
 #include "TurnManagerSubsystem.h"
 #include "TutorialActionGate.h"
 #include "TutorialHintOverlay.h"
+#include "TutorialPresentation.h"
 #include "QuestDefinition.h"
 #include "QuestInstance.h"
 #include "QuestSubsystem.h"
@@ -154,6 +155,17 @@ void ATacticalPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason
 		}
 	}
 	TutorialDestinationMarkers.Reset();
+	// Кольца «кого можно поднять» живут по тем же правилам, что и маркеры точек:
+	// декали спавнятся в персистентный мир и переживают выгрузку сценарного
+	// сублевела, если их не убрать явно.
+	for (const TWeakObjectPtr<UDecalComponent>& Ring : ReviveRingDecals)
+	{
+		if (Ring.IsValid())
+		{
+			Ring->DestroyComponent();
+		}
+	}
+	ReviveRingDecals.Reset();
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -283,6 +295,7 @@ void ATacticalPlayerController::PlayerTick(float DeltaTime)
 	UpdateEdgeScroll();
 	UpdateHoverHighlight();
 	UpdatePathPreviewUnderCursor();
+	UpdateSquadOverheadVisibility();
 
 	// Действующий враг вышел из-за угла и стал виден отряду — подхватываем его
 	// камерой прямо на ходу. Троттлинг тот же, что у дебага LOS: сам предикат
@@ -624,6 +637,29 @@ FText ATacticalPlayerController::GetTutorialDenialText() const
 	return LastDenialReason;
 }
 
+FText ATacticalPlayerController::GetTutorialBeatSubtitle() const
+{
+	const UWorld* World = GetWorld();
+	const UTutorialPresentationSubsystem* Presentation = World
+		? World->GetSubsystem<UTutorialPresentationSubsystem>() : nullptr;
+	if (!Presentation || !Presentation->IsBeatActive())
+	{
+		return FText::GetEmpty();
+	}
+
+	const FTacticalTutorialBeat Beat = Presentation->GetActiveBeat();
+	if (Beat.Subtitle.IsEmpty())
+	{
+		return FText::GetEmpty();
+	}
+	if (Beat.Speaker.IsEmpty())
+	{
+		return Beat.Subtitle;
+	}
+	return FText::Format(NSLOCTEXT("XRU1.Tutorial", "BeatSubtitle", "{0}: {1}"),
+		Beat.Speaker, Beat.Subtitle);
+}
+
 bool ATacticalPlayerController::IsUnitSelectableByGate(const AUnitBase* Unit) const
 {
 	const UTutorialActionGateSubsystem* Gate = UTutorialActionGateSubsystem::Get(this);
@@ -693,8 +729,11 @@ void ATacticalPlayerController::SelectUnitInternal(AUnitBase* Unit, bool bPlayer
 	// цели полёта. Прежний pre-Abandon превращал временный yaw прицела в
 	// постоянный и потому визуально «сбрасывал» поворот при смене бойца.
 	SetTargetingMode(EPlayerTargetingMode::None);
+	UE_LOG(LogXRU1Camera, Display, TEXT("[Select] %s → %s (byPlayer=%d)"),
+		*GetNameSafe(SelectedUnit), *GetNameSafe(Unit), bPlayerInitiated ? 1 : 0);
 	SelectedUnit = Unit;
 	bSelectionByPlayer = bPlayerInitiated && Unit != nullptr;
+	RefreshDownedReviveRings();
 
 	if (SelectedUnit)
 	{
@@ -857,7 +896,70 @@ void ATacticalPlayerController::HandleTutorialPolicyChanged()
 	// серость, маркеры точек назначения — перерисоваться.
 	RefreshMoveRange();
 	RefreshTutorialDestinationMarkers();
+	RefreshDownedReviveRings();
 	OnAvailableActionsChanged.Broadcast();
+
+	// Шаг мог открыть EndTurn УЖЕ ПОСЛЕ того, как отряд сжёг все ОД
+	// (Overwatch/Hunker завершают активацию без движения — прежний триггер
+	// автозавершения по финишу бега не срабатывал). Проверка ОТЛОЖЕНА на тик:
+	// синхронный EndTurn прямо из каскада входа нового шага (SetActive/Force/
+	// программа врага) запускал фазу врага раньше, чем шаг закончил Enter.
+	GetWorldTimerManager().SetTimerForNextTick(this,
+		&ATacticalPlayerController::TryAutoEndTurn);
+}
+
+void ATacticalPlayerController::RefreshDownedReviveRings()
+{
+	for (const TWeakObjectPtr<UDecalComponent>& Ring : ReviveRingDecals)
+	{
+		if (Ring.IsValid())
+		{
+			Ring->DestroyComponent();
+		}
+	}
+	ReviveRingDecals.Reset();
+
+	// Кольцо рисуется, только если выбранный боец умеет поднимать/лечить целью
+	// (медик): у остальных подсказка вводила бы в заблуждение.
+	const UTacticalAbility* AbilityCDO = SelectedUnit && SelectedUnit->ClassAbilityClass
+		? SelectedUnit->ClassAbilityClass->GetDefaultObject<UTacticalAbility>()
+		: nullptr;
+	if (!AbilityCDO || !AbilityCDO->bRequiresTargetActor ||
+		AbilityCDO->GetTargetingRange() <= 0.f ||
+		!UTacticsCombatStatics::IsUnitAlive(SelectedUnit))
+	{
+		return;
+	}
+
+	const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>();
+	const UTacticalHUDStyleData* Theme = GameInstance ? GameInstance->GetUITheme() : nullptr;
+	UMaterialInterface* RingMaterial = Theme
+		? Theme->TutorialDestinationMarkerMaterial.LoadSynchronous() : nullptr;
+	const UTurnManagerSubsystem* TurnManager =
+		GetWorld() ? GetWorld()->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
+	if (!RingMaterial || !TurnManager)
+	{
+		return;
+	}
+
+	const float Range = AbilityCDO->GetTargetingRange();
+	for (AActor* Ally : TurnManager->GetSideUnits(SelectedUnit))
+	{
+		const AUnitBase* AllyUnit = Cast<AUnitBase>(Ally);
+		if (!AllyUnit || !UTacticsCombatStatics::IsUnitDowned(AllyUnit) ||
+			!UTacticalScenarioSubsystem::IsActorScenarioActive(AllyUnit))
+		{
+			continue;
+		}
+		UDecalComponent* Ring = UGameplayStatics::SpawnDecalAtLocation(
+			this, RingMaterial, FVector(200.f, Range, Range),
+			AllyUnit->GetActorLocation(), FRotator(-90.f, 0.f, 0.f), 0.f);
+		if (Ring)
+		{
+			Ring->SetFadeScreenSize(0.f);
+			ReviveRingDecals.Add(Ring);
+		}
+	}
 }
 
 void ATacticalPlayerController::HandleTutorialDestinationsChanged()
@@ -865,6 +967,10 @@ void ATacticalPlayerController::HandleTutorialDestinationsChanged()
 	// Точка маршрута пройдена: политика та же, меняются только маркеры и зона.
 	RefreshTutorialDestinationMarkers();
 	RefreshMoveRange();
+	// «Сначала займи позицию» открывает способности ровно в момент прохода
+	// точки — без этого сигнала кнопки HUD «загорались со временем», по
+	// следующему случайному пересчёту (смена AP/выбора).
+	OnAvailableActionsChanged.Broadcast();
 }
 
 void ATacticalPlayerController::RefreshTutorialDestinationMarkers()
@@ -1044,9 +1150,16 @@ void ATacticalPlayerController::HandleSelectPressed()
 		return;
 	}
 
-	// Режим выбора цели способности (медик): клик решает.
+	// Режим выбора цели способности (медик): клик решает. Единый закон с
+	// атакой: ЛКМ мимо юнитов выходит из режима, неверный боец показывает
+	// причину отказа (targeting остаётся — можно кликнуть другого).
 	if (IsTargetingAbility())
 	{
+		if (!Cast<AUnitBase>(Clicked))
+		{
+			CancelTargeting();
+			return;
+		}
 		HandleAbilityTargetClick(Clicked);
 		return;
 	}
@@ -1329,8 +1442,8 @@ void ATacticalPlayerController::TryMoveSelectedUnit(const FVector& Goal)
 
 		// Токен приказа игрока: quest-событие перемещения публикует ЕДИНСТВЕННАЯ
 		// финализация settlement, и только для приказа, а не для служебного
-		// подшага стрелка или маршрута AI.
-		UnitAI->MarkPlayerOrderedMove();
+		// подшага стрелка или маршрута AI. Точка приказа гасит точку шага.
+		UnitAI->MarkPlayerOrderedMove(Plan.PathPoints.Last());
 		SelectedUnit->PlayUnitSound(EUnitSoundEvent::MoveStart);
 
 		// Камера сопровождает бегущего бойца (follow отпустится по остановке
@@ -1472,6 +1585,17 @@ void ATacticalPlayerController::RequestEndTurn()
 		return;
 	}
 
+	// Во время исполнения приказа (бег/осадка любого бойца) ход не передаётся:
+	// иначе смена фазы обрывала бы движение и ломала зачёт точки маршрута.
+	for (const AUnitBase* Unit : GetSquad())
+	{
+		if (UTacticsCombatStatics::IsUnitInTransit(Unit))
+		{
+			NotifyCommandDenied();
+			return;
+		}
+	}
+
 	if (IsPlayerPhase() && !IsAnySquadActionInProgress())
 	{
 		if (UTurnManagerSubsystem* TurnManager = GetWorld()->GetSubsystem<UTurnManagerSubsystem>())
@@ -1509,6 +1633,8 @@ void ATacticalPlayerController::SetTargetingMode(EPlayerTargetingMode NewMode)
 		return;
 	}
 	const EPlayerTargetingMode OldMode = TargetingMode;
+	UE_LOG(LogXRU1Camera, Display, TEXT("[Targeting] %d → %d (0=None 1=Attack 2=Ability) unit=%s"),
+		static_cast<int32>(OldMode), static_cast<int32>(NewMode), *GetNameSafe(SelectedUnit));
 	ExitTargetingMode(OldMode);
 	TargetingMode = NewMode;
 	EnterTargetingMode(NewMode);
@@ -1534,7 +1660,10 @@ void ATacticalPlayerController::ExitTargetingMode(EPlayerTargetingMode OldMode)
 		// (камера возвращается), и выстрел (кадр доигрывает) — без дублей.
 		if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
 		{
-			if (Camera->IsHoldingAimFrame())
+			// Кадр ПРЕЗЕНТАЦИИ тоже бессрочный, но принадлежит выстрелу и
+			// снимается только его терминалом — выход из прицеливания его
+			// трогать не имеет права.
+			if (Camera->IsHoldingAimFrame() && !Camera->IsPlayingPresentationFrame())
 			{
 				Camera->ClearShotFraming();
 			}
@@ -1544,6 +1673,9 @@ void ATacticalPlayerController::ExitTargetingMode(EPlayerTargetingMode OldMode)
 	{
 		ClearAbilityTargetingVisuals();
 	}
+	// Оверхед-худы союзников НЕ восстанавливаются здесь: их видимостью владеет
+	// один декларативный расчёт в PlayerTick (UpdateSquadOverheadVisibility) —
+	// иначе худ выскакивал в кадре выстрела раньше, чем вернулась камера.
 }
 
 void ATacticalPlayerController::EnterTargetingMode(EPlayerTargetingMode NewMode)
@@ -1553,6 +1685,55 @@ void ATacticalPlayerController::EnterTargetingMode(EPlayerTargetingMode NewMode)
 	if (NewMode == EPlayerTargetingMode::Ability)
 	{
 		BeginAbilityTargetingVisuals();
+	}
+
+}
+
+void ATacticalPlayerController::SetSquadOverheadHUDVisible(bool bVisible)
+{
+	for (AUnitBase* Unit : GetSquad())
+	{
+		if (!Unit || Unit->IsDead() || Unit->IsEvacuated())
+		{
+			continue;
+		}
+		// Downed скрывает шкалу своим состоянием — восстановление не должно
+		// включить её обратно у лежащего.
+		Unit->SetOverheadHUDVisible(bVisible && !Unit->IsDowned());
+	}
+}
+
+void ATacticalPlayerController::UpdateSquadOverheadVisibility()
+{
+	// ЕДИНСТВЕННЫЙ владелец видимости оверхед-худов союзников. Правило
+	// декларативно: худы скрыты, пока идёт прицеливание атаки, ЛЮБОЙ кадр
+	// камеры (кадр выстрела живёт с Duration=-1 и под IsPlayingShotFrame не
+	// попадал — худы выскакивали в момент выстрела) или реакция. Возврат
+	// произойдёт ровно при ClearShotFraming терминала — синхронно с камерой.
+	const ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn());
+	const bool bCameraHoldsFrame = Camera &&
+		(Camera->IsPlayingShotFrame() || Camera->IsHoldingAimFrame());
+	const bool bWantHidden = TargetingMode == EPlayerTargetingMode::Attack ||
+		bCameraHoldsFrame || bReactionPlaying;
+	if (bWantHidden != bSquadOverheadHidden)
+	{
+		UE_LOG(LogXRU1Camera, Display,
+			TEXT("[OverheadHUD] %s (targetingAttack=%d cameraFrame=%d reaction=%d)"),
+			bWantHidden ? TEXT("скрыт") : TEXT("показан"),
+			TargetingMode == EPlayerTargetingMode::Attack ? 1 : 0,
+			bCameraHoldsFrame ? 1 : 0, bReactionPlaying ? 1 : 0);
+		bSquadOverheadHidden = bWantHidden;
+		SetSquadOverheadHUDVisible(!bWantHidden);
+		return;
+	}
+
+	// Пока правило говорит «скрыто», оно ПЕРЕУТВЕРЖДАЕТСЯ каждый кадр: боец
+	// имеет право включить свою шкалу по СОБСТВЕННОМУ состоянию (подняли с
+	// земли, воскресили), и без переутверждения она всплыла бы посреди кадра
+	// выстрела. Дёшево: SetHiddenInGame сам отсекает повтор того же значения.
+	if (bWantHidden)
+	{
+		SetSquadOverheadHUDVisible(false);
 	}
 }
 
@@ -1784,6 +1965,8 @@ void ATacticalPlayerController::ConfirmAttack()
 
 void ATacticalPlayerController::NotifyShotFired(AActor* Shooter, AActor* Target)
 {
+	UE_LOG(LogXRU1Camera, Display, TEXT("[Shot] Презентация выстрела: %s → %s (кадр до терминала)"),
+		*GetNameSafe(Shooter), *GetNameSafe(Target));
 	// Кадр обычного выстрела живёт до terminal callback fire-action: montage и
 	// ReturnToAnchor, а не произвольный fixed timer, владеют его длительностью.
 	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
@@ -1806,13 +1989,18 @@ bool ATacticalPlayerController::TryBeginReactionShot(AActor* Shooter, AActor* Ta
 
 	bReactionPlaying = true;
 	TimeDilationBeforeReaction = UGameplayStatics::GetGlobalTimeDilation(World);
+	UE_LOG(LogXRU1Camera, Display,
+		TEXT("[Reaction] Окно реакции ОТКРЫТО: %s → %s, slow-mo %.2f (было %.2f)"),
+		*GetNameSafe(Shooter), *GetNameSafe(Target),
+		ReactionFireSloMoRate, TimeDilationBeforeReaction);
 
 	// Пауза mover принадлежит UGA_Overwatch reaction subaction. Контроллер
 	// владеет только camera/slow-mo presentation и держит кадр БЕЗ таймера до
-	// terminal callback фактически запущенного montage.
+	// terminal callback фактически запущенного montage. Кадр ПРЕЗЕНТАЦИИ (не
+	// прицеливания): follow бегущего врага не имеет права его снять.
 	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
 	{
-		Camera->FrameShot(Shooter, Target);
+		Camera->FrameShotForDuration(Shooter, Target, /*Duration=*/-1.f);
 	}
 
 	// Замедление мира снимает только Complete/Abort/End reaction-action.
@@ -1830,6 +2018,9 @@ void ATacticalPlayerController::EndReactionWindow()
 		return;
 	}
 	bReactionPlaying = false;
+	UE_LOG(LogXRU1Camera, Display,
+		TEXT("[Reaction] Окно реакции ЗАКРЫТО: dilation → %.2f, кадр снимается"),
+		TimeDilationBeforeReaction);
 
 	if (UWorld* World = GetWorld())
 	{
@@ -1991,7 +2182,10 @@ void ATacticalPlayerController::RequestInteract()
 	case EInteractionKind::Evacuate:
 		// Переход выбора сделает HandleSelectedUnitStateChanged (Evacuate()
 		// бросает OnUnitStateChanged) — здесь не дублируем, иначе двойной прыжок.
-		Zone->TryEvacuate(SelectedUnit);
+		// «Evac All» (v2.6, по правилу одноимённого мода XCOM 2): одно нажатие
+		// уводит ВСЕХ бойцов, стоящих в зоне и имеющих 1 ОД, а не только
+		// выбранного — индивидуальные нажатия каждым были рутиной.
+		Zone->TryEvacuateAllInside();
 		break;
 	default:
 		break;
@@ -2342,10 +2536,15 @@ bool ATacticalPlayerController::IsAnySquadActionInProgress() const
 bool ATacticalPlayerController::IsCameraFramingShot() const
 {
 	const ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn());
-	// Автопереход ждёт только конечный кадр совершённого выстрела. Бессрочное
-	// прицеливание — UI-mode, оно не должно уметь навечно заблокировать ход даже
-	// при будущей ошибке в маршрутизации команды.
-	return Camera && Camera->IsPlayingShotFrame();
+	if (!Camera)
+	{
+		return false;
+	}
+	// Ждём ЛЮБОЙ кадр ПРЕЗЕНТАЦИИ (в т.ч. бессрочный, живущий до терминала
+	// fire-action): иначе автопереход срывал бы выстрел в окне до старта
+	// montage. Кадр ПРИЦЕЛИВАНИЯ презентацией не считается и ход не блокирует —
+	// UI-режим не должен уметь навечно остановить игру при ошибке маршрутизации.
+	return Camera->IsPlayingPresentationFrame() || Camera->IsPlayingShotFrame();
 }
 
 void ATacticalPlayerController::TryAutoEndTurn()

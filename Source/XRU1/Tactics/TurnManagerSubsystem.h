@@ -158,6 +158,10 @@ public:
 	UPROPERTY(BlueprintReadWrite, Category = "Tactics|Turns")
 	bool bAutoWinWhenEnemiesDead = true;
 
+	/** С какого остатка ходов начинает тикать заряд (02 §6: «ТРИ хода»). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Tactics|Turns", meta = (ClampMin = "0"))
+	int32 BombTickWarningTurns = 3;
+
 	UPROPERTY(BlueprintAssignable, Category = "Tactics|Turns")
 	FOnTurnStarted OnTurnStarted;
 

@@ -58,6 +58,53 @@ public:
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|UI")
 	FTacticsSoundCue TurnStartedEnemy;
+
+	// --- Музыка ------------------------------------------------------------
+	//
+	// Один трек на состояние игры. Держим ссылки здесь, а не в GameMode/меню:
+	// иначе «какая музыка играет» пришлось бы искать по нескольким Blueprint.
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Music")
+	TObjectPtr<USoundBase> MenuMusic;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Music")
+	TObjectPtr<USoundBase> HubMusic;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Music")
+	TObjectPtr<USoundBase> CombatMusic;
+
+	/** Короткий стингер победы; играется поверх затухающего боевого трека. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Music")
+	TObjectPtr<USoundBase> VictoryStinger;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Music")
+	TObjectPtr<USoundBase> DefeatStinger;
+
+	/** Длительность кроссфейда между треками, с. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Music", meta = (ClampMin = "0"))
+	float MusicFadeTime = 2.f;
+
+	// --- Мир ---------------------------------------------------------------
+
+	/** Тик таймера заряда в последние ходы (GDD §13). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|World")
+	FTacticsSoundCue BombTick;
+
+	/** Один шаг обезвреживания (1/2). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|World")
+	FTacticsSoundCue BombDefuseStep;
+
+	/** Заряд снят. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|World")
+	FTacticsSoundCue BombDisarmed;
+
+	/** Активация зоны эвакуации (сирена/дым). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|World")
+	FTacticsSoundCue EvacZoneActivated;
+
+	/** Боец покинул поле через зону эвакуации. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|World")
+	FTacticsSoundCue EvacUnit;
 };
 
 /**
@@ -119,6 +166,54 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Audio|UI")
 	void PlayTurnStarted(bool bPlayerTurn);
 
+	// --- Мировые события -----------------------------------------------------
+
+	/** Тик таймера заряда (2D: игрок должен слышать его независимо от камеры). */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Audio|World")
+	void PlayBombTick();
+
+	/** Шаг обезвреживания у самого заряда; bComplete — заряд снят. */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Audio|World")
+	void PlayBombDefuse(const FVector& Location, bool bComplete);
+
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Audio|World")
+	void PlayEvacZoneActivated(const FVector& Location);
+
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Audio|World")
+	void PlayEvacUnit(const FVector& Location);
+
+	// --- Голос ---------------------------------------------------------------
+
+	/**
+	 * Реплика «Купола»/бойца (2D, поверх боя). Возвращает компонент, чтобы
+	 * следующая реплика могла оборвать предыдущую: две накладывающиеся фразы
+	 * читаются как баг, а не как «живой эфир».
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Audio|Voice")
+	UAudioComponent* PlayVoice2D(USoundBase* Voice, float VolumeMultiplier = 1.f);
+
+	// --- Музыка --------------------------------------------------------------
+
+	/** Кроссфейд на новый трек. Повторный вызов с тем же треком ничего не делает. */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Audio|Music")
+	void PlayMusic(USoundBase* Track, float FadeInTime = -1.f);
+
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Audio|Music")
+	void PlayMenuMusic();
+
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Audio|Music")
+	void PlayHubMusic();
+
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Audio|Music")
+	void PlayCombatMusic();
+
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Audio|Music")
+	void StopMusic(float FadeOutTime = -1.f);
+
+	/** Стингер исхода: гасит боевой трек и играет короткую точку. */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Audio|Music")
+	void PlayOutcomeStinger(bool bVictory);
+
 	/** Ассет микшера (из GameInstance). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Audio")
 	UTacticsAudioSettingsDataAsset* GetAudioSettingsAsset() const;
@@ -129,4 +224,11 @@ private:
 
 	FTacticsAudioSettings AppliedSettings;
 	bool bMixPushed = false;
+
+	/** Активный музыкальный компонент; переживает travel (persist across level). */
+	TWeakObjectPtr<class UAudioComponent> MusicComponent;
+	TWeakObjectPtr<USoundBase> CurrentMusicTrack;
+
+	/** Активная реплика: следующая обрывает её, чтобы фразы не накладывались. */
+	TWeakObjectPtr<class UAudioComponent> VoiceComponent;
 };

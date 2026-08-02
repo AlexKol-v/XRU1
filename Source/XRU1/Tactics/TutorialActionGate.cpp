@@ -117,6 +117,22 @@ bool UTutorialActionGateSubsystem::IsActionAllowed(ETutorialAction Action, const
 		return false;
 	}
 
+	// Владелец действия: «Наблюдение — только Танк, Глухая оборона — только
+	// Кадет». Без бойца (серость кнопки при пустом выборе) действие считается
+	// возможным — итоговая проверка всё равно случится с конкретным юнитом.
+	if (const FName* Owner = ActivePolicy.ActionOwners.Find(Action))
+	{
+		if (Unit && !Owner->IsNone())
+		{
+			TArray<FName> OwnerList;
+			OwnerList.Add(*Owner);
+			if (!MatchesAnchorList(OwnerList, Unit))
+			{
+				return false;
+			}
+		}
+	}
+
 	return MatchesAnchorList(ActivePolicy.AllowedUnitAnchors, Unit);
 }
 

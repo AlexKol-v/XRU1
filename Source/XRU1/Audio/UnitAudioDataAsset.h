@@ -19,19 +19,30 @@ class XRU1_API UUnitAudioDataAsset : public UDataAsset
 	GENERATED_BODY()
 
 public:
-	/** Реплики доменных событий боя. Незаполненное событие просто молчит. */
+	/**
+	 * Общий профиль-родитель (обычно `DA_UnitAudio_Common`). Любое НЕзаполненное
+	 * здесь событие берётся из него: шаги, боль, смерть и foley у всех бойцов
+	 * одинаковые, а свои остаются только выстрел и голос. Заполнять один и тот
+	 * же звук в пяти ассетах — прямой путь к «у мародёра почему-то тишина».
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio")
+	TObjectPtr<UUnitAudioDataAsset> ParentProfile;
+
+	/** Реплики доменных событий боя. Незаполненное событие берётся у родителя. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Events")
 	TMap<EUnitSoundEvent, FTacticsSoundCue> Events;
 
 	/**
-	 * Шаги по типу поверхности. Ключ — Physical Surface из Project Settings;
-	 * поверхность берётся трейсом под ногой в момент AnimNotify.
+	 * Шаги по типу поверхности — ОПЦИОНАЛЬНО. Пустая карта (наш случай) означает
+	 * «один звук шага везде»: тогда трейс физматериала под ногой не делается
+	 * вовсе, играет Footstep.
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Footsteps")
 	TMap<TEnumAsByte<EPhysicalSurface>, FTacticsSoundCue> FootstepsBySurface;
 
-	/** Шаг, когда поверхность не распознана или не перечислена выше. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Footsteps")
+	/** Основной звук шага (и фолбэк для нераспознанной поверхности). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Footsteps",
+		meta = (DisplayName = "Footstep"))
 	FTacticsSoundCue DefaultFootstep;
 
 	/**
@@ -42,9 +53,15 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio")
 	TObjectPtr<class USoundAttenuation> Attenuation;
 
-	/** Реплика события или nullptr. */
-	const FTacticsSoundCue* FindEvent(EUnitSoundEvent Event) const { return Events.Find(Event); }
+	/** Реплика события с учётом родителя; nullptr — событие молчит осознанно. */
+	const FTacticsSoundCue* FindEvent(EUnitSoundEvent Event) const;
 
-	/** Реплика шага для поверхности; при отсутствии — DefaultFootstep. */
+	/** Реплика шага для поверхности; при отсутствии — общий Footstep. */
 	const FTacticsSoundCue& FindFootstep(EPhysicalSurface Surface) const;
+
+	/** Нужен ли трейс поверхности: только если карта реально заполнена. */
+	bool UsesSurfaceFootsteps() const;
+
+	/** Затухание своё либо родительское. */
+	USoundAttenuation* ResolveAttenuation() const;
 };
