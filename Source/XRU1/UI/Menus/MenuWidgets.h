@@ -2,8 +2,11 @@
 
 #include "CoreMinimal.h"
 #include "CommonActivatableWidget.h"
+// FKey/EKeys: интро различает клавиши пропуска в NativeOnKeyDown.
+#include "InputCoreTypes.h"
 #include "TacticsAudioTypes.h"
 #include "TacticsTypes.h"
+#include "TacticalHUDStyleData.h"
 #include "MenuWidgets.generated.h"
 
 class UTacticsGameInstance;
@@ -14,6 +17,7 @@ class UButton;
 class UCheckBox;
 class UComboBoxString;
 class UImage;
+class UProgressBar;
 class USlider;
 class UTextBlock;
 
@@ -43,6 +47,10 @@ public:
 	/** Проталкивает экран ScreenClass на слой Menu корневого лейаута. */
 	UFUNCTION(BlueprintCallable, Category = "Menu")
 	UCommonActivatableWidget* PushScreen(TSubclassOf<UCommonActivatableWidget> ScreenClass);
+
+	/** Корневой лейаут текущего игрока или nullptr (Designer preview). */
+	UFUNCTION(BlueprintPure, Category = "Menu")
+	class UPrimaryGameLayout* GetRootLayout() const;
 
 	/** Единая UI-тема из GameInstance; доступна всем WBP-экранам меню. */
 	UFUNCTION(BlueprintPure, Category = "Menu|Style")
@@ -84,6 +92,36 @@ protected:
 
 	/** Снимает удерживаемую этим экраном паузу (идемпотентно). */
 	void ReleasePauseHold();
+
+	/**
+	 * Какой крупный арт из общей темы показывать фоном этого экрана.
+	 * Экран сам знает свою роль, а картинку берёт из `UTacticalHUDStyleData` —
+	 * так арт меняется в одном месте и не дублируется по WBP.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Menu")
+	EXRU1UIScreenArt ScreenArtKind = EXRU1UIScreenArt::MainMenu;
+
+	/**
+	 * Прятать ли игровой слой (HUD), пока экран открыт.
+	 *
+	 * Слои CommonUI независимы: HUD хаба живёт на `Game`, брифинг — на `Menu`,
+	 * и без этого карточка точки продолжала висеть под окном брифинга.
+	 * Выключают только сами HUD-экраны — они и есть игровой слой.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Menu")
+	bool bHidesGameLayer = true;
+
+	/**
+	 * Ставит фон экрана из темы — в ОБЩИЙ слой корневого лейаута, а не в свою
+	 * вёрстку. Причина в устройстве CommonUI: стек рисует только верхний виджет,
+	 * поэтому фон, лежащий внутри экрана, обязан исчезать и появляться заново на
+	 * каждом переходе. Локальный `Img_Background`, если он остался в вёрстке,
+	 * прячется, чтобы картинка не дублировалась.
+	 *
+	 * `ScreenArtKind == None` означает «фона не надо» (HUD, экран результата
+	 * поверх боя) — общий фон при этом скрывается.
+	 */
+	void ApplyScreenArt();
 
 private:
 	UFUNCTION()
@@ -202,6 +240,18 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Menu|Settings")
 	void ApplyVideoSettings(const FTacticsVideoSettings& NewSettings, bool bSaveToSlot = true);
 
+	/** Текущие настройки камеры (обзор, чувствительность, инверсия, edge scroll). */
+	UFUNCTION(BlueprintPure, Category = "Menu|Settings")
+	FTacticsCameraSettings GetCameraSettings() const;
+
+	/**
+	 * Применяет настройки камеры немедленно: обзор и чувствительность игрок
+	 * подбирает глазами, поэтому результат обязан быть виден сразу, как и у
+	 * громкости. `bSaveToSlot` отделяет перетаскивание ползунка от его отпускания.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Menu|Settings")
+	void ApplyCameraSettings(const FTacticsCameraSettings& NewSettings, bool bSaveToSlot = true);
+
 	/** Возвращает и применяет значения по умолчанию. */
 	UFUNCTION(BlueprintCallable, Category = "Menu|Settings")
 	void ResetToDefaults();
@@ -225,6 +275,15 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UCheckBox> Chk_Fullscreen;
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UCheckBox> Chk_VSync;
 
+	// --- Камера ---------------------------------------------------------------
+	// Обзор в градусах (40..110), чувствительности — множители (0.25..2.5);
+	// слайдеры отдают 0..1, перевод в реальные значения — в Collect/Refresh.
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<USlider> Sld_CameraFov;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<USlider> Sld_CameraSensitivity;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<USlider> Sld_CameraPitchSensitivity;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UCheckBox> Chk_InvertPitch;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UCheckBox> Chk_EdgeScroll;
+
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Apply;
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Reset;
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Back;
@@ -235,6 +294,15 @@ private:
 
 	/** Собирает настройки изображения из контролов секции «Изображение». */
 	FTacticsVideoSettings CollectVideoSettings() const;
+
+	/** Собирает настройки камеры из контролов секции «Камера». */
+	FTacticsCameraSettings CollectCameraSettings() const;
+
+	/** Границы, в которых слайдер 0..1 отображается в реальные значения камеры. */
+	static constexpr float CameraFovMin = 45.f;
+	static constexpr float CameraFovMax = 100.f;
+	static constexpr float CameraSensitivityMin = 0.25f;
+	static constexpr float CameraSensitivityMax = 2.5f;
 
 	/** Расставляет контролы по текущим настройкам приложения. */
 	void RefreshControlsFromSettings();
@@ -251,6 +319,11 @@ private:
 
 	/** Слайдер отпущен: то же значение, но с записью в слот. */
 	UFUNCTION() void HandleAudioCaptureEnd();
+
+	/** Перетаскивание/переключение в секции камеры: применить без записи на диск. */
+	UFUNCTION() void HandleCameraSliderValue(float NewValue);
+	UFUNCTION() void HandleCameraCaptureEnd();
+	UFUNCTION() void HandleCameraCheckChanged(bool bIsChecked);
 
 	UFUNCTION() void HandleApplyClicked();
 	UFUNCTION() void HandleResetClicked();
@@ -299,10 +372,17 @@ protected:
 	/** Остановка плеера: экран мог быть закрыт до конца ролика. */
 	virtual void NativeDestruct() override;
 
+	/** Полноэкранная прозрачная кнопка: ловит УДЕРЖАНИЕ мыши, а не клик. */
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Skip;
 
 	/** Полотно ролика: сюда ставится материал с MediaTexture или fallback-арт. */
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UImage> Img_Intro;
+
+	/** Полоска прогресса удержания; видна только пока игрок держит. */
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UProgressBar> Bar_SkipHold;
+
+	/** Подсказка «удерживайте, чтобы пропустить». */
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UTextBlock> Txt_SkipHint;
 
 	/**
 	 * Страховка от «вечного интро»: если медиа не открылось или событие конца
@@ -311,8 +391,38 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Menu|Intro", meta = (ClampMin = "0"))
 	float MaxIntroDuration = 90.f;
 
+	/**
+	 * Сколько держать, чтобы пропустить ролик. Пропуск намеренно НЕ по клику:
+	 * случайный щелчок мышью не должен стоить игроку вступления.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Menu|Intro", meta = (ClampMin = "0.1"))
+	float SkipHoldDuration = 0.8f;
+
+	/** Ловит Space/Enter: пропуск обязан работать и без мыши. */
+	virtual FReply NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
+	virtual FReply NativeOnKeyUp(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
+
 private:
-	UFUNCTION() void HandleSkipClicked();
+	/** Клавиша/кнопка пропуска зажата — начать отсчёт удержания. */
+	UFUNCTION() void HandleSkipPressed();
+
+	/** Отпущено раньше времени — отсчёт сбрасывается. */
+	UFUNCTION() void HandleSkipReleased();
+
+	/** Удержание доведено до конца. */
+	void CompleteSkipHold();
+
+	/** Обновляет полоску прогресса удержания (таймер, а не Tick). */
+	void TickSkipHold();
+
+	/** Показывает/прячет полоску и возвращает подсказку в исходный вид. */
+	void ResetSkipHoldUI();
+
+	/** Является ли клавиша клавишей пропуска (Space/Enter). */
+	static bool IsSkipKey(const FKey& Key);
+
+	/** Медиа открылось: печатаем, что именно открылось и играет ли оно. */
+	UFUNCTION() void HandleMediaOpened(FString OpenedUrl);
 
 	/** Ролик доигран до конца — уходим в хаб. */
 	UFUNCTION() void HandleMediaEndReached();
@@ -323,14 +433,30 @@ private:
 	/** Останавливает плеер и снимает подписки (идемпотентно). */
 	void StopIntroPlayback();
 
+	/** Создаёт и запускает звуковой компонент ролика (идемпотентно). */
+	void CreateIntroSound();
+
 	/** Плеер интро из темы; держим ссылку, чтобы отписаться и остановить. */
 	UPROPERTY(Transient)
 	TObjectPtr<UMediaPlayer> IntroPlayer;
+
+	/**
+	 * Звук ролика. MediaPlayer сам ничего не озвучивает: без этого компонента
+	 * интро идёт немым — ровно так оно и вело себя до 2026-08-02.
+	 */
+	UPROPERTY(Transient)
+	TObjectPtr<class UMediaSoundComponent> IntroSound;
 
 	/** Интро уже завершено — второй переход в хаб не нужен. */
 	bool bIntroFinished = false;
 
 	FTimerHandle IntroTimeoutTimer;
+
+	/** Тикает только пока игрок держит: прогресс удержания без Tick виджета. */
+	FTimerHandle SkipHoldTimer;
+
+	/** Момент начала удержания по времени мира; < 0 — не держат. */
+	double SkipHoldStartTime = -1.0;
 };
 
 /** Экран выбора сложности при старте новой игры. */

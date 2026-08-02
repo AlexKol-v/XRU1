@@ -67,6 +67,18 @@ struct XRU1_API FTacticsSoundCue
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio", meta = (ClampMin = "0", ClampMax = "0.5"))
 	float PitchVariance = 0.06f;
 
+	/**
+	 * С какой секунды начинать воспроизведение — «съедает» тишину в начале файла.
+	 *
+	 * Библиотечные SFX часто идут с паддингом: у `S_UI_Hover` первые 49 мс —
+	 * тишина, а пик приходит только на 63-й миллисекунде, и наведение на кнопку
+	 * ощущается запаздывающим. Переимпортировать обрезанный файл не всегда
+	 * возможно (исходники бывают на другой машине), поэтому смещение — параметр
+	 * звука, а не свойство ассета.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio", meta = (ClampMin = "0", ClampMax = "2"))
+	float StartOffset = 0.f;
+
 	bool IsValidCue() const { return Variants.Num() > 0; }
 
 	/** Случайный вариант; nullptr, если реплика не заполнена. */
@@ -98,6 +110,41 @@ struct XRU1_API FTacticsAudioSettings
 	/** Голос «Купола» и реплики бойцов. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category = "Audio", meta = (ClampMin = "0", ClampMax = "1"))
 	float VoiceVolume = 1.f;
+};
+
+/**
+ * Пользовательские настройки КАМЕРЫ: угол обзора, чувствительность свободного
+ * обзора (Alt+мышь и удержание Q/E), инверсия вертикали, панорама у края экрана.
+ *
+ * Лежит рядом со звуком и изображением по той же причине: это настройки
+ * приложения, которые экран настроек читает и пишет одним способом. Набор
+ * повторяет то, что игроки XCOM 2 добавляют себе камера-модами (Free Camera
+ * Rotation), — там это тоже ini-параметры, а не игровой прогресс.
+ */
+USTRUCT(BlueprintType)
+struct XRU1_API FTacticsCameraSettings
+{
+	GENERATED_BODY()
+
+	/** Угол обзора тактической камеры (град). 65 — дефолт проекта, XCOM 2 играет на 50. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category = "Camera", meta = (ClampMin = "40", ClampMax = "110"))
+	float FieldOfView = 65.f;
+
+	/** Множитель скорости вращения (удержание Q/E и Alt+мышь по горизонтали). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category = "Camera", meta = (ClampMin = "0.1", ClampMax = "4"))
+	float RotationSensitivity = 1.f;
+
+	/** Множитель чувствительности наклона (Alt+мышь по вертикали). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category = "Camera", meta = (ClampMin = "0.1", ClampMax = "4"))
+	float PitchSensitivity = 1.f;
+
+	/** Инвертировать вертикаль свободного обзора. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category = "Camera")
+	bool bInvertPitch = false;
+
+	/** Панорама мышью у края экрана. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category = "Camera")
+	bool bEdgeScroll = true;
 };
 
 /**

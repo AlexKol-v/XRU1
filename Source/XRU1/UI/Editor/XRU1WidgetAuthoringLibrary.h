@@ -59,4 +59,40 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "XRU1|Widget Authoring")
 	static bool BuildHubHUDLayout(const FString& AssetPath, bool bOverwriteExisting);
+
+	/**
+	 * Брифинг миссии: фон-арт, Txt_BriefTitle, Txt_BriefText, Txt_BriefStatus,
+	 * Btn_Start и Btn_Back.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "XRU1|Widget Authoring")
+	static bool BuildMissionBriefingLayout(const FString& AssetPath, bool bOverwriteExisting);
+
+	/**
+	 * Вставляет в СУЩЕСТВУЮЩУЮ вёрстку полноэкранный фон `Img_Background` под
+	 * весь остальной контент, ничего не разрушая.
+	 *
+	 * Нужен рукотворным экранам: `UMenuScreenBase::ApplyScreenArt()` ищет фон по
+	 * имени и молча уходит, если виджета нет, — так главное меню и оказалось
+	 * чёрным при полностью заполненной теме. Картинку функция НЕ ставит: арт
+	 * приходит из темы в рантайме, поэтому виджет создаётся скрытым.
+	 *
+	 * Идемпотентна: если `Img_Background` уже есть, ничего не меняет.
+	 *
+	 * ⚠️ Legacy: с 2026-08-02 фон живёт ОДИН на весь лейаут
+	 * (`AddLayoutBackdrop`), а локальные фоны экранов прячутся в рантайме.
+	 * Функция оставлена для экранов, которым нужен собственный фон.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "XRU1|Widget Authoring")
+	static bool AddScreenBackground(const FString& AssetPath);
+
+	/**
+	 * Вставляет в корневой лейаут (`WBP_PrimaryGameLayout`) общий фон
+	 * `Img_ScreenBackdrop` — под все стеки-слои.
+	 *
+	 * Так фон переживает переходы между экранами: `UCommonActivatableWidgetStack`
+	 * показывает только верхний виджет, поэтому фон внутри экрана неизбежно
+	 * исчезает и появляется заново на каждом переходе. Идемпотентна.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "XRU1|Widget Authoring")
+	static bool AddLayoutBackdrop(const FString& AssetPath);
 };

@@ -230,20 +230,25 @@ void AUnitBase::PlayShotVfx(AActor* Target, bool bHit, const FVector& ShotOrigin
 	}
 
 	const FVector Muzzle = GetMuzzleWorldLocation(ShotOrigin);
-	FVector ImpactPoint = Target->GetActorLocation() + FVector(0.f, 0.f, 40.f);
+	FVector AimPoint = Target->GetActorLocation() + FVector(0.f, 0.f, 40.f);
 	if (!bHit && Profile->MissSpread > 0.f)
 	{
 		// Уводим мимо детерминированно относительно линии выстрела: вбок и вверх,
 		// как «пуля прошла рядом». Случайная сторона — чтобы промахи не выглядели
 		// одинаково.
-		const FVector Direction = (ImpactPoint - Muzzle).GetSafeNormal();
-		const FVector Side = FVector::CrossProduct(Direction, FVector::UpVector).GetSafeNormal();
+		const FVector MissDirection = (AimPoint - Muzzle).GetSafeNormal();
+		const FVector Side = FVector::CrossProduct(MissDirection, FVector::UpVector).GetSafeNormal();
 		const float Sign = FMath::RandBool() ? 1.f : -1.f;
-		ImpactPoint += Side * Profile->MissSpread * Sign
+		AimPoint += Side * Profile->MissSpread * Sign
 			+ FVector(0.f, 0.f, Profile->MissSpread * 0.5f);
 	}
 
-	const FRotator AimRotation = (ImpactPoint - Muzzle).Rotation();
+	const FVector ShotDirection = (AimPoint - Muzzle).GetSafeNormal();
+	if (ShotDirection.IsNearlyZero())
+	{
+		return;
+	}
+	const FRotator AimRotation = ShotDirection.Rotation();
 	const FRotator ShotRotation = Profile->ShotRotationOffset.IsNearlyZero()
 		? AimRotation
 		: (AimRotation.Quaternion() * Profile->ShotRotationOffset.Quaternion()).Rotator();
@@ -254,67 +259,118 @@ void AUnitBase::PlayShotVfx(AActor* Target, bool bHit, const FVector& ShotOrigin
 			Muzzle, ShotRotation);
 	}
 
-	if (Profile->Tracer)
-	{
-		if (Profile->bTracerFlies)
-		{
-			// Шлейф тянется за движущимся актором — единственный вариант, при
-			// котором ribbon-трассер визуально «летит» в цель.
-			AShotTracerActor::Launch(this, Profile->Tracer, Muzzle, ImpactPoint,
-				Profile->TracerSpeed);
-		}
-		else
-		{
-			UNiagaraComponent* TracerComponent = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
-				World, Profile->Tracer, Muzzle, ShotRotation);
-			if (TracerComponent)
-			{
-				if (!Profile->TracerSpeedParameter.IsNone())
-				{
-					TracerComponent->SetFloatParameter(Profile->TracerSpeedParameter,
-						Profile->TracerSpeed);
-				}
-				// Beam-системе нужна конечная точка в мире, а не поворот.
-				if (!Profile->TracerEndParameter.IsNone())
-				{
-					TracerComponent->SetVectorParameter(Profile->TracerEndParameter, ImpactPoint);
-				}
-			}
-		}
-	}
-
-	// Эффект попадания: по бойцу — свой, по геометрии — по физматериалу под
-	// точкой промаха. Трассировка нужна только для промаха, у попадания цель
-	// известна.
+	// Куда пуля реально упирается. Одна трассировка кормит и трассер, и эффект
+	// попадания: разные точки у них расходились — след обрывался у цели, а искры
+	// вспыхивали за ней.
+	FVector EndPoint = AimPoint;
+	FVector ImpactNormal = -ShotDirection;
 	UNiagaraSystem* ImpactSystem = nullptr;
-	FVector ImpactLocation = ImpactPoint;
-	FVector ImpactNormal = -ShotRotation.Vector();
+
+	FHitResult Hit;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(ShotVfx), /*bTraceComplex=*/true, this);
+	Params.bReturnPhysicalMaterial = true;
 	if (bHit)
 	{
+		// Попадание засчитано механикой — значит пуля дошла. Пробуем ТОЛЬКО тело
+		// цели: укрытие на линии не должно перехватывать попавший выстрел.
+		const FVector TraceEnd = Muzzle + ShotDirection * (FVector::Dist(Muzzle, AimPoint) + 100.f);
+		if (Target->ActorLineTraceSingle(Hit, Muzzle, TraceEnd, ECC_Visibility, Params))
+		{
+			EndPoint = Hit.ImpactPoint;
+			ImpactNormal = Hit.ImpactNormal;
+		}
 		ImpactSystem = Profile->ImpactFlesh ? Profile->ImpactFlesh.Get() : Profile->DefaultImpact.Get();
 	}
 	else
 	{
-		FHitResult Hit;
-		FCollisionQueryParams Params(SCENE_QUERY_STAT(ShotMissVfx), /*bTraceComplex=*/true, this);
 		Params.AddIgnoredActor(Target);
-		Params.bReturnPhysicalMaterial = true;
-		const FVector TraceEnd = Muzzle + (ImpactPoint - Muzzle).GetSafeNormal() * 6000.f;
+		const FVector TraceEnd = Muzzle + ShotDirection * 6000.f;
 		if (World->LineTraceSingleByChannel(Hit, Muzzle, TraceEnd, ECC_Visibility, Params))
 		{
-			ImpactLocation = Hit.ImpactPoint;
+			EndPoint = Hit.ImpactPoint;
 			ImpactNormal = Hit.ImpactNormal;
 			const EPhysicalSurface Surface = Hit.PhysMaterial.IsValid()
 				? Hit.PhysMaterial->SurfaceType.GetValue() : SurfaceType_Default;
 			ImpactSystem = Profile->FindImpact(Surface);
 		}
+		else
+		{
+			// Пуля ушла «в молоко»: трассер гаснет в конце линии, бить искрами
+			// в пустоту нечем.
+			EndPoint = TraceEnd;
+		}
 	}
 
-	if (ImpactSystem)
+	float FlightTime = 0.f;
+	if (Profile->Tracer)
 	{
-		UNiagaraFunctionLibrary::SpawnSystemAtLocation(World, ImpactSystem,
-			ImpactLocation, ImpactNormal.Rotation());
+		if (Profile->bTracerFlies)
+		{
+			FlightTime = AShotTracerActor::Launch(this, Profile, Muzzle, EndPoint);
+		}
+		else
+		{
+			// Спавним неактивной: user-параметры читаются на спавне системы, после
+			// Activate менять их поздно.
+			UNiagaraComponent* TracerComponent = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+				World, Profile->Tracer, Muzzle, ShotRotation, FVector(1.f),
+				/*bAutoDestroy=*/true, /*bAutoActivate=*/false);
+			if (TracerComponent)
+			{
+				Profile->ApplyTracerParameters(TracerComponent, Muzzle, EndPoint);
+				TracerComponent->Activate(true);
+			}
+			if (Profile->TracerSpeed > 1.f)
+			{
+				FlightTime = FVector::Dist(Muzzle, EndPoint) / Profile->TracerSpeed;
+			}
+		}
 	}
+
+	if (!ImpactSystem)
+	{
+		return;
+	}
+	// Искры ждут прилёта: попадание, вспыхнувшее раньше собственного трассера,
+	// читается как два разных выстрела.
+	if (FlightTime > KINDA_SMALL_NUMBER)
+	{
+		FTimerHandle ImpactTimer;
+		World->GetTimerManager().SetTimer(ImpactTimer,
+			FTimerDelegate::CreateWeakLambda(this,
+				[this, ImpactSystem, EndPoint, ImpactNormal, ShotDirection]()
+				{
+					SpawnImpactVfx(ImpactSystem, EndPoint, ImpactNormal, ShotDirection);
+				}),
+			FlightTime, /*bLoop=*/false);
+	}
+	else
+	{
+		SpawnImpactVfx(ImpactSystem, EndPoint, ImpactNormal, ShotDirection);
+	}
+}
+
+void AUnitBase::SpawnImpactVfx(UNiagaraSystem* ImpactSystem, const FVector& Location,
+	const FVector& Normal, const FVector& Direction) const
+{
+	UWorld* World = GetWorld();
+	if (!ImpactSystem || !World)
+	{
+		return;
+	}
+
+	UNiagaraComponent* Component = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+		World, ImpactSystem, Location, Normal.Rotation(), FVector(1.f),
+		/*bAutoDestroy=*/true, /*bAutoActivate=*/false);
+	if (!Component)
+	{
+		return;
+	}
+	if (const UUnitVfxDataAsset* Profile = VfxProfile)
+	{
+		Profile->ApplyImpactParameters(Component, Normal, Direction);
+	}
+	Component->Activate(true);
 }
 
 void AUnitBase::SetHealthDirect(float NewHealth)

@@ -32,6 +32,10 @@ void UMissionResultWidget::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
 
+	// Экран результата всплывает поверх боевой карты и рисует свой арт сам
+	// (Img_ResultArt): полноэкранный фон здесь только закрыл бы поле боя.
+	ScreenArtKind = EXRU1UIScreenArt::None;
+
 	if (Btn_Retry)  { Btn_Retry->OnClicked.AddUniqueDynamic(this, &UMissionResultWidget::HandleRetryClicked);   RegisterButtonSounds(Btn_Retry); }
 	if (Btn_ToHub)  { Btn_ToHub->OnClicked.AddUniqueDynamic(this, &UMissionResultWidget::HandleToHubClicked);   RegisterButtonSounds(Btn_ToHub); }
 	if (Btn_ToMenu) { Btn_ToMenu->OnClicked.AddUniqueDynamic(this, &UMissionResultWidget::HandleToMenuClicked); RegisterButtonSounds(Btn_ToMenu); }
@@ -68,14 +72,29 @@ void UMissionResultWidget::PlayOutcomeVoice()
 	}
 }
 
+bool UMissionResultWidget::IsTutorialScenario() const
+{
+	const UTacticsGameInstance* GameInstance = GetTacticsGameInstance();
+	const UTacticalScenarioDataAsset* Scenario = GameInstance
+		? GameInstance->GetActiveScenario() : nullptr;
+	return Scenario && Scenario->Kind == ETacticalScenarioKind::Tutorial;
+}
+
 void UMissionResultWidget::UpdateResultVisuals()
 {
 	const bool bDemoComplete = IsDemoComplete();
+	// Учебный полигон — не «победа в бою», а сданный зачёт: и текст, и арт
+	// у него свои, иначе экран поздравляет с победой в миссии, которой не было.
+	const bool bTutorialPassed = bVictory && IsTutorialScenario();
 
 	if (Txt_ResultTitle)
 	{
 		FText Title;
-		if (bDemoComplete)
+		if (bTutorialPassed)
+		{
+			Title = NSLOCTEXT("XRU1.Result", "TutorialPassed", "ЗАЧЁТ СДАН");
+		}
+		else if (bDemoComplete)
 		{
 			Title = NSLOCTEXT("XRU1.Result", "DemoComplete", "ДЕМО ПРОЙДЕНО");
 		}
@@ -97,7 +116,12 @@ void UMissionResultWidget::UpdateResultVisuals()
 	if (Txt_ResultSubtitle)
 	{
 		FText Subtitle;
-		if (bDemoComplete)
+		if (bTutorialPassed)
+		{
+			Subtitle = NSLOCTEXT("XRU1.Result", "TutorialPassedSub",
+				"Полигон пройден. Отряд допущен к боевой операции.");
+		}
+		else if (bDemoComplete)
 		{
 			Subtitle = NSLOCTEXT("XRU1.Result", "DemoCompleteSub",
 				"Спасибо за игру! Демонстрационный сценарий завершён.");
@@ -123,9 +147,13 @@ void UMissionResultWidget::UpdateResultVisuals()
 	{
 		if (const UTacticalHUDStyleData* Theme = GetUITheme())
 		{
-			const EXRU1UIScreenArt ArtKind = bDemoComplete
-				? EXRU1UIScreenArt::DemoComplete
-				: (bVictory ? EXRU1UIScreenArt::VictoryResult : EXRU1UIScreenArt::DefeatResult);
+			// У зачёта — арт учебного брифинга: он про полигон, а не про
+			// победу в боевой операции.
+			const EXRU1UIScreenArt ArtKind = bTutorialPassed
+				? EXRU1UIScreenArt::TutorialBriefing
+				: (bDemoComplete
+					? EXRU1UIScreenArt::DemoComplete
+					: (bVictory ? EXRU1UIScreenArt::VictoryResult : EXRU1UIScreenArt::DefeatResult));
 			const FXRU1UIScreenArtwork Artwork = Theme->GetScreenArtwork(ArtKind);
 			if (UTexture2D* Texture = Artwork.Texture.LoadSynchronous())
 			{

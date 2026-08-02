@@ -72,6 +72,9 @@ Unreal. Закрыть его (или собирать через Live Coding: C
 - `Tactics/` — **написано с нуля**: пошаговое ядро (TurnManager, ActionPoints, Cover,
   Overwatch, UnitBase+4 класса, AIController с sight, SaveGame, GameInstance, POI хаба).
 - `UI/Menus/` — **написано с нуля**: каркас экранов меню на CommonUI.
+- `Audio/`, `FX/` — **написано с нуля**: звуковой и визуальный слои боя, оба ведомы
+  Data Asset'ами и вызываются из C++ на подтверждённом факте, а не из BP
+  (`docs/03_CODE_OVERVIEW.md` §9.5–9.6).
 - `Variant_Strategy/`, `Variant_TwinStick/`, `XRU1Character/GameMode/PlayerController` —
   из шаблона Top Down (не тактические; можно удалить при чистке).
 

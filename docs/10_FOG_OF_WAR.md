@@ -275,7 +275,20 @@ DoD F3: картинка совпадает с gameplay visibility на ключ
 | RT обновляется каждый кадр | dirty/event update; один upload/draw на пакет изменений |
 | Состояние течёт между режимами одной карты | обязательные `ScenarioId`, `RunId` и `ResetForScenario` до fade-in |
 
-## 9. Первичные источники и технические опоры
+## 9. Исследование перед реализацией
+
+Перед этапами F1–F5 запланирована отдельная сессия-исследование: сверка плана с
+актуальной практикой и с открытыми исходниками XCOM 2 (видимость по тайлам,
+concealment, индикаторы «отсюда меня увидят») плюс инвентаризация всех мест
+кода, которые придётся гейтить. Задание — [agents/BRIEF_FogOfWar_Research.md](agents/BRIEF_FogOfWar_Research.md).
+Её результат может изменить план F1–F5 (в том числе выкинуть часть) — это
+допустимо, но каждое решение записывается сюда вместе с причиной.
+
+Исходники XCOM 2 уже найдены и проверены (2026-08-02): полный дамп классов —
+`Rukan/XComGame`, рабочие ini — `russgray/xcom2-config` (UTF-16). Highlander
+содержит только изменённые файлы и для чтения оригинальной логики не годится.
+
+## 10. Первичные источники и технические опоры
 
 - [XCOM 2 — официальный manual Feral Interactive](https://www.feralinteractive.com/en/manuals/xcom2/latest/steam/): concealment, обнаружение и базовая терминология интерфейса.
 - [Firaxis: XCOM Enemy Unknown postmortem](https://www.gamedeveloper.com/design/classic-postmortem-i-xcom-enemy-unknown-i-which-turns-5-today): дизайнерские принципы читаемой пошаговой информации и упрощений.

@@ -128,6 +128,13 @@ public:
 	// «Зачёт, отряд к вылету готов» и «…Узел-7 потерян» — тексты конкретного
 	// сценария. Пусто — экран молчит.
 
+	/**
+	 * Реплика брифинга: звучит при открытии экрана брифинга этой миссии.
+	 * Пусто — экран молчит, это штатная настройка, а не ошибка.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Scenario|Озвучка")
+	TSoftObjectPtr<USoundBase> BriefingVoice;
+
 	/** Реплика при победе. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Scenario|Озвучка")
 	TSoftObjectPtr<USoundBase> VictoryVoice;

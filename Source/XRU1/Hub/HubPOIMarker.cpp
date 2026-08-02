@@ -1,6 +1,8 @@
 #include "HubPOIMarker.h"
 
+#include "TacticsAudioSubsystem.h"
 #include "XRU1Log.h"
+#include "Engine/GameInstance.h"
 #include "Components/SphereComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/WidgetComponent.h"
@@ -85,21 +87,61 @@ void AHubPOIMarker::BeginPlay()
 		Reason.IsEmpty() ? TEXT("доступна") : *Reason.ToString());
 }
 
-void AHubPOIMarker::HandleHoverChanged(bool /*bHovered*/)
+void AHubPOIMarker::HandleHoverChanged(bool bHovered)
+{
+	// Звук наведения принадлежит маркеру, а не контроллеру: попасть курсором на
+	// точку можно и без клика, и игрок должен это слышать.
+	if (bHovered)
+	{
+		if (const UWorld* World = GetWorld())
+		{
+			if (UGameInstance* GameInstance = World->GetGameInstance())
+			{
+				if (UTacticsAudioSubsystem* Audio = GameInstance->GetSubsystem<UTacticsAudioSubsystem>())
+				{
+					Audio->PlayUIHover();
+				}
+			}
+		}
+	}
+	RefreshVisualState();
+}
+
+void AHubPOIMarker::OnVisualStateChanged()
 {
 	RefreshVisualState();
 }
 
 void AHubPOIMarker::RefreshVisualState()
 {
-	// Гейт перечитывается на каждое изменение состояния (старт, наведение):
-	// миссия могла разблокироваться, пока игрок проходил обучение. Результат
-	// кэшируется — Tick не должен опрашивать слот кампании каждый кадр.
+	// Гейт перечитывается на каждое изменение состояния (старт, наведение,
+	// выбор): миссия могла разблокироваться, пока игрок проходил обучение.
+	// Результат кэшируется — Tick не должен опрашивать слот кампании каждый кадр.
 	const bool bLocked = IsLocked();
 	bCachedLocked = bLocked;
-	const FLinearColor Color = bLocked
-		? LockedColor
-		: (bIsHovered ? HoveredColor : AvailableColor);
+
+	// Пройденная миссия остаётся зелёной, даже когда её выбрали: «сделано» —
+	// более важный факт, чем «сейчас смотрю».
+	FLinearColor Color = AvailableColor;
+	if (IsCompleted())
+	{
+		Color = CompletedColor;
+	}
+	else if (bLocked)
+	{
+		Color = LockedColor;
+	}
+	else if (IsSelected())
+	{
+		Color = SelectedColor;
+	}
+	// Наведение только подсвечивает текущий цвет: подменять его отдельным
+	// «hover-цветом» значило бы стирать состояние точки под курсором.
+	if (bIsHovered && !bLocked)
+	{
+		Color = Color * HoverBrightness;
+		Color.A = 1.f;
+	}
 
 	// Прозрачность тоже состояние: доступная точка должна читаться как живая
 	// метка, а заблокированная — как погашенная. Одного цвета мало на ярком

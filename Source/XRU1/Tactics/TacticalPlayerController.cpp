@@ -14,6 +14,7 @@
 #include "ScenarioActorRegistry.h"
 #include "TacticsAudioSubsystem.h"
 #include "TacticsGameInstance.h"
+#include "TacticsUserSettings.h" // настройки камеры игрока (обзор, чувствительность)
 #include "TacticalScenarioDataAsset.h" // сценарий решает, автоматизировать ли конец хода
 #include "XRU1Log.h"
 #include "TacticalQuestEvents.h"
@@ -140,11 +141,17 @@ void ATacticalPlayerController::BeginPlay()
 		TurnManager->OnEnemyUnitActivated.AddDynamic(this, &ATacticalPlayerController::HandleEnemyUnitActivated);
 	}
 
-	// Ввод: и мир (клики), и UI (HUD).
-	FInputModeGameAndUI InputMode;
-	InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
-	InputMode.SetHideCursorDuringCapture(false);
-	SetInputMode(InputMode);
+	// Ввод: и мир (клики), и UI (HUD). Тот же режим восстанавливает выход из
+	// свободного обзора — одно описание боевого режима на оба места.
+	ApplyCombatInputMode();
+
+	// Настройки камеры игрока (обзор, чувствительность, панорама у края). Здесь,
+	// а не в пешке: обзор — свойство камеры, edge scroll — контроллера, и оба
+	// приходят одним применением, чтобы половинчатого состояния не бывало.
+	if (const UTacticsUserSettings* Settings = UTacticsUserSettings::Get())
+	{
+		ApplyCameraUserSettings(Settings->GetCameraSettings());
+	}
 }
 
 void ATacticalPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -239,8 +246,14 @@ void ATacticalPlayerController::SetupInputComponent()
 	}
 	if (CameraRotateAction)
 	{
+		// Три события на одно действие: клик отличается от удержания только
+		// временем, а оно известно лишь к моменту отпускания (см. обработчики).
 		Input->BindAction(CameraRotateAction, ETriggerEvent::Started, this,
-			&ATacticalPlayerController::HandleCameraRotate);
+			&ATacticalPlayerController::HandleCameraRotateStarted);
+		Input->BindAction(CameraRotateAction, ETriggerEvent::Triggered, this,
+			&ATacticalPlayerController::HandleCameraRotateHeld);
+		Input->BindAction(CameraRotateAction, ETriggerEvent::Completed, this,
+			&ATacticalPlayerController::HandleCameraRotateReleased);
 	}
 	if (CameraZoomAction)
 	{
@@ -344,6 +357,8 @@ void ATacticalPlayerController::PlayerTick(float DeltaTime)
 		TryAutoEndTurn();
 	}
 
+	UpdateFreeLook();
+	UpdateCameraHotkeys();
 	UpdateEdgeScroll();
 	UpdateHoverHighlight();
 	UpdatePathPreviewUnderCursor();
@@ -449,7 +464,13 @@ void ATacticalPlayerController::DrawCoverSidesDebug(const AActor* Unit) const
 
 void ATacticalPlayerController::UpdateEdgeScroll()
 {
-	if (!bEdgeScrollEnabled || IsTargetingAttack())
+	if (!bEdgeScrollEnabled || IsTargetingAttack() || IsCameraInputBlocked())
+	{
+		return;
+	}
+	// В свободном обзоре курсор гуляет по экрану и постоянно оказывается у края —
+	// панорама «от края» превратила бы вращение мышью в бесконтрольный уезд.
+	if (bFreeLookActive)
 	{
 		return;
 	}
@@ -2376,8 +2397,8 @@ void ATacticalPlayerController::RequestPause()
 void ATacticalPlayerController::HandleCameraPan(const FInputActionValue& Value)
 {
 	// Attack-targeting модален: панорама/edge scroll не должны бросать action
-	// camera, оставляя TargetingMode активным без кадра.
-	if (IsTargetingAttack())
+	// camera, оставляя TargetingMode активным без кадра. Пауза — там же.
+	if (IsTargetingAttack() || IsCameraInputBlocked())
 	{
 		return;
 	}
@@ -2387,27 +2408,252 @@ void ATacticalPlayerController::HandleCameraPan(const FInputActionValue& Value)
 	}
 }
 
-void ATacticalPlayerController::HandleCameraRotate(const FInputActionValue& Value)
+void ATacticalPlayerController::HandleCameraRotateStarted(const FInputActionValue& Value)
 {
 	const float Direction = Value.Get<float>();
+	CameraRotateHeldTime = 0.f;
+	bCameraRotateFreeMode = false;
+	bCameraRotateConsumedByTargeting = false;
+	LastCameraRotateDirection = Direction;
 
 	// Q/E в режиме прицеливания листают ЦЕЛИ, а не крутят камеру (XCOM): пока
 	// целимся, вся навигация — по врагам. Камера и так стоит в кадре выстрела.
+	// Листаем по НАЖАТИЮ, а не по отпусканию: перебор целей должен быть
+	// мгновенным, и удержание в этом режиме уже ничего не делает.
 	if (IsTargetingAttack() && !FMath::IsNearlyZero(Direction))
 	{
+		bCameraRotateConsumedByTargeting = true;
 		CycleAttackTarget(Direction > 0.f ? 1 : -1);
+	}
+}
+
+void ATacticalPlayerController::HandleCameraRotateHeld(const FInputActionValue& Value)
+{
+	const float Direction = Value.Get<float>();
+	// Прицеливание модально: там Q/E принадлежат перебору целей, а свободное
+	// вращение бросило бы кадр прицела, оставив режим без кадра (та же защита,
+	// что у панорамы и edge scroll). Пауза — тем более: под открытым меню
+	// камера двигаться не должна.
+	if (bCameraRotateConsumedByTargeting || IsTargetingAttack() || IsCameraInputBlocked() ||
+		FMath::IsNearlyZero(Direction))
+	{
 		return;
+	}
+
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	// Реальное время, как и весь Tick камеры: slow-mo реакции не должен делать
+	// вращение вязким (см. `ATacticalCameraPawn::Tick`).
+	const float RealDelta = World->DeltaRealTimeSeconds;
+	CameraRotateHeldTime += RealDelta;
+	LastCameraRotateDirection = Direction;
+	if (CameraRotateHeldTime < CameraRotateHoldThreshold)
+	{
+		return; // ещё может оказаться кликом — шаг 45° сделает отпускание
 	}
 
 	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
 	{
-		Camera->AddRotationStep(Direction);
+		if (!bCameraRotateFreeMode)
+		{
+			bCameraRotateFreeMode = true;
+			UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] Удержание Q/E — свободное вращение (%.2f с)"),
+				CameraRotateHeldTime);
+		}
+		Camera->AddRotationDelta(FMath::Sign(Direction) * Camera->GetFreeRotationSpeed() * RealDelta);
+	}
+}
+
+void ATacticalPlayerController::HandleCameraRotateReleased(const FInputActionValue& Value)
+{
+	// Клавишу отпустили, не дойдя до порога удержания — это клик, значит шаг 45°.
+	// Само значение действия здесь уже нулевое, поэтому направление берём из
+	// накопленного состояния нажатия (см. HandleCameraRotateStarted).
+	// Прицеливание проверяем и здесь: игрок мог начать удержание в обычном
+	// режиме, а отпустить уже войдя в прицел (пробелом) — шаг 45° в этот момент
+	// развернул бы кадр прицела.
+	const bool bWasClick = !bCameraRotateFreeMode && !bCameraRotateConsumedByTargeting &&
+		!IsTargetingAttack() && !IsCameraInputBlocked() &&
+		CameraRotateHeldTime < CameraRotateHoldThreshold;
+	if (bWasClick)
+	{
+		if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+		{
+			Camera->AddRotationStep(LastCameraRotateDirection);
+		}
+	}
+	CameraRotateHeldTime = 0.f;
+	bCameraRotateFreeMode = false;
+	bCameraRotateConsumedByTargeting = false;
+}
+
+void ATacticalPlayerController::UpdateFreeLook()
+{
+	// СВОБОДНЫЙ ОБЗОР (Alt + мышь) — главная механика мода Free Camera Rotation:
+	// поворот и наклон одним движением, без шагов. Клавишу читаем напрямую по той
+	// же причине, что и пропуск реплики: заводить отдельный Input Action ради
+	// модификатора — лишняя сущность в ассетах.
+	const bool bAltDown = !IsCameraInputBlocked() && !IsTargetingAttack() &&
+		(IsInputKeyDown(EKeys::LeftAlt) || IsInputKeyDown(EKeys::RightAlt));
+	if (!bAltDown)
+	{
+		if (bFreeLookActive)
+		{
+			bFreeLookActive = false;
+			// Возвращаем ровно тот режим ввода и то место курсора, что были до
+			// обзора: игрок продолжает работать с HUD с той же точки.
+			bShowMouseCursor = true;
+			ApplyCombatInputMode();
+			SetMouseLocation(FMath::RoundToInt(FreeLookCursorX), FMath::RoundToInt(FreeLookCursorY));
+			UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] Свободный обзор выключен"));
+		}
+		return;
+	}
+
+	ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn());
+	if (!Camera)
+	{
+		return;
+	}
+
+	float DeltaX = 0.f;
+	float DeltaY = 0.f;
+	GetInputMouseDelta(DeltaX, DeltaY);
+	if (FMath::IsNearlyZero(DeltaX) && FMath::IsNearlyZero(DeltaY))
+	{
+		return; // Alt зажат, но мышь стоит — камеру не трогаем и удержание не рвём
+	}
+
+	if (!bFreeLookActive)
+	{
+		bFreeLookActive = true;
+		GetMousePosition(FreeLookCursorX, FreeLookCursorY);
+
+		// НА ВРЕМЯ ОБЗОРА мышь захватывается вьюпортом, а курсор прячется.
+		//
+		// Иначе указатель уезжает к краю экрана, упирается — и мышь перестаёт
+		// давать дельту прямо посреди разворота. Возвращать курсор в исходную
+		// точку каждый кадр нельзя: программное перемещение само порождает
+		// движение мыши и при не-raw вводе гасило бы вращение игрока.
+		bShowMouseCursor = false;
+		FInputModeGameOnly CaptureMode;
+		CaptureMode.SetConsumeCaptureMouseDown(false);
+		SetInputMode(CaptureMode);
+
+		UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] Свободный обзор ВКЛЮЧЁН (Alt+мышь)"));
+	}
+
+	// Чувствительность и инверсия живут в камере: там же лежат настройки игрока,
+	// и контроллер не должен знать, как они устроены.
+	Camera->AddRotationDelta(DeltaX * Camera->GetMouseYawSensitivity());
+	Camera->AddPitchDelta(DeltaY * Camera->GetMousePitchSensitivity());
+}
+
+void ATacticalPlayerController::ApplyCombatInputMode()
+{
+	// Боевой режим ввода: клики по миру и по HUD одновременно, курсор виден и не
+	// привязан к вьюпорту. Описан один раз — его ставит и вход в бой, и выход из
+	// свободного обзора, который на время забирает мышь себе.
+	FInputModeGameAndUI InputMode;
+	InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::DoNotLock);
+	InputMode.SetHideCursorDuringCapture(false);
+	SetInputMode(InputMode);
+}
+
+bool ATacticalPlayerController::IsCameraInputBlocked() const
+{
+	// ЕДИНСТВЕННАЯ проверка «камере сейчас не до игрока». Пауза принадлежит
+	// UGamePauseSubsystem, и та намеренно не трогает режим ввода — игнорировать
+	// ввод на паузе обязан контроллер.
+	//
+	// ⚠️ Раньше это работало само собой: панорама умножалась на дилатированную
+	// дельту, а она на паузе нулевая. С переходом камеры на РЕАЛЬНОЕ время
+	// (slow-mo не должен делать управление вязким) защита исчезла, и WASD с
+	// edge scroll поехали бы под открытым меню.
+	const UWorld* World = GetWorld();
+	return World && World->IsPaused();
+}
+
+void ATacticalPlayerController::ApplyCameraUserSettings(const FTacticsCameraSettings& Settings)
+{
+	bEdgeScrollEnabled = Settings.bEdgeScroll;
+	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
+	{
+		Camera->ApplyUserCameraSettings(Settings.FieldOfView, Settings.RotationSensitivity,
+			Settings.PitchSensitivity, Settings.bInvertPitch);
+	}
+	else
+	{
+		// Молча потерянный обзор — худший исход: игрок выставил 50°, а бой идёт
+		// на дефолтных. Пешки может не быть только вне боя, и это видно в логе.
+		UE_LOG(LogXRU1Camera, Warning,
+			TEXT("[Camera] Настройки камеры применить некуда: пешка-камера не найдена (%s)"),
+			*GetNameSafe(GetPawn()));
+	}
+	UE_LOG(LogXRU1Camera, Display,
+		TEXT("[Camera] Настройки применены к бою: обзор %.0f°, панорама у края=%d"),
+		Settings.FieldOfView, bEdgeScrollEnabled ? 1 : 0);
+}
+
+void ATacticalPlayerController::UpdateCameraHotkeys()
+{
+	ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn());
+	if (!Camera || IsCameraInputBlocked())
+	{
+		return;
+	}
+
+	// ЭТАЖ ОБЗОРА на многоуровневой карте (в XCOM ту же роль играет подъём
+	// 3D-курсора: камера смотрит на плоскость выбранного этажа, а не на пол).
+	if (WasInputKeyJustPressed(EKeys::PageUp))
+	{
+		Camera->AddViewFloorStep(1);
+	}
+	else if (WasInputKeyJustPressed(EKeys::PageDown))
+	{
+		Camera->AddViewFloorStep(-1);
+	}
+
+	// ЦЕНТРИРОВАНИЕ: C — на выбранном бойце, V — на отряде. Обе клавиши сбрасывают
+	// ручной этаж: игрок просит показать конкретных людей, а не плоскость.
+	if (WasInputKeyJustPressed(EKeys::C))
+	{
+		// Центрирование — ручной ввод: удержание такта и живой кадр уступают,
+		// иначе фокус ушёл бы в отложенные и камера не двинулась бы вовсе.
+		Camera->BreakDirectorHold();
+		Camera->AbandonShotFraming();
+		Camera->ResetViewAdjustments();
+		if (UTacticsCombatStatics::IsUnitAlive(SelectedUnit))
+		{
+			UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] Центр на выбранном: %s"), *GetNameSafe(SelectedUnit));
+			Camera->FocusOnActor(SelectedUnit);
+		}
+		else
+		{
+			FocusCameraOnSquad();
+		}
+	}
+	else if (WasInputKeyJustPressed(EKeys::V))
+	{
+		UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] Центр на отряде"));
+		Camera->BreakDirectorHold();
+		Camera->AbandonShotFraming();
+		Camera->ResetViewAdjustments();
+		FocusCameraOnSquad();
+	}
+	else if (WasInputKeyJustPressed(EKeys::Home))
+	{
+		Camera->ResetViewAdjustments(); // сброс ракурса к дефолту (Ctrl+F1 в моде FCR)
 	}
 }
 
 void ATacticalPlayerController::HandleCameraZoom(const FInputActionValue& Value)
 {
-	if (IsTargetingAttack())
+	if (IsTargetingAttack() || IsCameraInputBlocked())
 	{
 		return;
 	}

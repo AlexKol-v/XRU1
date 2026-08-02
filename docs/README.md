@@ -22,7 +22,8 @@
 | [11_SHARED_MAP_TUTORIAL.md](11_SHARED_MAP_TUTORIAL.md) | Tutorial и Mission01 на одной карте: StateTree, sublevels и Editor-план |
 | [12_TUTORIAL_LAYOUT_SPEC.md](12_TUTORIAL_LAYOUT_SPEC.md) | Требования расстановки обучения: AP-бюджет, дистанции, укрытия, LOS |
 | [13_LOS_TARGETING.md](13_LOS_TARGETING.md) | Исследование выбора цели/LOS: одна система, симметрия Ф5, диагностика |
-| [agents/](agents/) | Брифы для отдельных сессий (главное меню, голографический хаб, рефакторинг AI), трекеры статуса и [справочник по тулингу агента](agents/AGENT_UNREAL_TOOLING.md) |
+| [14_SUBTITLES.md](14_SUBTITLES.md) | Исследование субтитров и локализации: движок 5.7, Lyra, донор; целевой единый слой |
+| [agents/](agents/) | Брифы для отдельных сессий (главное меню, голографический хаб, рефакторинг AI, [исследование тумана войны](agents/BRIEF_FogOfWar_Research.md)), трекеры статуса и [справочник по тулингу агента](agents/AGENT_UNREAL_TOOLING.md) |
 
 ## Текущий срез — 2026-07-31
 

@@ -99,6 +99,16 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Music", meta = (ClampMin = "0"))
 	float MusicFadeTime = 2.f;
 
+	// --- Голос -------------------------------------------------------------
+
+	/**
+	 * Реплика «Купола» при первом входе в хаб: что это за место и что делать
+	 * дальше. Живёт здесь, а не в уровне: озвучка — данные, а не логика карты.
+	 * Пусто — хаб молчит.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Audio|Voice")
+	TObjectPtr<USoundBase> HubArrivalVoice;
+
 	// --- Мир ---------------------------------------------------------------
 
 	/** Тик таймера заряда в последние ходы (GDD §13). */
@@ -208,6 +218,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Audio|Voice")
 	UAudioComponent* PlayVoice2D(USoundBase* Voice, float VolumeMultiplier = 1.f);
 
+	/**
+	 * Вводная Купола про оперативную карту — РОВНО ОДИН раз на кампанию.
+	 *
+	 * Признак «уже слышал» лежит в слоте (`UTacticsSaveGame::bHubBriefed`), а не
+	 * только в сессии: «Продолжить» приводит игрока, который хаб уже видел.
+	 * Сессионный флаг остаётся страховкой от повтора внутри одного запуска —
+	 * GameMode пересоздаётся на каждый заход в хаб и сам ничего не помнит.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Audio|Voice")
+	void PlayHubArrivalVoiceOnce();
+
 	// --- Музыка --------------------------------------------------------------
 
 	/** Кроссфейд на новый трек. Повторный вызов с тем же треком ничего не делает. */
@@ -294,8 +315,11 @@ private:
 
 	FTacticsAudioSettings AppliedSettings;
 
-	/** Приглушён ли звук паузой (transient-громкость устройства). */
+	/** Приглушены ли боевые категории паузой (Sfx/Voice = 0). */
 	bool bGameplayAudioPaused = false;
+
+	/** Реплика прибытия в хаб уже звучала в этой сессии. */
+	bool bHubArrivalVoicePlayed = false;
 
 	/** Активный музыкальный компонент; переживает travel (persist across level). */
 	/**

@@ -10,9 +10,19 @@ class UPostProcessComponent;
 class UMaterialInterface;
 
 /**
- * Камера тактического боя (XCOM-стиль): панорамирование по земле, поворот
- * шагами по 45°, зум пружиной. Пешка игрока в боевых уровнях; ввод шлёт
- * ATacticalPlayerController.
+ * Камера тактического боя (XCOM-стиль). Пешка игрока в боевых уровнях; ввод шлёт
+ * `ATacticalPlayerController`.
+ *
+ * Управление собрано по образцу самого популярного камера-мода XCOM 2 (Free
+ * Camera Rotation, wghost81): короткое нажатие Q/E поворачивает на шаг 45°,
+ * удержание крутит непрерывно, Alt+мышь даёт свободный обзор (поворот и наклон),
+ * колесо приближает и заодно опускает угол, PageUp/PageDown переключают этаж
+ * обзора. Все скорости и пределы — параметры ниже; чувствительность, инверсия и
+ * обзор приходят из `UTacticsUserSettings`.
+ *
+ * Владение камерой (кто важнее) НЕ здесь: приоритет «кадр выстрела > режиссура
+ * такта > фоновые интенты» описан у `FrameShotForDuration` и
+ * `FocusOnLocationDirected`, а ручной ввод рвёт любое удержание.
  */
 UCLASS(Blueprintable)
 class XRU1_API ATacticalCameraPawn : public APawn
@@ -30,16 +40,69 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
 	void AddRotationStep(float Direction);
 
+	/**
+	 * СВОБОДНОЕ вращение на произвольный угол (удержание Q/E, Alt+мышь).
+	 *
+	 * Отдельный вход, а не «шаг с маленьким RotationStep»: у шага и у свободного
+	 * вращения разные источники величины (константа против времени/пикселей), и
+	 * склеивать их в один метод значило бы, что вызывающий каждый раз считает
+	 * чужую арифметику. Владение камерой оба рвут одинаково — это ручной ввод.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
+	void AddRotationDelta(float Degrees);
+
+	/**
+	 * РУЧНОЙ НАКЛОН (Alt+мышь по вертикали). Хранится как ОТКЛОНЕНИЕ от базового
+	 * наклона, который камера сама выводит из зума (`PitchAtMinZoom/MaxZoom`):
+	 * иначе после наезда колесом ручной угол пришлось бы поправлять заново.
+	 * Один механизм: итоговый наклон = база(зум) + отклонение игрока, зажатое в
+	 * `MinManualPitch..MaxManualPitch` (XCOM держит камеру в −90…−10).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
+	void AddPitchDelta(float Degrees);
+
 	/** Зум: положительное значение — приблизить. */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
 	void AddZoomInput(float Input);
+
+	/**
+	 * ПЛОСКОСТЬ ОБЗОРА на многоуровневой карте: ±1 этаж за нажатие (PageUp/Down).
+	 * Смещение живёт поверх высоты, которую задают focus/follow, и переживает их —
+	 * это отдельный выбор игрока «смотрю на второй этаж», а не свойство цели
+	 * фокуса. Сбрасывается `ResetViewAdjustments` и центрированием на бойце.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
+	void AddViewFloorStep(int32 Steps);
+
+	/** Вернуть ракурс к дефолтному (наклон по зуму, нулевой этаж) — как Ctrl+F1 в XCOM-модах. */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
+	void ResetViewAdjustments();
+
+	/**
+	 * Применить пользовательские настройки камеры (обзор, чувствительность,
+	 * инверсия). Зовётся из `UTacticsUserSettings` при загрузке и при сохранении
+	 * экрана настроек — камера не читает настройки сама каждый кадр.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
+	void ApplyUserCameraSettings(float InFieldOfView, float InRotationSensitivity,
+		float InPitchSensitivity, bool bInInvertPitch);
+
+	/** Чувствительность мыши в свободном обзоре (град/пиксель), с учётом настроек. */
+	float GetMouseYawSensitivity() const { return MouseYawSensitivity * UserRotationSensitivity; }
+	float GetMousePitchSensitivity() const
+	{
+		return MousePitchSensitivity * UserPitchSensitivity * (bUserInvertPitch ? -1.f : 1.f);
+	}
+
+	/** Скорость свободного вращения при удержании Q/E (град/сек). */
+	float GetFreeRotationSpeed() const { return FreeRotationSpeed * UserRotationSensitivity; }
 
 	/** Перелететь к актору: плавный полёт (XCOM) или мгновенно (bInstant). */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
 	void FocusOnActor(const AActor* Target, bool bInstant = false);
 
 	/**
-	 * Перевзвод шага A1: сбрасывает one-shot и накопители поворота/зума.
+	 * Перевзвод шага A1: сбрасывает one-shot и накопители панорамы/поворота/зума.
 	 * Вызывается при применении политики шага обучения — «осмотритесь»
 	 * отсчитывается от начала шага, а не от загрузки карты, иначе вращение
 	 * камеры во время стриминга закрыло бы one-shot до того, как его ждут.
@@ -174,16 +237,123 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera")
 	float FocusInterpSpeed = 8.f;
 
-	/** Пределы длины пружины (зум), см. */
+	/**
+	 * Пределы длины пружины (зум), см — заданы для опорного обзора `ReferenceFov`.
+	 *
+	 * ⚠️ Числа выросли вместе с сужением обзора (было 800/2600 при FOV 90). Угол и
+	 * дистанция задают охват вместе: если сузить обзор, не отодвинув камеру, поле
+	 * боя видно хуже при тех же сантиметрах. Пересчёт под текущий обзор игрока —
+	 * `GetZoomFovScale`, поэтому выбор FOV в настройках меняет ПЕРСПЕКТИВУ, а не
+	 * «сколько влезает в экран».
+	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera")
-	float MinZoom = 800.f;
+	float MinZoom = 1250.f;
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera")
-	float MaxZoom = 2600.f;
+	float MaxZoom = 4100.f;
+
+	/** Обзор, под который заданы MinZoom/MaxZoom (см. GetZoomFovScale). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera",
+		meta = (ClampMin = "40", ClampMax = "110"))
+	float ReferenceFov = 65.f;
 
 	/** Шаг зума за тик колеса, см. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera")
 	float ZoomStep = 300.f;
+
+	// --- Обзор (FOV) ----------------------------------------------------------
+	//
+	// XCOM 2 играет тактику на `DefaultFOV=50`, а кадр выстрела строит внутри
+	// 0.75 этого угла (`X2Camera_Midpoint.FramingFOVPercentage`). Наши прежние 90°
+	// — это широкоугольник: он растягивает периферию, съедает фигуры к центру и в
+	// упор показывает больше стены, чем бойцов. Отсюда «вблизи не видно ни своего,
+	// ни врага, оружия тем более». Тактический угол — настройка игрока
+	// (`UTacticsUserSettings`), кадр выстрела — авторский и не настраивается.
+
+	/** Тактический обзор по умолчанию (град). Настройка игрока переопределяет. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera",
+		meta = (ClampMin = "40", ClampMax = "110"))
+	float TacticalFov = 65.f;
+
+	/** Обзор в кадре выстрела (град) — «телевик» XCOM. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot",
+		meta = (ClampMin = "30", ClampMax = "90"))
+	float ShotFrameFov = 50.f;
+
+	/** Скорость доводки обзора между тактическим и кадровым (град/сек). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera",
+		meta = (ClampMin = "1"))
+	float FovInterpSpeed = 45.f;
+
+	// --- Наклон, связанный с зумом --------------------------------------------
+	//
+	// Фиксированные −55° означали «всегда смотрим сверху»: при наезде фигуры
+	// видны с макушки, ноги и оружие уходят. Теперь наклон — функция зума
+	// (ближе → положе, как в любой тактике с приличной камерой), а игрок может
+	// добавить своё отклонение (`PlayerPitchOffset`).
+
+	/** Наклон на максимальном приближении (град, отрицательный — вниз). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera",
+		meta = (ClampMin = "-89", ClampMax = "-5"))
+	float PitchAtMinZoom = -34.f;
+
+	/** Наклон на максимальном отдалении. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera",
+		meta = (ClampMin = "-89", ClampMax = "-5"))
+	float PitchAtMaxZoom = -58.f;
+
+	/** Границы наклона с ручным отклонением (XCOM: −90…−10). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera",
+		meta = (ClampMin = "-89", ClampMax = "-5"))
+	float MinManualPitch = -85.f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera",
+		meta = (ClampMin = "-89", ClampMax = "-5"))
+	float MaxManualPitch = -12.f;
+
+	// --- Свободное вращение (мод Free Camera Rotation) -------------------------
+
+	/** Скорость непрерывного вращения при удержании Q/E (град/сек). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera",
+		meta = (ClampMin = "10"))
+	float FreeRotationSpeed = 110.f;
+
+	/** Чувствительность мыши в свободном обзоре: град на пиксель (ваниль XCOM: 0.3/0.2). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera",
+		meta = (ClampMin = "0.01"))
+	float MouseYawSensitivity = 0.3f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera",
+		meta = (ClampMin = "0.01"))
+	float MousePitchSensitivity = 0.2f;
+
+	// --- Панорама, зависящая от зума ------------------------------------------
+	//
+	// На максимальном приближении прежняя скорость 2000 см/с проносила экран
+	// мимо бойца: величина сдвига «на глаз» пропорциональна не сантиметрам, а
+	// доле экрана, а она растёт при наезде. Множители приводят ощущение к одному.
+
+	/** Множитель скорости панорамы на минимальной дистанции (приближено). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera",
+		meta = (ClampMin = "0.1", ClampMax = "3"))
+	float PanSpeedScaleNear = 0.5f;
+
+	/** Множитель скорости панорамы на максимальной дистанции (отдалено). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera",
+		meta = (ClampMin = "0.1", ClampMax = "3"))
+	float PanSpeedScaleFar = 1.4f;
+
+	// --- Плоскость обзора по этажам -------------------------------------------
+
+	/** Высота одного шага плоскости обзора (см). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera",
+		meta = (ClampMin = "50"))
+	float ViewFloorStepHeight = 300.f;
+
+	/** Сколько шагов вверх/вниз разрешено от плоскости фокуса. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera",
+		meta = (ClampMin = "0", ClampMax = "6"))
+	int32 MaxViewFloorSteps = 3;
 
 	// --- Кадр выстрела/прицеливания «из-за плеча» (XCOM 2 action cam) ---------
 	//
@@ -246,6 +416,23 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "0"))
 	float ShotFrameShoulderFar = 95.f;
 
+	/**
+	 * Насколько далеко живому кадру разрешено ехать за участниками (см). Кадр
+	 * следит за выходом из укрытия и падением цели, но должен остаться на месте
+	 * сцены, даже если актора отбросило или телепортировало.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "0"))
+	float ShotFrameMaxTrackDrift = 400.f;
+
+	/**
+	 * ПЕРЕПАД ВЫСОТ: насколько высота камеры следует за точкой взгляда, а не за
+	 * стрелком (0 — камера строго на высоте стрелка, как было; 1 — на высоте
+	 * композиции). Боец на крыше и цель под ним иначе давали почти вертикальный
+	 * кадр, где обе фигуры вырождаются в пятна.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "0", ClampMax = "1"))
+	float ShotFrameHeightBlend = 0.6f;
+
 	/** Подъём камеры над линией прицела (см): ближний / дальний выстрел. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "0"))
 	float ShotFrameHeightNear = 45.f;
@@ -281,13 +468,24 @@ public:
 	float ShotFrameLongShotBack = 700.f;
 
 	/**
-	 * Доля полу-FOV, в которую ОБЯЗАНЫ поместиться и стрелок, и цель. < 1 —
-	 * запас на поля кадра и на HUD. Если не помещаются, камера автоматически
-	 * отъезжает: композиция «обе фигуры читаются» гарантируется расчётом, а не
-	 * подобранными вручную значениями зума.
+	 * Штраф ракурсу «со стороны стрелка» в ДАЛЬНЕМ кадре. Иначе говоря — цена
+	 * отказа от обратного ракурса из-за цели, который на squadsight-дистанции и
+	 * читается как снайперский выстрел: видно и цель, и откуда прилетело.
+	 * Обратный побеждает при прочих равных, но уступает, если из-за цели её
+	 * саму не видно (штраф 64 перебивает эти 16).
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot|Score")
+	float LongShotFrontAnglePenalty = 16.f;
+
+	/**
+	 * Доля полу-FOV, в которую ОБЯЗАНЫ поместиться фигуры целиком (голова и ноги
+	 * обоих участников, см. `GetSubjectPoints`). < 1 — запас на поля кадра и HUD.
+	 * Не помещаются — камера отъезжает сама: композиция следует из геометрии, а
+	 * не из подобранного вручную зума. Значение из XCOM
+	 * (`X2Camera_Midpoint.FramingFOVPercentage = 0.75`).
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "0.3", ClampMax = "1"))
-	float ShotFrameFovSafety = 0.7f;
+	float ShotFrameFovSafety = 0.75f;
 
 	/** Границы длины пружины в кадре (см). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "100"))
@@ -307,6 +505,22 @@ public:
 	/** Отступ камеры от стены, в которую она упирается (см). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "0"))
 	float ShotFrameWallPadding = 45.f;
+
+	/**
+	 * ОБХОД ПО ДУГЕ: на сколько градусов вокруг точки взгляда разрешено сместить
+	 * камеру, если с «правильного» плеча всё закрыто мешами.
+	 *
+	 * XCOM перебирает не два кандидата, а весь набор авторских matinee-камер
+	 * (десятки), и потому почти всегда находит чистый ракурс. У нас кандидаты
+	 * считаются, поэтому набор задаётся дугой: `ShotFrameArcSteps` шагов по
+	 * `ShotFrameArcSweep` градусов в каждую сторону. Именно этого не хватало в
+	 * сценах, где ВСЕ кандидаты оказывались за геометрией.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "5", ClampMax = "60"))
+	float ShotFrameArcSweep = 25.f;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "0", ClampMax = "4"))
+	int32 ShotFrameArcSteps = 2;
 
 	// --- Штрафы выбора ракурса: VERBATIM из `XComCamera.ini` -------------------
 	//
@@ -359,6 +573,20 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot|Score", meta = (ClampMin = "0"))
 	float ShotFrameTraceWidth = 20.f;
 
+	/**
+	 * СТОРОНА ВЫГЛЯДЫВАНИЯ. Камера должна стоять с той стороны, куда боец
+	 * высунется из укрытия, иначе весь пик и выстрел происходят за его спиной —
+	 * ровно жалоба «анимации пика и выстрела вообще не видно».
+	 *
+	 * В XCOM это `GetUnitFacing`: сторона берётся из `GetExitCoverPosition` (куда
+	 * будет step-out), и матини с другой стороны отсеиваются. У нас сторона
+	 * читается из точки выстрела `GetFiringStance` — она уже смещена к краю
+	 * укрытия. Штраф мягкий: если с «правильной» стороны цель закрыта наглухо,
+	 * лучше показать выстрел с другой, чем стену.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot|Score")
+	float PenaltyOffPeekSide = 12.f;
+
 	/** Сколько держать кадр самого выстрела по умолчанию (сек). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Shot", meta = (ClampMin = "0"))
 	float ShotFrameDuration = 1.6f;
@@ -390,13 +618,14 @@ protected:
 	 * ручным Q/E и колесом и не перезаписывается временным кадром выстрела.
 	 */
 	float TacticalYaw = 45.f;
-	float TacticalZoom = 1800.f;
+	float TacticalZoom = 2800.f;
 
 	// --- Шаг A1 обучения: подтверждённая настройка ракурса ---------------------
 	//
-	// Событие `Camera.Adjusted` публикуется не по raw Q/E/колесу, а после того,
-	// как игрок реально изменил И поворот, И приближение сверх порога. Иначе шаг
-	// закрывался бы от случайного касания колеса.
+	// Событие `Camera.Adjusted` публикуется не по raw WASD/Q/E/колесу, а после
+	// того, как игрок реально изменил И положение, И поворот, И приближение сверх
+	// порога. Иначе шаг закрывался бы от случайного касания колеса, а игрок так и
+	// не узнал бы про панораму.
 
 	/** На сколько градусов суммарно нужно повернуть камеру, чтобы засчитать шаг. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Tutorial",
@@ -408,19 +637,42 @@ protected:
 		meta = (ClampMin = "50"))
 	float AdjustedZoomThreshold = 400.f;
 
-	/** Публикует `Camera.Adjusted` один раз, когда оба порога пройдены. */
-	void ReportCameraAdjustment(float YawDelta, float ZoomDelta);
+	/** Сколько сантиметров суммарно нужно проехать панорамой (WASD / край экрана). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera|Tutorial",
+		meta = (ClampMin = "50"))
+	float AdjustedPanThreshold = 600.f;
+
+	/** Публикует `Camera.Adjusted` один раз, когда пройдены все три порога. */
+	void ReportCameraAdjustment(float YawDelta, float ZoomDelta, float PanDelta);
 
 	float AccumulatedYawAdjustment = 0.f;
 	float AccumulatedZoomAdjustment = 0.f;
+	float AccumulatedPanAdjustment = 0.f;
 	bool bCameraAdjustmentReported = false;
 
 	/** Текущие цели интерполяции: обычный ракурс либо временный action-camera. */
 	float TargetYaw = 45.f;
-	float TargetZoom = 1800.f;
+	float TargetZoom = 2800.f;
 
-	/** Наклон камеры: −55° тактический вид, вычисляется по геометрии в кадре. */
+	/** Наклон камеры: вне кадра — база от зума + отклонение игрока, в кадре — из геометрии. */
 	float TargetPitch = -55.f;
+
+	/** Целевой обзор: тактический вне кадра, `ShotFrameFov` — в кадре выстрела. */
+	float TargetFov = 65.f;
+
+	/**
+	 * Отклонение наклона, заданное игроком (град). Живёт поверх базы от зума,
+	 * поэтому колесо не «съедает» выбранный угол, а сдвигает его вместе с базой.
+	 */
+	float PlayerPitchOffset = 0.f;
+
+	/** Текущий сдвиг плоскости обзора в этажах (см. AddViewFloorStep). */
+	int32 ViewFloorSteps = 0;
+
+	// --- Пользовательские настройки (см. ApplyUserCameraSettings) --------------
+	float UserRotationSensitivity = 1.f;
+	float UserPitchSensitivity = 1.f;
+	bool bUserInvertPitch = false;
 
 	/**
 	 * МИРОВАЯ высота точки вращения пружины. В `Tick` из неё каждый кадр
@@ -463,6 +715,35 @@ protected:
 	/** Текущий кадр — монопольная презентация выстрела, а не прицеливание. */
 	bool bPresentationFrame = false;
 
+	// --- Живой кадр (аналог `TetherTPOV` в XCOM) ------------------------------
+	//
+	// Кадр XCOM не замирает: `X2Camera_OverTheShoulder::UpdateTether` каждый кадр
+	// пересчитывает целевую точку по ТЕКУЩИМ позициям стрелка и цели и лениво
+	// тянется к ней. Без этого выход из укрытия (step-out на полтора метра вбок),
+	// отдача, падение цели происходят вне кадра, который построен по позициям
+	// «до». Мы храним смещение камеры относительно точки взгляда и пересчитываем
+	// точку взгляда каждый тик; ленивость дают уже существующие интерполяции —
+	// отдельного tether-таймера не заводим, чтобы у плавности был один владелец.
+
+	TWeakObjectPtr<const AActor> ShotFrameShooter;
+	TWeakObjectPtr<const AActor> ShotFrameTarget;
+
+	/** Позиции участников на момент построения — база для относительного сдвига. */
+	FVector ShotFrameShooterStart = FVector::ZeroVector;
+	FVector ShotFrameTargetStart = FVector::ZeroVector;
+
+	/** Точка взгляда на момент построения (к ней прибавляется сдвиг участников). */
+	FVector ShotFrameLookPoint = FVector::ZeroVector;
+
+	/** Смещение камеры от точки взгляда, выбранное лестницей кандидатов. */
+	FVector ShotFrameCamOffset = FVector::ZeroVector;
+
+	/** Смесь «стрелок↔цель» для точки взгляда, выбранная по дистанции. */
+	float ShotFrameLookBias = 0.5f;
+
+	/** Кадр строится вокруг цели (дальний/squadsight выстрел). */
+	bool bShotFrameLongShot = false;
+
 	/** Камеру держит режиссура такта (см. FocusOnLocationDirected). */
 	bool bDirectorHold = false;
 
@@ -502,11 +783,11 @@ protected:
 	bool ApplyPendingCameraIntent();
 
 	/**
-	 * Ракурс ДО кадра для параметров, которыми игрок напрямую не управляет.
-	 * Yaw/zoom хранятся отдельно в TacticalYaw/TacticalZoom и потому не могут
-	 * случайно «унаследовать» временный action-camera ракурс.
+	 * Позиция ДО кадра — камера возвращается ровно туда, откуда её забрал кадр.
+	 * Наклон здесь НЕ хранится: вне кадра он однозначно выводится из зума и
+	 * отклонения игрока (`GetDesiredTacticalPitch`), поэтому запоминать его
+	 * значило бы завести второй источник правды для одной величины.
 	 */
-	float PreShotPitch = -55.f;
 	FVector PreShotLocation = FVector::ZeroVector;
 
 	/**
@@ -525,12 +806,57 @@ protected:
 	bool IsSegmentClear(const FVector& From, const FVector& To, float* OutBlockedFraction = nullptr) const;
 
 	/**
-	 * Отодвигает камеру назад по оси взгляда, пока ОБЕ фигуры не поместятся в
-	 * безопасную долю FOV (`ShotFrameFovSafety`). Это заменяет ручной подбор
-	 * «зум ближний/дальний»: композиция теперь следствие геометрии, а не таблицы.
+	 * Отодвигает камеру назад по оси взгляда, пока ВСЕ контрольные точки фигур не
+	 * поместятся в безопасную долю FOV (`ShotFrameFovSafety`). Это заменяет ручной
+	 * подбор «зум ближний/дальний»: композиция теперь следствие геометрии.
 	 */
 	FVector FitSubjectsInFrame(const FVector& CamPos, const FVector& LookPoint,
-		const FVector& SubjectA, const FVector& SubjectB) const;
+		const TArray<FVector, TInlineAllocator<6>>& Subjects) const;
+
+	/**
+	 * Контрольные точки фигуры для кадра: НОГИ, центр и ГОЛОВА по капсуле актора.
+	 *
+	 * XCOM вписывает юнита в кадр именно двумя точками (`X2Camera_Midpoint`:
+	 * `GetHeadLocation` + `GetFeetLocation`). Одной точки груди мало: камера
+	 * честно «влезала» серединой корпуса, а голова и оружие уходили за рамку —
+	 * это и читалось как «оружия не видно».
+	 *
+	 * ⚠️ Применяется к ОБЕИМ фигурам. Требование к стрелку дорогое (он рядом с
+	 * камерой), но без него его просто не видно в кадре — проверено прогоном
+	 * 2026-08-03, см. EnterShotFraming.
+	 */
+	void GetSubjectPoints(const AActor* Subject, const FVector& AimOverride,
+		TArray<FVector, TInlineAllocator<6>>& OutPoints) const;
+
+	/**
+	 * Множитель дистанций зума под текущий обзор игрока: во сколько раз надо
+	 * отодвинуть камеру, чтобы охват остался таким же, как на `ReferenceFov`.
+	 * Ширина видимого куска земли пропорциональна `Arm × tan(FOV/2)`, отсюда и
+	 * формула — отношение тангенсов полууглов.
+	 */
+	float GetZoomFovScale() const;
+
+	/** Границы зума с учётом текущего обзора (см. GetZoomFovScale). */
+	float GetEffectiveMinZoom() const { return MinZoom * GetZoomFovScale(); }
+	float GetEffectiveMaxZoom() const { return MaxZoom * GetZoomFovScale(); }
+
+	/** Положение зума в своём диапазоне, 0 — вплотную, 1 — максимально далеко. */
+	float GetZoomAlpha() const;
+
+	/** Базовый наклон для текущего зума (ближе — положе). */
+	float GetBasePitchForZoom() const;
+
+	/** Итоговый наклон вне кадра: база от зума + отклонение игрока, зажатое пределами. */
+	float GetDesiredTacticalPitch() const;
+
+	/**
+	 * Пересчитать позу камеры по живому кадру: точка взгляда берётся из ТЕКУЩИХ
+	 * позиций участников, камера — из сохранённого смещения (см. ShotFrameCamOffset).
+	 */
+	void UpdateShotFrameTracking();
+
+	/** Перевести пару «позиция камеры + точка взгляда» в цели пружины (yaw/pitch/arm/pivot). */
+	void ApplyShotFramePose(const FVector& CamPos, const FVector& LookPoint);
 
 	/** Подтягивает камеру вперёд, если между точкой взгляда и ею стена. */
 	FVector PullCameraOutOfGeometry(const FVector& LookPoint, const FVector& CamPos) const;
@@ -546,7 +872,7 @@ protected:
 	 */
 	float ScoreShotCandidate(const FVector& CamPos, const FVector& LookPoint,
 		const FVector& ShooterAim, const FVector& TargetAim, float SideSign,
-		bool bIgnoreShooter) const;
+		float PreferredSideSign, bool bIgnoreShooter) const;
 
 	/**
 	 * СТОРОНА СЪЁМКИ прошлого кадра (+1/−1) — ось правила 180°. 0 — кадра ещё не

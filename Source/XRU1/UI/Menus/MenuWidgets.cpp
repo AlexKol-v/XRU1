@@ -15,9 +15,12 @@
 #include "Components/CheckBox.h"
 #include "Components/ComboBoxString.h"
 #include "Components/Image.h"
+#include "Components/ProgressBar.h"
 #include "Components/Slider.h"
 #include "Components/TextBlock.h"
+#include "Blueprint/WidgetTree.h"
 #include "MediaPlayer.h"
+#include "MediaSoundComponent.h"
 #include "MediaSource.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
@@ -32,6 +35,14 @@ void UMenuScreenBase::RequestBack()
 	DeactivateWidget();
 }
 
+UPrimaryGameLayout* UMenuScreenBase::GetRootLayout() const
+{
+	const UGameInstance* GameInstance = GetGameInstance();
+	UGameUIManagerSubsystem* UIManager = GameInstance
+		? GameInstance->GetSubsystem<UGameUIManagerSubsystem>() : nullptr;
+	return UIManager ? UIManager->GetRootLayout() : nullptr;
+}
+
 UCommonActivatableWidget* UMenuScreenBase::PushScreen(TSubclassOf<UCommonActivatableWidget> ScreenClass)
 {
 	if (!ScreenClass)
@@ -39,9 +50,7 @@ UCommonActivatableWidget* UMenuScreenBase::PushScreen(TSubclassOf<UCommonActivat
 		return nullptr;
 	}
 
-	const UGameInstance* GameInstance = GetGameInstance();
-	UGameUIManagerSubsystem* UIManager = GameInstance ? GameInstance->GetSubsystem<UGameUIManagerSubsystem>() : nullptr;
-	UPrimaryGameLayout* RootLayout = UIManager ? UIManager->GetRootLayout() : nullptr;
+	UPrimaryGameLayout* RootLayout = GetRootLayout();
 	if (!RootLayout)
 	{
 		return nullptr;
@@ -104,19 +113,72 @@ void UMenuScreenBase::NativeConstruct()
 void UMenuScreenBase::NativeOnActivated()
 {
 	Super::NativeOnActivated();
+	ApplyScreenArt();
+}
+
+void UMenuScreenBase::ApplyScreenArt()
+{
+	// Собственный фон экрана больше не используется — прячем, чтобы картинка не
+	// шла в два слоя (в рукотворных экранах он остался с прежней схемы).
+	if (WidgetTree)
+	{
+		static const TCHAR* BackgroundNames[] = {
+			TEXT("Img_Background"), TEXT("PreviewBackground"), TEXT("Background"), TEXT("Img_Bg")
+		};
+		for (const TCHAR* Name : BackgroundNames)
+		{
+			if (UImage* Local = Cast<UImage>(WidgetTree->FindWidget(FName(Name))))
+			{
+				Local->SetVisibility(ESlateVisibility::Collapsed);
+			}
+		}
+	}
+
+	UPrimaryGameLayout* RootLayout = GetRootLayout();
+	if (!RootLayout)
+	{
+		return; // Designer preview или экран вне лейаута — просто без фона
+	}
+
+	// Полноэкранный экран закрывает игровой слой: HUD под ним всё равно не
+	// используется, а видно его быть не должно.
+	RootLayout->SetGameLayerHidden(this, bHidesGameLayer);
+
+	const UTacticalHUDStyleData* Theme = GetUITheme();
+	if (ScreenArtKind == EXRU1UIScreenArt::None || !Theme)
+	{
+		RootLayout->SetScreenBackdrop(this, nullptr, FLinearColor::White);
+		return;
+	}
+
+	const FXRU1UIScreenArtwork Artwork = Theme->GetScreenArtwork(ScreenArtKind);
+	RootLayout->SetScreenBackdrop(this, Artwork.Texture.LoadSynchronous(), Artwork.Tint);
 }
 
 void UMenuScreenBase::NativeOnDeactivated()
 {
-	// Паузу НЕ отпускаем: экран мог просто уйти под другой экран стека.
+	// Здесь НИЧЕГО не снимаем — ни паузу, ни фон.
+	//
+	// Пауза: экран мог просто уйти под другой экран стека.
+	// Фон: `SCommonAnimatedSwitcher` сначала полностью убирает уходящий экран и
+	// только потом активирует следующий («the next widget is not activated until
+	// the previous widget has transitioned fully out of view»). Снятие фона на
+	// деактивации попадало ровно в этот промежуток — экран проваливался в
+	// чёрное и лишь потом получал фон нового экрана. Снимаем в NativeDestruct,
+	// когда экран действительно ушёл со стека.
 	Super::NativeOnDeactivated();
 }
 
 void UMenuScreenBase::NativeDestruct()
 {
 	// Единственная точка снятия: экран уходит со стека (закрыт, travel, смена
-	// уровня). Пауза не должна пережить свой экран.
+	// уровня). Ни пауза, ни фон, ни спрятанный HUD не должны пережить свой экран.
 	ReleasePauseHold();
+	if (UPrimaryGameLayout* RootLayout = GetRootLayout())
+	{
+		RootLayout->ClearScreenBackdrop(this);
+		RootLayout->SetGameLayerHidden(this, false);
+	}
 	Super::NativeDestruct();
 }
 
@@ -163,6 +225,8 @@ void UMenuScreenBase::HandleButtonClicked()
 void UMainMenuWidget::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
+
+	ScreenArtKind = EXRU1UIScreenArt::MainMenu;
 
 	// Авто-биндинг: вёрстке достаточно каноничных имён, граф WBP пуст.
 	if (Btn_Continue) { Btn_Continue->OnClicked.AddUniqueDynamic(this, &UMainMenuWidget::HandleContinueClicked); RegisterButtonSounds(Btn_Continue); }
@@ -251,22 +315,144 @@ void UIntroPlayerWidget::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
 
+	ScreenArtKind = EXRU1UIScreenArt::IntroFallback;
+
 	// Пауза остановила бы и само видео: интро — единственный экран, который
 	// обязан жить своим временем.
 	bPauseGameWhileActive = false;
 
+	// Пропуск — по УДЕРЖАНИЮ, поэтому кнопка слушает Pressed/Released, а не
+	// Clicked. Звук клика ей тоже не вешаем: короткий щелчок здесь ничего не
+	// делает, и «клик прозвучал, но ничего не произошло» читается как баг.
 	if (Btn_Skip)
 	{
-		Btn_Skip->OnClicked.AddUniqueDynamic(this, &UIntroPlayerWidget::HandleSkipClicked);
-		RegisterButtonSounds(Btn_Skip);
+		Btn_Skip->OnPressed.AddUniqueDynamic(this, &UIntroPlayerWidget::HandleSkipPressed);
+		Btn_Skip->OnReleased.AddUniqueDynamic(this, &UIntroPlayerWidget::HandleSkipReleased);
+	}
+
+	// Без фокуса клавиатуры Space/Enter до виджета не доходят.
+	SetIsFocusable(true);
+
+	ResetSkipHoldUI();
+}
+
+bool UIntroPlayerWidget::IsSkipKey(const FKey& Key)
+{
+	// Только клавиатура: геймпада у проекта нет, а EKeys::Virtual_Accept в 5.7
+	// помечен устаревшим и роняет сборку с -WarningsAsErrors на следующей версии.
+	return Key == EKeys::SpaceBar || Key == EKeys::Enter;
+}
+
+FReply UIntroPlayerWidget::NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
+{
+	if (IsSkipKey(InKeyEvent.GetKey()))
+	{
+		// IsRepeat: автоповтор клавиши не должен перезапускать отсчёт с нуля.
+		if (!InKeyEvent.IsRepeat())
+		{
+			HandleSkipPressed();
+		}
+		return FReply::Handled();
+	}
+	return Super::NativeOnKeyDown(InGeometry, InKeyEvent);
+}
+
+FReply UIntroPlayerWidget::NativeOnKeyUp(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
+{
+	if (IsSkipKey(InKeyEvent.GetKey()))
+	{
+		HandleSkipReleased();
+		return FReply::Handled();
+	}
+	return Super::NativeOnKeyUp(InGeometry, InKeyEvent);
+}
+
+void UIntroPlayerWidget::HandleSkipPressed()
+{
+	UWorld* World = GetWorld();
+	if (!World || bIntroFinished || SkipHoldStartTime >= 0.0)
+	{
+		return;
+	}
+
+	SkipHoldStartTime = World->GetTimeSeconds();
+	if (Bar_SkipHold)
+	{
+		Bar_SkipHold->SetPercent(0.f);
+		Bar_SkipHold->SetVisibility(ESlateVisibility::HitTestInvisible);
+	}
+	if (Txt_SkipHint)
+	{
+		Txt_SkipHint->SetText(NSLOCTEXT("XRU1.Menu", "SkipHolding", "Отпустите, чтобы продолжить просмотр"));
+	}
+	// Прогресс обновляется таймером: у виджета TickFrequency по умолчанию Auto,
+	// и чисто нативный NativeTick без BP-графа может не вызываться вовсе.
+	World->GetTimerManager().SetTimer(SkipHoldTimer, FTimerDelegate::CreateUObject(
+		this, &UIntroPlayerWidget::TickSkipHold), 0.03f, /*bLoop=*/true);
+}
+
+void UIntroPlayerWidget::TickSkipHold()
+{
+	const UWorld* World = GetWorld();
+	if (!World || SkipHoldStartTime < 0.0)
+	{
+		return;
+	}
+	const float Held = static_cast<float>(World->GetTimeSeconds() - SkipHoldStartTime);
+	const float Ratio = SkipHoldDuration > 0.f ? FMath::Clamp(Held / SkipHoldDuration, 0.f, 1.f) : 1.f;
+	if (Bar_SkipHold)
+	{
+		Bar_SkipHold->SetPercent(Ratio);
+	}
+	if (Ratio >= 1.f)
+	{
+		CompleteSkipHold();
 	}
 }
 
-void UIntroPlayerWidget::HandleSkipClicked() { FinishIntro(); }
+void UIntroPlayerWidget::CompleteSkipHold()
+{
+	UE_LOG(LogXRU1UI, Display, TEXT("[Intro] пропуск удержанием (%.2f с)"), SkipHoldDuration);
+	ResetSkipHoldUI();
+	FinishIntro();
+}
+
+void UIntroPlayerWidget::HandleSkipReleased()
+{
+	if (SkipHoldStartTime < 0.0)
+	{
+		return;
+	}
+	ResetSkipHoldUI();
+}
+
+void UIntroPlayerWidget::ResetSkipHoldUI()
+{
+	SkipHoldStartTime = -1.0;
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(SkipHoldTimer);
+	}
+	if (Bar_SkipHold)
+	{
+		Bar_SkipHold->SetPercent(0.f);
+		Bar_SkipHold->SetVisibility(ESlateVisibility::Hidden);
+	}
+	if (Txt_SkipHint)
+	{
+		Txt_SkipHint->SetText(NSLOCTEXT("XRU1.Menu", "SkipHint",
+			"Удерживайте ЛКМ, ПРОБЕЛ или ENTER, чтобы пропустить"));
+	}
+}
 
 void UIntroPlayerWidget::NativeOnActivated()
 {
 	Super::NativeOnActivated();
+
+	// Фокус берём при каждом показе: экран мог открыться поверх меню, у
+	// которого фокус остался на кнопке «Новая игра».
+	SetKeyboardFocus();
+	ResetSkipHoldUI();
 
 	const UTacticalHUDStyleData* Theme = GetUITheme();
 	if (!Theme)
@@ -280,20 +466,49 @@ void UIntroPlayerWidget::NativeOnActivated()
 	UMediaSource* Source = Theme->IntroMediaSource.LoadSynchronous();
 	IntroPlayer = Theme->IntroMediaPlayer.LoadSynchronous();
 
+	// Чёрный экран интро может означать четыре разные поломки; без этой строки
+	// они неотличимы друг от друга.
+	UE_LOG(LogXRU1UI, Display,
+		TEXT("[Intro] цепочка: Img_Intro=%s материал='%s' плеер='%s' источник='%s'"),
+		Img_Intro ? TEXT("есть") : TEXT("НЕТ (в вёрстке нет виджета Img_Intro)"),
+		*GetNameSafe(VideoMaterial), *GetNameSafe(IntroPlayer), *GetNameSafe(Source));
+
 	if (Img_Intro && VideoMaterial && IntroPlayer && Source)
 	{
 		Img_Intro->SetBrushFromMaterial(VideoMaterial);
 		Img_Intro->SetVisibility(ESlateVisibility::HitTestInvisible);
 
+		IntroPlayer->OnMediaOpened.AddUniqueDynamic(this, &UIntroPlayerWidget::HandleMediaOpened);
 		IntroPlayer->OnEndReached.AddUniqueDynamic(this, &UIntroPlayerWidget::HandleMediaEndReached);
 		IntroPlayer->OnMediaOpenFailed.AddUniqueDynamic(this, &UIntroPlayerWidget::HandleMediaOpenFailed);
 		IntroPlayer->SetLooping(false);
+
+		const FString SourceUrl = Source->GetUrl();
+		const bool bCanPlay = Source->Validate();
 		if (!IntroPlayer->OpenSource(Source))
 		{
-			UE_LOG(LogXRU1UI, Warning, TEXT("[Intro] Не удалось открыть медиа-источник интро"));
-			HandleMediaOpenFailed(FString());
+			// OpenSource false — отказ ДО открытия файла (нет плагина плеера,
+			// пустой/некорректный URL). OnMediaOpenFailed приходит позже и
+			// означает уже другое: файл найден, но не читается.
+			UE_LOG(LogXRU1UI, Error,
+				TEXT("[Intro] OpenSource отказал сразу: url='%s' валиден=%d — проверь путь файла и плагины Media"),
+				*SourceUrl, bCanPlay ? 1 : 0);
+			HandleMediaOpenFailed(SourceUrl);
 			return;
 		}
+		UE_LOG(LogXRU1UI, Display, TEXT("[Intro] OpenSource принят: url='%s' валиден=%d"),
+			*SourceUrl, bCanPlay ? 1 : 0);
+
+		// Музыка меню обязана уйти: играть заставку под меню-трек — это не
+		// «слоями», а «две дорожки разом».
+		if (UTacticsAudioSubsystem* Audio = GetAudioSubsystem())
+		{
+			Audio->StopMusic();
+		}
+		CreateIntroSound();
+		// Этот Play() почти всегда холостой: OpenSource открывает файл АСИНХРОННО,
+		// и играть ещё нечего. Настоящий запуск — в HandleMediaOpened. Оставлен
+		// на случай уже открытого плеера (повторный показ экрана).
 		IntroPlayer->Play();
 	}
 	else
@@ -323,25 +538,101 @@ void UIntroPlayerWidget::NativeOnActivated()
 	}
 }
 
+void UIntroPlayerWidget::HandleMediaOpened(FString OpenedUrl)
+{
+	// Файл открыт — дальше «чёрный экран» может быть только на стороне
+	// материала/текстуры, и в лог попадает именно это разграничение.
+	const int32 VideoTracks = IntroPlayer ? IntroPlayer->GetNumTracks(EMediaPlayerTrack::Video) : 0;
+	const FTimespan Duration = IntroPlayer ? IntroPlayer->GetDuration() : FTimespan::Zero();
+	UE_LOG(LogXRU1UI, Display,
+		TEXT("[Intro] медиа открыто: url='%s' видео-дорожек=%d длительность=%.1f с играет=%d. ")
+		TEXT("Если экран чёрный при видео-дорожках > 0 — виноват материал (MediaTexture в Final Color, домен UI)"),
+		*OpenedUrl, VideoTracks, Duration.GetTotalSeconds(),
+		IntroPlayer && IntroPlayer->IsPlaying() ? 1 : 0);
+
+	if (VideoTracks <= 0)
+	{
+		UE_LOG(LogXRU1UI, Warning,
+			TEXT("[Intro] в открытом медиа нет видео-дорожек — кодек файла не поддержан плеером"));
+	}
+
+	// ⚠️ Запуск ровно здесь, а не сразу после OpenSource. Открытие медиа
+	// асинхронное: Play() до готовности плеера возвращает true и не делает
+	// ничего. Из-за этого интро показывало чёрный экран при полностью верной
+	// цепочке ассетов — ролик был открыт (ready=1, ошибок нет), но rate=0.
+	// На флаг PlayOnOpen самого MediaPlayer не полагаемся: он выключен по
+	// умолчанию и его легко потерять при пересоздании ассета.
+	if (IntroPlayer && !IntroPlayer->IsPlaying())
+	{
+		const bool bStarted = IntroPlayer->Play();
+		UE_LOG(LogXRU1UI, Display, TEXT("[Intro] запуск воспроизведения: %s"),
+			bStarted ? TEXT("принят") : TEXT("ОТКАЗ"));
+	}
+}
+
 void UIntroPlayerWidget::HandleMediaEndReached()
 {
+	UE_LOG(LogXRU1UI, Display, TEXT("[Intro] ролик доигран до конца"));
 	FinishIntro();
 }
 
-void UIntroPlayerWidget::HandleMediaOpenFailed(FString /*FailedUrl*/)
+void UIntroPlayerWidget::HandleMediaOpenFailed(FString FailedUrl)
 {
 	// Не держим игрока на пустом экране из-за отсутствующего файла/кодека.
+	UE_LOG(LogXRU1UI, Error, TEXT("[Intro] медиа НЕ открылось: url='%s' — ухожу в хаб"), *FailedUrl);
 	FinishIntro();
+}
+
+void UIntroPlayerWidget::CreateIntroSound()
+{
+	if (IntroSound || !IntroPlayer)
+	{
+		return;
+	}
+	APlayerController* PC = GetOwningPlayer();
+	UWorld* World = GetWorld();
+	if (!PC || !World)
+	{
+		return;
+	}
+
+	// MediaPlayer отдаёт только КАДРЫ. Звуковую дорожку забирает отдельный
+	// UMediaSoundComponent — без него ролик молчит, а причина «немого интро»
+	// нигде не видна: ошибок нет, воспроизведение идёт.
+	IntroSound = NewObject<UMediaSoundComponent>(PC, TEXT("IntroMediaSound"));
+	IntroSound->SetMediaPlayer(IntroPlayer);
+	// Категория «голос»: в ролике закадровый текст, и им должен управлять
+	// соответствующий ползунок, а не музыкальный.
+	if (const UTacticsAudioSubsystem* Audio = GetAudioSubsystem())
+	{
+		if (const UTacticsAudioSettingsDataAsset* Asset = Audio->GetAudioSettingsAsset())
+		{
+			IntroSound->SoundClass = Asset->VoiceClass;
+		}
+	}
+	IntroSound->RegisterComponentWithWorld(World);
+	IntroSound->Start();
+
+	UE_LOG(LogXRU1UI, Display, TEXT("[Intro] звуковая дорожка подключена (SoundClass '%s')"),
+		*GetNameSafe(IntroSound->SoundClass));
 }
 
 void UIntroPlayerWidget::StopIntroPlayback()
 {
+	if (IntroSound)
+	{
+		IntroSound->Stop();
+		IntroSound->DestroyComponent();
+		IntroSound = nullptr;
+	}
 	if (UWorld* World = GetWorld())
 	{
 		World->GetTimerManager().ClearTimer(IntroTimeoutTimer);
+		World->GetTimerManager().ClearTimer(SkipHoldTimer);
 	}
 	if (IntroPlayer)
 	{
+		IntroPlayer->OnMediaOpened.RemoveDynamic(this, &UIntroPlayerWidget::HandleMediaOpened);
 		IntroPlayer->OnEndReached.RemoveDynamic(this, &UIntroPlayerWidget::HandleMediaEndReached);
 		IntroPlayer->OnMediaOpenFailed.RemoveDynamic(this, &UIntroPlayerWidget::HandleMediaOpenFailed);
 		IntroPlayer->Close();
@@ -377,6 +668,8 @@ void UIntroPlayerWidget::FinishIntro()
 void UDifficultySelectWidget::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
+
+	ScreenArtKind = EXRU1UIScreenArt::Difficulty;
 
 	if (Btn_Easy)   { Btn_Easy->OnClicked.AddUniqueDynamic(this, &UDifficultySelectWidget::HandleEasyClicked);     RegisterButtonSounds(Btn_Easy); }
 	if (Btn_Medium) { Btn_Medium->OnClicked.AddUniqueDynamic(this, &UDifficultySelectWidget::HandleMediumClicked); RegisterButtonSounds(Btn_Medium); }
@@ -426,6 +719,8 @@ void UAboutMenuWidget::NativePreConstruct()
 void UAboutMenuWidget::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
+
+	ScreenArtKind = EXRU1UIScreenArt::About;
 	if (Btn_Back)
 	{
 		Btn_Back->OnClicked.AddUniqueDynamic(this, &UAboutMenuWidget::HandleBackClicked);
@@ -438,6 +733,8 @@ void UAboutMenuWidget::NativeOnInitialized()
 void UPauseMenuWidget::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
+
+	ScreenArtKind = EXRU1UIScreenArt::Pause;
 
 	bPauseGameWhileActive = true;
 
@@ -486,6 +783,8 @@ void USettingsMenuWidget::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
 
+	ScreenArtKind = EXRU1UIScreenArt::Settings;
+
 	// Настройки открываются и поверх боя, и поверх хаба: пока экран открыт,
 	// мир под ним стоит.
 	bPauseGameWhileActive = true;
@@ -511,6 +810,21 @@ void USettingsMenuWidget::NativeOnInitialized()
 		Cmb_Quality->AddOption(TEXT("Высокое"));
 		Cmb_Quality->AddOption(TEXT("Эпическое"));
 	}
+
+	// Камера: те же два события, что и у звука — «тащат» применяем сразу, «отпустил»
+	// пишем на диск. Игрок подбирает обзор и чувствительность глазами, поэтому
+	// откладывать применение до кнопки «Применить» нельзя.
+	USlider* const CameraSliders[] = { Sld_CameraFov, Sld_CameraSensitivity, Sld_CameraPitchSensitivity };
+	for (USlider* Slider : CameraSliders)
+	{
+		if (Slider)
+		{
+			Slider->OnValueChanged.AddUniqueDynamic(this, &USettingsMenuWidget::HandleCameraSliderValue);
+			Slider->OnMouseCaptureEnd.AddUniqueDynamic(this, &USettingsMenuWidget::HandleCameraCaptureEnd);
+		}
+	}
+	if (Chk_InvertPitch) { Chk_InvertPitch->OnCheckStateChanged.AddUniqueDynamic(this, &USettingsMenuWidget::HandleCameraCheckChanged); }
+	if (Chk_EdgeScroll)  { Chk_EdgeScroll->OnCheckStateChanged.AddUniqueDynamic(this, &USettingsMenuWidget::HandleCameraCheckChanged); }
 
 	if (Btn_Apply) { Btn_Apply->OnClicked.AddUniqueDynamic(this, &USettingsMenuWidget::HandleApplyClicked); RegisterButtonSounds(Btn_Apply); }
 	if (Btn_Reset) { Btn_Reset->OnClicked.AddUniqueDynamic(this, &USettingsMenuWidget::HandleResetClicked); RegisterButtonSounds(Btn_Reset); }
@@ -556,6 +870,29 @@ void USettingsMenuWidget::RefreshControlsFromSettings()
 	if (Sld_ResolutionScale) { Sld_ResolutionScale->SetValue(Video.ResolutionScale); }
 	if (Chk_Fullscreen)      { Chk_Fullscreen->SetIsChecked(Video.bFullscreen); }
 	if (Chk_VSync)           { Chk_VSync->SetIsChecked(Video.bVSync); }
+
+	// Камера: слайдеры работают в 0..1, реальные величины — на границах
+	// CameraFovMin/Max и CameraSensitivityMin/Max (обратная операция — в Collect).
+	const FTacticsCameraSettings CameraSettings = GetCameraSettings();
+	if (Sld_CameraFov)
+	{
+		Sld_CameraFov->SetValue(FMath::GetMappedRangeValueClamped(
+			FVector2f(CameraFovMin, CameraFovMax), FVector2f(0.f, 1.f), CameraSettings.FieldOfView));
+	}
+	if (Sld_CameraSensitivity)
+	{
+		Sld_CameraSensitivity->SetValue(FMath::GetMappedRangeValueClamped(
+			FVector2f(CameraSensitivityMin, CameraSensitivityMax), FVector2f(0.f, 1.f),
+			CameraSettings.RotationSensitivity));
+	}
+	if (Sld_CameraPitchSensitivity)
+	{
+		Sld_CameraPitchSensitivity->SetValue(FMath::GetMappedRangeValueClamped(
+			FVector2f(CameraSensitivityMin, CameraSensitivityMax), FVector2f(0.f, 1.f),
+			CameraSettings.PitchSensitivity));
+	}
+	if (Chk_InvertPitch) { Chk_InvertPitch->SetIsChecked(CameraSettings.bInvertPitch); }
+	if (Chk_EdgeScroll)  { Chk_EdgeScroll->SetIsChecked(CameraSettings.bEdgeScroll); }
 }
 
 FTacticsAudioSettings USettingsMenuWidget::CollectAudioSettings() const
@@ -602,9 +939,66 @@ void USettingsMenuWidget::HandleAudioCaptureEnd()
 	ApplyAudioSettings(CollectAudioSettings(), /*bSaveToSlot=*/true);
 }
 
+FTacticsCameraSettings USettingsMenuWidget::CollectCameraSettings() const
+{
+	// База — текущие настройки: контрол, которого нет в вёрстке, не должен
+	// обнулять чужое значение (то же правило, что у звука и изображения).
+	FTacticsCameraSettings Settings = GetCameraSettings();
+	if (Sld_CameraFov)
+	{
+		Settings.FieldOfView = FMath::GetMappedRangeValueClamped(
+			FVector2f(0.f, 1.f), FVector2f(CameraFovMin, CameraFovMax), Sld_CameraFov->GetValue());
+	}
+	if (Sld_CameraSensitivity)
+	{
+		Settings.RotationSensitivity = FMath::GetMappedRangeValueClamped(
+			FVector2f(0.f, 1.f), FVector2f(CameraSensitivityMin, CameraSensitivityMax),
+			Sld_CameraSensitivity->GetValue());
+	}
+	if (Sld_CameraPitchSensitivity)
+	{
+		Settings.PitchSensitivity = FMath::GetMappedRangeValueClamped(
+			FVector2f(0.f, 1.f), FVector2f(CameraSensitivityMin, CameraSensitivityMax),
+			Sld_CameraPitchSensitivity->GetValue());
+	}
+	if (Chk_InvertPitch) { Settings.bInvertPitch = Chk_InvertPitch->IsChecked(); }
+	if (Chk_EdgeScroll)  { Settings.bEdgeScroll = Chk_EdgeScroll->IsChecked(); }
+	return Settings;
+}
+
+void USettingsMenuWidget::HandleCameraSliderValue(float /*NewValue*/)
+{
+	if (bUpdatingControls)
+	{
+		return; // программная расстановка контролов, а не действие игрока
+	}
+	ApplyCameraSettings(CollectCameraSettings(), /*bSaveToSlot=*/false);
+}
+
+void USettingsMenuWidget::HandleCameraCaptureEnd()
+{
+	if (bUpdatingControls)
+	{
+		return;
+	}
+	ApplyCameraSettings(CollectCameraSettings(), /*bSaveToSlot=*/true);
+}
+
+void USettingsMenuWidget::HandleCameraCheckChanged(bool /*bIsChecked*/)
+{
+	if (bUpdatingControls)
+	{
+		return;
+	}
+	// Галочка — законченное действие, промежуточного состояния у неё нет:
+	// применяем и сразу сохраняем.
+	ApplyCameraSettings(CollectCameraSettings(), /*bSaveToSlot=*/true);
+}
+
 void USettingsMenuWidget::HandleApplyClicked()
 {
 	ApplyVideoSettings(CollectVideoSettings(), /*bSaveToSlot=*/true);
+	ApplyCameraSettings(CollectCameraSettings(), /*bSaveToSlot=*/true);
 }
 
 void USettingsMenuWidget::HandleResetClicked()
@@ -630,6 +1024,36 @@ FTacticsVideoSettings USettingsMenuWidget::GetVideoSettings() const
 		return UserSettings->GetVideoSettings();
 	}
 	return FTacticsVideoSettings();
+}
+
+FTacticsCameraSettings USettingsMenuWidget::GetCameraSettings() const
+{
+	if (const UTacticsUserSettings* UserSettings = UTacticsUserSettings::Get())
+	{
+		return UserSettings->GetCameraSettings();
+	}
+	return FTacticsCameraSettings();
+}
+
+void USettingsMenuWidget::ApplyCameraSettings(const FTacticsCameraSettings& NewSettings, bool bSaveToSlot)
+{
+	UTacticsUserSettings* UserSettings = UTacticsUserSettings::Get();
+	if (!UserSettings)
+	{
+		return;
+	}
+
+	// Запись + применение к живой камере одним вызовом (см. SetCameraSettings):
+	// экран настроек открывается поверх боя, и обзор обязан меняться на глазах.
+	UserSettings->SetCameraSettings(NewSettings, this);
+	if (bSaveToSlot)
+	{
+		UserSettings->SaveSettings();
+		UE_LOG(LogXRU1UI, Display,
+			TEXT("[Settings] камера: обзор=%.0f° чувствительность=%.2f/%.2f инверсия=%d край=%d"),
+			NewSettings.FieldOfView, NewSettings.RotationSensitivity, NewSettings.PitchSensitivity,
+			NewSettings.bInvertPitch ? 1 : 0, NewSettings.bEdgeScroll ? 1 : 0);
+	}
 }
 
 void USettingsMenuWidget::ApplyAudioSettings(const FTacticsAudioSettings& NewSettings, bool bSaveToSlot)

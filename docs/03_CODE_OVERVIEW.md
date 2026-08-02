@@ -25,7 +25,7 @@
 | `ATacticsGameMode` | состав сторон, сложность, запуск боя, mission outcome |
 | `UTurnManagerSubsystem` | текущая сторона/активация, лимит атакующих, конец боя |
 | `ATacticalPlayerController` | выбор, targeting mode, команды, hover/path preview, auto-advance |
-| `ATacticalCameraPawn` | тактический yaw/zoom, focus/follow, временный shot framing |
+| `ATacticalCameraPawn` | ракурс игрока (yaw/наклон/зум/обзор/этаж), focus/follow, кадр выстрела и арбитраж владения камерой |
 | `AUnitBase` | параметры юнита, GAS, visual state, оружие, cover anchor и BP-события презентации |
 | `UActionPointsComponent` | AP и единый контракт затрат |
 | `UCoverDetectionComponent` | локальное Half/Full cover, стороны стены и peek edge |
@@ -229,6 +229,23 @@ quest-событий, поэтому отменённое действие не 
 
 Ассетов звука под бой в проекте пока нет: каркас рассчитан на подстановку
 файлов в Data Asset без единой правки кода.
+
+## 9.6. Визуал выстрела
+
+Слой зеркален звуковому: «когда рисуем» — тот же подтверждённый `FireCommit`,
+«что рисуем» — Data Asset. План этапа — [04_ROADMAP §5.6](04_ROADMAP.md).
+
+| Блок | Файл | Роль |
+|---|---|---|
+| `UUnitVfxDataAsset` | [UnitVfxDataAsset.h](../Source/XRU1/FX/UnitVfxDataAsset.h) | вспышка, трассер, импакты по `EPhysicalSurface`; имена и значения user-параметров Niagara + их применение к компоненту |
+| `AShotTracerActor` | [ShotTracerActor.h](../Source/XRU1/FX/ShotTracerActor.h) | носитель трассера: летит от дула к точке удара, по прилёте гасит эмиссию и даёт шлейфу дожить |
+| `AUnitBase::PlayShotVfx` | [UnitBase.h](../Source/XRU1/Tactics/UnitBase.h) | единственный вход: одна трассировка задаёт и конец трассера, и точку импакта; импакт откладывается на время полёта |
+
+Ключевое, что легко потерять: трассерные системы Niagara Examples **сами считают
+полёт** по своим user-параметрам (`User.SpawnPosition`, `User.Hit`,
+`User.InitialSpeed`, `User.TrailDuration`). Не передать их — значит получить
+трассер по дефолтным точкам системы, то есть «мимо выстрела». Тип параметра
+(Position или Vector) спрашивается у самой системы через `GetExposedParameters()`.
 
 ## 10. UI
 

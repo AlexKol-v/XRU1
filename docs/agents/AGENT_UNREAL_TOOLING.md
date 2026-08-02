@@ -159,7 +159,7 @@ script execution», либо правкой того же ini.
 | **Верстать UMG** (WidgetTree) | `blueprint` домен видит только `EventGraph`; `graph_name:"WidgetTree"` → `Graph not found`. Python: `unreal.WidgetTree` **не экспонирован**, `get_editor_property('root_widget')` падает. Чтение: `unreal.find_object(bp,'WidgetTree')`, затем `unreal.find_object(tree,'Btn_Continue')` по известному имени. **Запись СНЯТА 2026-08-01**: собственная editor-библиотека `UXRU1WidgetAuthoringLibrary` строит вёрстку из C++ и вызывается из Python — рецепт §5.2.3 |
 | **Bound-события виджетов** (`OnClicked`) | `blueprint add_node` знает только `CallFunction`, `Branch`, `Event(BeginPlay/Tick/EndPlay)`, `VariableGet/Set`, `Sequence`, `Add/Subtract/Multiply/Divide`, `PrintString`. `K2Node_ComponentBoundEvent`, `Bind Event`, `Create Delegate` — нет. Python тоже нет: **классы `K2Node*` не экспонированы**. **Принятый в проекте обход — авто-биндинг в C++** (`NativeOnInitialized` + `BindWidgetOptional` по каноничным именам): так работают все экраны меню (`MenuWidgets.cpp`), графы WBP пустые |
 | `set_asset_property` для `TSoftObjectPtr<>` и `FText` | `Unsupported property type` при любом формате. **Обход — Python на CDO** (§5.2.4): `set_editor_property` спокойно принимает и загруженный `UWorld` в `TSoftObjectPtr`, и `unreal.Text(...)` в `FText` |
-| Запуск PIE | в этом плагине нет управления Play-in-Editor (в официальном MCP от Epic для 5.8 — есть) |
+| ~~Запуск PIE~~ | **СНЯТО 2026-08-02.** У плагина своего инструмента нет, но Python его и не требует: `unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)` даёт `editor_request_begin_play()` / `editor_request_end_play()` / `is_in_play_in_editor()`. Запуск отложенный (мир меняется уже после скрипта), поэтому краш из §5.2.5 не срабатывает — проверено многократно. Рецепт прогона — §5.5 |
 | `blueprint_query get_nodes` | максимум 100 нод, `offset` игнорируется. Длинный граф — только через `search_nodes` |
 | **Сборка StateTree** (состояния, задачи, переходы) | Создать НОВЫЕ states из Python нельзя (`SubTrees`/`Children` protected). Но **правка существующего графа возможна** (проверено 2026-08-01, машина 2): states достаются `find_object` по имени объекта, `Tasks`/`Transitions`/`TasksCompletion`/`Name` читаются и ПИШУТСЯ целыми массивами; значения ВНУТРИ `FInstancedStruct` правятся через `struct.export_text()` → замена текста → `struct.import_text()` (обходит и `CPF_DisableEditOnInstance`). Задачи можно копировать между states целыми элементами `StateTreeEditorNode` (не забыть новый GUID ноды). Полное чтение графа — `AssetTools.export_assets` в T3D (UTF-16). Рецепт — §5.4 |
 | Перенос акторов **в persistent** | `move_selected_actors_to_level`/`move_actors_to_level` принимают только `ULevelStreaming`, persistent им не является. Обход: сделать persistent текущим (`LevelEditorSubsystem.set_current_level_by_name`), пересоздать актора там и удалить исходный |
@@ -330,6 +330,28 @@ Python фабрикой: `unreal.WidgetBlueprintFactory()` +
 ⚠️ В комментариях UHT-заголовков не писать `Btn_*/Sld_*` слитно — «`*` + `/`»
 закрывает блочный комментарий и ломает компиляцию (пойман 2026-08-01).
 
+**Не только сборка с нуля.** `AddScreenBackground(AssetPath)` вставляет
+`Img_Background` в УЖЕ собранную (в том числе рукотворную) вёрстку, не разрушая
+её: Overlay-корню ребёнок сдвигается в индекс 0, Canvas-корню ставится
+ZOrder −100, любой другой корень заворачивается в новый Overlay. Тем же приёмом
+пишутся будущие «точечные» правки чужих экранов.
+
+⚠️ Виджету, созданному кодом, надо **самому проставить GUID** (`Blueprint->
+WidgetVariableNameToGuidMap.Add(Name, FGuid::NewGuid())` перед компиляцией):
+иначе компилятор UMG 5.7 на каждый такой виджет пишет ensure «was added but did
+not get a GUID» с полным стеком — десятки килобайт мусора в Output Log за один
+вызов. Сделано в `FinalizeBlueprint`; перебор — `ForEachObjectWithOuter` по
+WidgetTree, как у самого компилятора: обход по живой иерархии
+(`WidgetTree->ForEachWidget`) не видит виджеты прежней вёрстки, оставшиеся под
+деревом после пересборки.
+
+Полностью шум это не снимает: при ПЕРЕСБОРКЕ экрана остаётся зеркальный ensure
+«was deleted but still has a GUID» — служебные виджеты получают автоимена
+(`Row_N`, `Box_N`) со сквозного счётчика, поэтому от прошлой сборки в карте GUID
+остаются имена, которых больше нет. Движок эти записи чинит сам, на игру они не
+влияют. Радикальное лечение — детерминированные имена служебных виджетов (сброс
+счётчика на каждую сборку); пока не сделано.
+
 ### 5.2.4 `TSoftObjectPtr` и `FText` на CDO из Python (2026-08-01)
 
 `set_asset_property` их не берёт, Python на CDO — берёт:
@@ -375,6 +397,75 @@ EXCEPTION_ACCESS_VIOLATION
   найти. `DefaultGameMode` ставится инструментом
   `set_property {actor_name:"WorldSettings", property:"DefaultGameMode", value:"/Game/.../BP_X.BP_X_C"}`
   (в `get_level_actors` актор при этом виден).
+
+### 5.2.6 PIE прямо из агента и как увидеть UI (2026-08-02)
+
+Полный прогон фронтенда проходится без человека за мышью.
+
+```python
+les = unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)
+les.editor_request_begin_play()      # отложенный запуск, безопасен в execute_script
+gw  = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_game_world()
+les.editor_request_end_play()
+```
+
+- ⚠️ **`capture_viewport` НЕ показывает Slate-UI** — только 3D. Меню на нём
+  выглядит чёрным экраном, и это ложная улика. Скриншот с интерфейсом:
+  `unreal.SystemLibrary.execute_console_command(gw, 'shot showui')` →
+  `Saved/Screenshots/WindowsEditor/ScreenShot*.png`, читается обычным `Read`.
+  Мир обязателен **игровой** (`get_game_world()`): с редакторским миром команда
+  снимет вьюпорт редактора, а `HighResShot` не рисует UI вовсе.
+- **Нажимать кнопки не нужно — можно звать методы виджетов.** Живые экраны
+  лежат в дереве корневого лейаута, а он — под GameInstance:
+  `find_object(gi, 'WBP_PrimaryGameLayout_C_0')` → `find_object(layout,
+  'WidgetTree_0')` → `find_object(tree, 'WBP_MainMenu_C_0')`, дальше любые
+  `BlueprintCallable` (`request_new_game()`, `choose_difficulty(...)`,
+  `finish_intro()`, `start_operation()`). Индекс лейаута растёт на каждую смену
+  уровня — искать перебором `_C_0.._C_5`, иначе найдёшь мёртвый лейаут
+  прошлого мира.
+- Смена уровня внутри PIE (для проверки travel): консольное `open /Game/…`.
+- Контроллер и акторы — как обычно, `unreal.GameplayStatics.get_player_controller(gw, 0)`
+  и `get_all_actors_of_class(gw, …)`.
+
+### 5.2.6a ⚠️ CDO НЕ показывает компоненты, добавленные в BP (2026-08-03)
+
+`cdo.get_components_by_class(...)` возвращает **только компоненты из C++
+конструктора**. Всё, что дизайнер добавил в редакторе Blueprint, живёт в SCS и на
+CDO отсутствует — «компонента нет» по такому скану **ложный вывод** (поймано на
+`Gun`: ChildActorComponent с оружием у всех юнитов был на месте).
+
+Надёжный способ — посмотреть на живом акторе, временно заспавнив его в
+редакторском мире (child actors там создаются, как в игре):
+
+```python
+eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
+a = eas.spawn_actor_from_class(unreal.load_class(None, '/Game/.../BP_Unit_Assault.BP_Unit_Assault_C'),
+                               unreal.Vector(0, 0, -50000))   # подальше от чужой геометрии
+for c in a.get_all_child_actors(True):
+    print(c.get_name(), [x.get_name() for x in c.get_components_by_class(unreal.SceneComponent)])
+eas.destroy_actor(a)
+```
+
+Дёшево и без редактора: имена SCS-компонентов лежат в `.uasset` как
+`<Name>_GEN_VARIABLE` (§3), а класс child actor — рядом (`ChildActorClass`).
+
+### 5.2.7 Ловушки канала 2 (HTTP), стоившие времени
+
+- **PowerShell + `ConvertTo-Json` + CRLF = «Request body too large».** В PS 5.1
+  строка с `\r\n` раздувается при сериализации до мегабайтов (784 символа → 2.2 МБ),
+  и сервер отбивает запрос по лимиту 1 МБ. Лечится нормализацией:
+  `(Get-Content -Raw $p) -replace "\`r\`n", "\`n"`.
+- **`str()` unreal-структур мост режет.** `print("%s" % vector)` даёт пустую
+  строку, а `print("%s" % uclass)` — иногда пустую, иногда полную. Значения
+  форматировать вручную (`"%.1f" % v.x`, `obj.get_path_name()`), иначе
+  «свойство пустое» окажется ложным выводом. Кириллица в `print` местами
+  приходит мохнатой — в диагностике безопаснее английский.
+- Имена Python-обёрток: `unreal.CollisionResponse` не enum (членов
+  `BLOCK`/`ECR_BLOCK` нет) — переключать профилем
+  `set_collision_profile_name('BlockAll'/'NoCollision')`. У `HitResult` нет ни
+  `impact_point`, ни `get_editor_property('impact_point')`, и
+  `SystemLibrary.break_hit_result` не существует: брать `hit.to_tuple()`,
+  где `[4]` = Location, `[5]` = ImpactPoint, `[9]` = актор, `[10]` = компонент.
 
 ### 5.3 Уровни при живом пользователе
 

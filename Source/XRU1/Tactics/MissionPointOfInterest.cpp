@@ -82,7 +82,32 @@ void AMissionPointOfInterest::SetHovered(bool bHovered)
 	}
 
 	PopupWidget->SetVisibility(bHovered);
+	OnVisualStateChanged();
 	OnHoverChanged.Broadcast(bHovered);
+}
+
+void AMissionPointOfInterest::SetSelected(bool bInSelected)
+{
+	if (bIsSelected == bInSelected)
+	{
+		return;
+	}
+	bIsSelected = bInSelected;
+	OnVisualStateChanged();
+}
+
+bool AMissionPointOfInterest::IsCompleted() const
+{
+	const UTacticsGameInstance* GI = GetGameInstance<UTacticsGameInstance>();
+	const UTacticsSaveGame* Save = GI ? GI->CurrentSave : nullptr;
+	if (!Save)
+	{
+		return false;
+	}
+	// Идентификатор миссии принадлежит сценарию; MissionId остаётся legacy-путём
+	// для точек, у которых сценарий не назначен.
+	const FName Id = Scenario && !Scenario->ScenarioId.IsNone() ? Scenario->ScenarioId : MissionId;
+	return !Id.IsNone() && Save->IsMissionCompleted(Id);
 }
 
 bool AMissionPointOfInterest::IsLocked() const

@@ -10,6 +10,7 @@
 #include "Sound/SoundMix.h"
 #include "TacticsDebug.h"
 #include "TacticsGameInstance.h"
+#include "TacticsSaveGame.h"
 #include "XRU1Log.h"
 
 namespace
@@ -257,9 +258,11 @@ void UTacticsAudioSubsystem::ApplyAudioSettings(const FTacticsAudioSettings& Set
 	// отсутствию микса/мира, и настройки молча терялись.
 	ApplyClassVolume(Asset->MasterClass, Settings.MasterVolume);
 	ApplyClassVolume(Asset->MusicClass, Settings.MusicVolume);
-	ApplyClassVolume(Asset->SfxClass, Settings.SfxVolume);
 	ApplyClassVolume(Asset->UIClass, Settings.UIVolume);
-	ApplyClassVolume(Asset->VoiceClass, Settings.VoiceVolume);
+	// Пока держится пауза, боевые категории остаются приглушёнными: иначе
+	// движение ползунка в открытых настройках вернуло бы звук боя под меню.
+	ApplyClassVolume(Asset->SfxClass, bGameplayAudioPaused ? 0.f : Settings.SfxVolume);
+	ApplyClassVolume(Asset->VoiceClass, bGameplayAudioPaused ? 0.f : Settings.VoiceVolume);
 
 	UE_LOG(LogXRU1Audio, Log,
 		TEXT("Громкости применены: master=%.2f music=%.2f sfx=%.2f ui=%.2f voice=%.2f"),
@@ -348,25 +351,27 @@ void UTacticsAudioSubsystem::SetGameplayAudioPaused(bool bPaused)
 		Voice->SetPaused(bPaused);
 	}
 
-	// Громкости игрока НЕ трогаем. Прежняя схема переписывала их на время паузы
-	// и, если снятие не приходило (или приходило в другом GameInstance), звук
-	// оставался выключенным навсегда. Transient-громкость устройства обратима
-	// по определению: она не хранится и не сохраняется.
-	// Мир берём тот же, что и для громкостей: GetWorld() подсистемы указывает
-	// не туда ровно в тех же случаях (см. GetAudioWorld).
-	if (UWorld* World = GetAudioWorld())
+	// ⚠️ Глушим ТОЛЬКО боевые категории. Прежняя схема гасила transient-громкость
+	// всего аудио-устройства (`SetTransientPrimaryVolume(0)`) — вместе с музыкой
+	// и интерфейсом. Симптом: открыл настройки в главном меню — музыка пропала,
+	// хотя никакого геймплея под меню нет (поймано 2026-08-02). Пауза обязана
+	// приглушать бой, а не выключать звук игры целиком.
+	//
+	// Значения возвращаются из AppliedSettings, а не запоминаются отдельно:
+	// любой повторный `ApplyAudioSettings` (смена мира, правка ползунка) всё
+	// равно перезапишет их — «залипнуть на нуле» неоткуда.
+	const UTacticsAudioSettingsDataAsset* Asset = GetAudioSettingsAsset();
+	if (Asset)
 	{
-		if (FAudioDeviceHandle Device = World->GetAudioDevice())
-		{
-			Device->SetTransientPrimaryVolume(bPaused ? 0.f : 1.f);
-		}
+		ApplyClassVolume(Asset->SfxClass, bPaused ? 0.f : AppliedSettings.SfxVolume);
+		ApplyClassVolume(Asset->VoiceClass, bPaused ? 0.f : AppliedSettings.VoiceVolume);
 	}
 
 	UE_LOG(LogXRU1Audio, Display,
-		TEXT("[Audio] звук %s | голос: %s | громкости игрока не менялись (Master=%.2f Sfx=%.2f)"),
-		bPaused ? TEXT("ПРИГЛУШЁН (transient=0)") : TEXT("ВОССТАНОВЛЕН (transient=1)"),
+		TEXT("[Audio] боевой звук %s | голос: %s | музыка и интерфейс звучат (Music=%.2f UI=%.2f)"),
+		bPaused ? TEXT("ПРИГЛУШЁН (Sfx/Voice = 0)") : TEXT("ВОССТАНОВЛЕН"),
 		Voice ? (bPaused ? TEXT("на паузе") : TEXT("продолжен")) : TEXT("нет активной реплики"),
-		AppliedSettings.MasterVolume, AppliedSettings.SfxVolume);
+		AppliedSettings.MusicVolume, AppliedSettings.UIVolume);
 }
 
 void UTacticsAudioSubsystem::PlayCueAtLocation(const FTacticsSoundCue& Cue,
@@ -380,7 +385,7 @@ void UTacticsAudioSubsystem::PlayCueAtLocation(const FTacticsSoundCue& Cue,
 
 	const float Pitch = 1.f + FMath::FRandRange(-Cue.PitchVariance, Cue.PitchVariance);
 	UGameplayStatics::PlaySoundAtLocation(GetAudioWorld(), Sound, Location, FRotator::ZeroRotator,
-		Cue.VolumeMultiplier, Pitch, /*StartTime=*/0.f, Attenuation);
+		Cue.VolumeMultiplier, Pitch, Cue.StartOffset, Attenuation);
 }
 
 void UTacticsAudioSubsystem::PlayCueAttached(const FTacticsSoundCue& Cue, AActor* Actor,
@@ -399,7 +404,7 @@ void UTacticsAudioSubsystem::PlayCueAttached(const FTacticsSoundCue& Cue, AActor
 	const float Pitch = 1.f + FMath::FRandRange(-Cue.PitchVariance, Cue.PitchVariance);
 	UGameplayStatics::SpawnSoundAttached(Sound, Actor->GetRootComponent(), NAME_None,
 		FVector::ZeroVector, EAttachLocation::SnapToTarget, /*bStopWhenAttachedToDestroyed=*/false,
-		Cue.VolumeMultiplier, Pitch, /*StartTime=*/0.f, Attenuation);
+		Cue.VolumeMultiplier, Pitch, Cue.StartOffset, Attenuation);
 }
 
 void UTacticsAudioSubsystem::PlayCue2D(const FTacticsSoundCue& Cue)
@@ -411,7 +416,9 @@ void UTacticsAudioSubsystem::PlayCue2D(const FTacticsSoundCue& Cue)
 	}
 
 	const float Pitch = 1.f + FMath::FRandRange(-Cue.PitchVariance, Cue.PitchVariance);
-	UGameplayStatics::PlaySound2D(GetAudioWorld(), Sound, Cue.VolumeMultiplier, Pitch);
+	// StartOffset пропускает тишину в начале файла — иначе интерфейсный звук
+	// приходит с задержкой, которую слышно как «кнопка отзывается не сразу».
+	UGameplayStatics::PlaySound2D(GetAudioWorld(), Sound, Cue.VolumeMultiplier, Pitch, Cue.StartOffset);
 }
 
 void UTacticsAudioSubsystem::PlayUIHover()
@@ -505,6 +512,47 @@ UAudioComponent* UTacticsAudioSubsystem::PlayVoice2D(USoundBase* Voice, float Vo
 		/*bPersistAcrossLevelTransition=*/false, /*bAutoDestroy=*/true);
 	VoiceComponent = Component;
 	return Component;
+}
+
+void UTacticsAudioSubsystem::PlayHubArrivalVoiceOnce()
+{
+	if (bHubArrivalVoicePlayed)
+	{
+		return;
+	}
+
+	// Главный признак — СЛОТ кампании, а не сессия: «Продолжить» приводит в хаб
+	// игрока, который вводную уже слышал, и повторять её незачем. Сессионный
+	// флаг этого не различает — он одинаково пуст в обоих случаях и остаётся
+	// здесь лишь как страховка от повтора в пределах одного запуска.
+	UTacticsGameInstance* GameInstance = Cast<UTacticsGameInstance>(GetGameInstance());
+	UTacticsSaveGame* Save = GameInstance ? GameInstance->CurrentSave : nullptr;
+	if (Save && Save->bHubBriefed)
+	{
+		bHubArrivalVoicePlayed = true;
+		UE_LOG(LogXRU1Audio, Display,
+			TEXT("[Audio] вводная хаба пропущена: кампания продолжается, игрок её уже слышал"));
+		return;
+	}
+
+	const UTacticsAudioSettingsDataAsset* Asset = GetAudioSettingsAsset();
+	USoundBase* Line = Asset ? Asset->HubArrivalVoice : nullptr;
+	if (!Line)
+	{
+		return; // реплика не записана — это штатная настройка, не ошибка
+	}
+	bHubArrivalVoicePlayed = true;
+	PlayVoice2D(Line);
+
+	// Отметку пишем сразу на диск: игрок может выйти из хаба чем угодно —
+	// миссией, главным меню, alt+F4, — и «уже слышал» не должно зависеть от
+	// того, дошёл ли он до следующего сохранения.
+	if (Save && GameInstance)
+	{
+		Save->bHubBriefed = true;
+		GameInstance->SaveCampaign();
+	}
+	UE_LOG(LogXRU1Audio, Display, TEXT("[Audio] реплика прибытия в хаб: '%s'"), *Line->GetName());
 }
 
 void UTacticsAudioSubsystem::PlayMusic(USoundBase* Track, float FadeInTime)

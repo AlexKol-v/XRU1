@@ -10,6 +10,11 @@ void UHubHUDWidget::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
 
+	// HUD лежит поверх живой сцены хаба: полноэкранный фон закрыл бы карту.
+	ScreenArtKind = EXRU1UIScreenArt::None;
+	// Он и ЕСТЬ игровой слой — прятать самого себя ему нечем.
+	bHidesGameLayer = false;
+
 	if (Btn_Start)    { Btn_Start->OnClicked.AddUniqueDynamic(this, &UHubHUDWidget::HandleStartClicked);       RegisterButtonSounds(Btn_Start); }
 	if (Btn_Settings) { Btn_Settings->OnClicked.AddUniqueDynamic(this, &UHubHUDWidget::HandleSettingsClicked); RegisterButtonSounds(Btn_Settings); }
 	if (Btn_ToMenu)   { Btn_ToMenu->OnClicked.AddUniqueDynamic(this, &UHubHUDWidget::HandleToMenuClicked);     RegisterButtonSounds(Btn_ToMenu); }

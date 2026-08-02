@@ -24,5 +24,8 @@ void AHubGameMode::BeginPlay()
 		? GetGameInstance()->GetSubsystem<UTacticsAudioSubsystem>() : nullptr)
 	{
 		Audio->PlayHubMusic();
+		// Реплика прибытия — один раз за сессию (счётчик живёт в подсистеме:
+		// GameMode пересоздаётся на каждый заход в хаб и «уже играли» не помнит).
+		Audio->PlayHubArrivalVoiceOnce();
 	}
 }

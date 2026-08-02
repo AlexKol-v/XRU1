@@ -92,6 +92,17 @@ public:
 	UFUNCTION(BlueprintImplementableEvent, Category = "Tactics|POI")
 	void OnSelectionDenied();
 
+	/** Миссия этой точки уже пройдена (по слоту кампании). */
+	UFUNCTION(BlueprintPure, Category = "Tactics|POI")
+	bool IsCompleted() const;
+
+	/** Точка выбрана игроком. Ставит контроллер хаба; влияет только на вид. */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|POI")
+	void SetSelected(bool bInSelected);
+
+	UFUNCTION(BlueprintPure, Category = "Tactics|POI")
+	bool IsSelected() const { return bIsSelected; }
+
 protected:
 	virtual void BeginPlay() override;
 
@@ -102,6 +113,9 @@ protected:
 	void HandleEndCursorOver(UPrimitiveComponent* TouchedComponent);
 
 	void SetHovered(bool bHovered);
+
+	/** Вид изменился (наведение/выбор/прогресс) — наследник перекрашивает себя. */
+	virtual void OnVisualStateChanged() {}
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tactics|POI")
 	TObjectPtr<USceneComponent> Root;
@@ -117,4 +131,7 @@ protected:
 	TObjectPtr<UWidgetComponent> PopupWidget;
 
 	bool bIsHovered = false;
+
+	/** Выбрана ли точка сейчас (одна на весь хаб). */
+	bool bIsSelected = false;
 };

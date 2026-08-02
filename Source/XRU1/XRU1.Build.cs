@@ -37,6 +37,9 @@ public class XRU1 : ModuleRules
 			"CommonInput",
 			// Intro media source stored in the global UI theme DataAsset
 			"MediaAssets",
+			// UMediaSoundComponent наследует USynthComponent, чей Start/Stop живёт
+			// в AudioMixer: без этого модуля звук интро не линкуется.
+			"AudioMixer",
 			// PCG nodes (hub landscape scatter/slope filter)
 			"PCG",
 			// Move-range zone fill (Tactics/MoveRangeVisualizer)

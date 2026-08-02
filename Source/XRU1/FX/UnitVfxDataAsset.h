@@ -5,6 +5,7 @@
 #include "Engine/DataAsset.h"
 #include "UnitVfxDataAsset.generated.h"
 
+class UNiagaraComponent;
 class UNiagaraSystem;
 
 /**
@@ -26,34 +27,50 @@ public:
 	TObjectPtr<UNiagaraSystem> MuzzleFlash;
 
 	/**
-	 * Трассер. По умолчанию эффект НЕСЁТСЯ актором-снарядом от дула к цели
-	 * (`bTracerFlies`), потому что trail-системы рисуют шлейф за движущимся
-	 * компонентом и на месте выглядят как вспышка вбок.
+	 * Трассер. Системы такого рода (в том числе `NS_BulletTracer` из Niagara
+	 * Examples) САМИ считают полёт пули по своим user-параметрам: начало, конец,
+	 * скорость, время жизни шлейфа. Без этих параметров система рисует трассер по
+	 * своим дефолтным точкам — то есть в стороне от выстрела или вообще вне кадра.
+	 * Имена параметров ниже; пустое имя = параметр у системы не трогаем.
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX|Shot")
 	TObjectPtr<UNiagaraSystem> Tracer;
 
 	/**
-	 * true — эффект везёт актор-снаряд (правильно для trail/ribbon-систем).
-	 * false — система просто спавнится в дуле с поворотом на цель (для beam-
-	 * систем, которым нужна только конечная точка).
+	 * true — эффект дополнительно везёт актор-снаряд, летящий с той же скоростью
+	 * (нужно системам, которые рисуют шлейф относительно своего компонента).
+	 * false — система спавнится в дуле и летит только своими параметрами.
+	 * Точки и скорость передаются в обоих режимах, поэтому переключатель влияет
+	 * лишь на то, едет ли компонент вместе с пулей.
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX|Shot")
 	bool bTracerFlies = true;
 
-	/**
-	 * Имя пользовательского float-параметра скорости у системы трассера.
-	 * Пусто — систему не трогаем и она летит на своей дефолтной скорости.
-	 */
+	/** Имя float-параметра скорости у системы трассера. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX|Shot")
 	FName TracerSpeedParameter = TEXT("User.InitialSpeed");
 
+	/** Имя параметра «точка вылета» (мировая точка дула). */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX|Shot")
+	FName TracerStartParameter = TEXT("User.SpawnPosition");
+
+	/** Имя float-параметра «сколько держится шлейф после прилёта», с. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX|Shot")
+	FName TracerTrailDurationParameter = TEXT("User.TrailDuration");
+
 	/**
-	 * Скорость трассера, см/с. На нашей дальности (AttackRange 3000) 12000 см/с
-	 * даёт ~0.25 с полёта: глазом читается как выстрел, а не как ракета.
+	 * Скорость трассера, см/с. 7000 на дальности 3000 даёт ~0.43 с полёта —
+	 * выстрел успевает прочитаться глазом, но темп боя не проседает.
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX|Shot", meta = (ClampMin = "100"))
-	float TracerSpeed = 12000.f;
+	float TracerSpeed = 7000.f;
+
+	/**
+	 * Сколько шлейф держится после прилёта, с. Пуля уже попала, а след ещё виден —
+	 * именно это делает направление выстрела читаемым в пошаговом бою.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX|Shot", meta = (ClampMin = "0"))
+	float TracerTrailDuration = 0.35f;
 
 	/**
 	 * Имя точки дула. Ищется по порядку: Scene Component с таким ИМЕНЕМ или
@@ -62,25 +79,27 @@ public:
 	 *
 	 * Практика для составного BP оружия: добавить в него пустой Scene Component
 	 * `Muzzle`, поставить на срез ствола — двигается мышью и видно в вьюпорте.
+	 * Так и сделано во всех четырёх BP оружия (`BP_AssaultRifle_Default` и др.),
+	 * которые юниты носят Child Actor компонентом `Gun`.
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX|Shot")
 	FName MuzzleSocketName = TEXT("Muzzle");
 
 	/**
-	 * Доворот эффектов относительно направления «дуло → цель». Нужен, если
-	 * система Niagara летит не по своей оси +X: тогда трассер уходит вбок, и
-	 * это лечится здесь, а не пересборкой чужого ассета.
+	 * Доворот ВСПЫШКИ относительно направления «дуло → цель». Нужен, если
+	 * система Niagara ориентирована не по своей оси +X. Трассер сюда не смотрит:
+	 * он летит по точкам (`TracerStartParameter`/`TracerEndParameter`), а не по
+	 * повороту компонента.
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX|Shot")
 	FRotator ShotRotationOffset = FRotator::ZeroRotator;
 
 	/**
-	 * Имя векторного user-параметра «конечная точка» у beam-систем
-	 * (например `User.BeamEnd`). Пусто — система считается «летящей» и
-	 * управляется только поворотом и скоростью.
+	 * Имя параметра «конечная точка» — мировая точка, где пуля упирается в цель
+	 * или в геометрию. Тип (Position или Vector) определяется у самой системы.
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX|Shot")
-	FName TracerEndParameter;
+	FName TracerEndParameter = TEXT("User.Hit");
 
 	/** Попадание по бойцу (кровь/пыль экипировки). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX|Impact")
@@ -95,6 +114,18 @@ public:
 	TObjectPtr<UNiagaraSystem> DefaultImpact;
 
 	/**
+	 * Имя параметра «нормаль поверхности» у эффекта попадания. Крошка и искры
+	 * разлетаются по нему, а не по повороту компонента: поворот системы такие
+	 * эффекты игнорируют.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX|Impact")
+	FName ImpactNormalParameter = TEXT("User.Hit Normal");
+
+	/** Имя параметра «направление пули» у эффекта попадания. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "VFX|Impact")
+	FName ImpactDirectionParameter = TEXT("User.Hit Direction");
+
+	/**
 	 * Насколько промах уводится в сторону от цели (см). XCOM рисует промах
 	 * мимо цели, а не в неё: без этого игрок не отличает «не попал» от
 	 * «попал, но урона нет».
@@ -104,4 +135,16 @@ public:
 
 	/** Эффект попадания для поверхности; при отсутствии — DefaultImpact. */
 	UNiagaraSystem* FindImpact(EPhysicalSurface Surface) const;
+
+	/**
+	 * Отдаёт трассеру геометрию выстрела: откуда, куда, с какой скоростью и
+	 * сколько держать шлейф. Вызывать ДО активации компонента — user-параметры
+	 * читаются на спавне системы.
+	 */
+	void ApplyTracerParameters(UNiagaraComponent* Component,
+		const FVector& Start, const FVector& End) const;
+
+	/** Отдаёт эффекту попадания нормаль поверхности и направление пули. */
+	void ApplyImpactParameters(UNiagaraComponent* Component,
+		const FVector& Normal, const FVector& Direction) const;
 };

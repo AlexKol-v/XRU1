@@ -27,7 +27,13 @@ enum class EXRU1UIScreenArt : uint8
 	VictoryResult,
 	DefeatResult,
 	DemoComplete,
-	IntroFallback
+	IntroFallback,
+	/**
+	 * Экрану фон не нужен: он рисуется поверх живой сцены (HUD хаба, экран
+	 * результата поверх боя). Добавлено в КОНЕЦ намеренно — вставка в середину
+	 * сдвинула бы значения, уже сохранённые в ассетах.
+	 */
+	None UMETA(DisplayName = "Без фона")
 };
 
 /** Смысловая иконка состояния юнита. */

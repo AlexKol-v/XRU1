@@ -38,15 +38,30 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Hub|POI")
 	TObjectPtr<UMaterialInterface> MarkerMaterial;
 
-	/** Насыщенный оранжевый: маркер обязан читаться на бирюзовом столе карты. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hub|POI")
-	FLinearColor AvailableColor = FLinearColor(1.f, 0.35f, 0.02f, 1.f);
+	// Цвет = состояние точки, и состояний четыре. Порядок приоритета в
+	// RefreshVisualState: пройдена → заблокирована → выбрана → доступна;
+	// наведение только подсвечивает текущий цвет, а не заменяет его, иначе
+	// «выбрано» терялось бы под курсором.
 
+	/** Доступна: жёлтый — маркер обязан читаться на бирюзовом столе карты. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hub|POI")
-	FLinearColor HoveredColor = FLinearColor(1.f, 0.62f, 0.12f, 1.f);
+	FLinearColor AvailableColor = FLinearColor(1.f, 0.78f, 0.06f, 1.f);
 
+	/** Выбрана игроком: красный. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hub|POI")
+	FLinearColor SelectedColor = FLinearColor(0.95f, 0.12f, 0.08f, 1.f);
+
+	/** Миссия пройдена: зелёный. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hub|POI")
+	FLinearColor CompletedColor = FLinearColor(0.10f, 0.85f, 0.32f, 1.f);
+
+	/** Заблокирована: серый, погашенный. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hub|POI")
 	FLinearColor LockedColor = FLinearColor(0.16f, 0.18f, 0.2f, 1.f);
+
+	/** Во сколько раз ярче становится цвет под курсором. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hub|POI", meta = (ClampMin = "1"))
+	float HoverBrightness = 1.5f;
 
 	/** Насколько увеличивается маркер под курсором. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hub|POI", meta = (ClampMin = "1"))
@@ -78,8 +93,11 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hub|POI", meta = (ClampMin = "0", ClampMax = "1"))
 	float LockedOpacity = 0.35f;
 
+	/** Перекраска по смене наведения/выбора (база зовёт при любом изменении). */
+	virtual void OnVisualStateChanged() override;
+
 private:
-	/** Применяет цвет/масштаб по текущим IsLocked() и наведению. */
+	/** Применяет цвет/масштаб по текущим состоянию, выбору и наведению. */
 	void RefreshVisualState();
 
 	UFUNCTION()

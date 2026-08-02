@@ -45,6 +45,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Menu")
 	bool IsDemoComplete() const;
 
+	/** Текущий сценарий — учебный полигон (у него свой текст и арт результата). */
+	UFUNCTION(BlueprintPure, Category = "Menu")
+	bool IsTutorialScenario() const;
+
 protected:
 	/** BP-хук: результат готов — обновить тексты/показать статистику. */
 	UFUNCTION(BlueprintImplementableEvent, Category = "Menu")

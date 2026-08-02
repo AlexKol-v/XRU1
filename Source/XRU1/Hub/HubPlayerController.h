@@ -9,6 +9,7 @@ class AHologramMapActor;
 class AHubCameraPawn;
 class AMissionPointOfInterest;
 class UHubHUDWidget;
+class UMissionBriefingWidget;
 class UPrimaryGameLayout;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnHubPOISelected, AMissionPointOfInterest*, POI);
@@ -70,17 +71,28 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Hub|UI")
 	TSubclassOf<UHubHUDWidget> HubHUDClass;
 
-	/** Град поворота карты на пиксель горизонтального движения мыши. */
-	UPROPERTY(EditDefaultsOnly, Category = "Hub|Input")
-	float MouseYawSensitivity = 0.35f;
+	/**
+	 * Брифинг между выбором точки и боем. Не назначен — точка запускает миссию
+	 * сразу (прежнее поведение), поэтому хаб остаётся рабочим и без экрана.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Hub|UI")
+	TSubclassOf<UMissionBriefingWidget> BriefingScreenClass;
+
+	/**
+	 * Град поворота карты на пиксель горизонтального движения мыши.
+	 * EditAnywhere: подбирается на слух и на глаз, менять должно быть можно и на
+	 * инстансе контроллера, не пересобирая проект.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hub|Input", meta = (ClampMin = "0.05"))
+	float MouseYawSensitivity = 1.2f;
 
 	/** Град наклона камеры на пиксель вертикального движения мыши. */
-	UPROPERTY(EditDefaultsOnly, Category = "Hub|Input")
-	float MousePitchSensitivity = 0.25f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hub|Input", meta = (ClampMin = "0.05"))
+	float MousePitchSensitivity = 0.7f;
 
 	/** Скорость вращения картой с клавиатуры (Q/E), град/сек. */
-	UPROPERTY(EditDefaultsOnly, Category = "Hub|Input")
-	float KeyboardYawSpeed = 70.f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Hub|Input", meta = (ClampMin = "1"))
+	float KeyboardYawSpeed = 90.f;
 
 private:
 	UFUNCTION() void HandleRotatePressed();

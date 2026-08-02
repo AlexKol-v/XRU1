@@ -51,6 +51,25 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Settings")
 	void SetVideoSettings(const FTacticsVideoSettings& NewSettings);
 
+	// --- Камера ---------------------------------------------------------------
+
+	UFUNCTION(BlueprintPure, Category = "Tactics|Settings")
+	FTacticsCameraSettings GetCameraSettings() const;
+
+	/** Пишет настройки камеры и сразу применяет их к активной камере боя. */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Settings")
+	void SetCameraSettings(const FTacticsCameraSettings& NewSettings, const UObject* WorldContext);
+
+	/**
+	 * Применить текущие настройки камеры к пешке-камере и контроллеру боя.
+	 *
+	 * Толчок, а не опрос: камера не читает настройки каждый кадр, поэтому смена
+	 * значения обязана дойти до неё явно — из экрана настроек и со старта боя.
+	 * Вне боя (меню, хаб) вызов безвреден: тактической камеры там просто нет.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Settings")
+	static void ApplyCameraSettings(const UObject* WorldContext);
+
 	/** Дефолты проекта: берутся из DA_TacticsAudio, если он назначен. */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Settings")
 	void ResetToProjectDefaults(const UObject* WorldContext);
@@ -84,6 +103,13 @@ protected:
 	UPROPERTY(config) float ScreenScale = 1.f;
 	UPROPERTY(config) bool bFullscreenMode = true;
 	UPROPERTY(config) bool bVerticalSync = true;
+
+	/** Камера: дефолты те же, что у структуры (см. FTacticsCameraSettings). */
+	UPROPERTY(config) float CameraFieldOfView = 65.f;
+	UPROPERTY(config) float CameraRotationSensitivity = 1.f;
+	UPROPERTY(config) float CameraPitchSensitivity = 1.f;
+	UPROPERTY(config) bool bCameraInvertPitch = false;
+	UPROPERTY(config) bool bCameraEdgeScroll = true;
 
 	/** Настройки уже инициализировались дефолтами проекта (первый запуск позади). */
 	UPROPERTY(config) bool bInitializedFromProject = false;

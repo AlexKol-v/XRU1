@@ -3,6 +3,7 @@
 #include "HologramMapActor.h"
 #include "HubCameraPawn.h"
 #include "HubHUDWidget.h"
+#include "MissionBriefingWidget.h"
 #include "MissionPointOfInterest.h"
 #include "TacticsAudioSubsystem.h"
 #include "GamePauseSubsystem.h"
@@ -51,18 +52,42 @@ void AHubPlayerController::BeginPlay()
 			*HologramMap->GetActorNameOrLabel(), HologramMap->GetPointsOfInterest().Num());
 	}
 
+	// Отсутствие HUD в хабе однажды было «невидимой» поломкой: контроллер
+	// доходил до конца BeginPlay, а UI не появлялся и в логе не было причины.
+	// Поэтому каждый шаг пути до виджета печатается явно.
 	UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
-	if (UGameUIManagerSubsystem* UIManager =
-			GameInstance ? GameInstance->GetSubsystem<UGameUIManagerSubsystem>() : nullptr)
+	UGameUIManagerSubsystem* UIManager =
+		GameInstance ? GameInstance->GetSubsystem<UGameUIManagerSubsystem>() : nullptr;
+	UE_LOG(LogXRU1UI, Display,
+		TEXT("[Hub] UI: контроллер='%s' GameInstance=%s UIManager=%s RootLayoutClass=%s HubHUDClass=%s"),
+		*GetNameSafe(this), GameInstance ? TEXT("есть") : TEXT("НЕТ"),
+		UIManager ? TEXT("есть") : TEXT("НЕТ"),
+		*GetNameSafe(RootLayoutClass.Get()), *GetNameSafe(HubHUDClass.Get()));
+
+	if (!UIManager)
+	{
+		UE_LOG(LogXRU1UI, Error,
+			TEXT("[Hub] UGameUIManagerSubsystem недоступен — HUD хаба показать негде"));
+	}
+	else
 	{
 		UIManager->CreateLayout(this, RootLayoutClass);
-		if (UPrimaryGameLayout* RootLayout = UIManager->GetRootLayout())
+		UPrimaryGameLayout* RootLayout = UIManager->GetRootLayout();
+		if (!RootLayout)
 		{
-			if (HubHUDClass)
-			{
-				HubHUD = Cast<UHubHUDWidget>(
-					RootLayout->PushWidgetToLayer(EUILayer::Game, HubHUDClass));
-			}
+			UE_LOG(LogXRU1UI, Error, TEXT("[Hub] корневой лейаут не создан — HUD хаба не будет"));
+		}
+		else if (!HubHUDClass)
+		{
+			UE_LOG(LogXRU1UI, Error,
+				TEXT("[Hub] HubHUDClass не назначен в Class Defaults контроллера — HUD хаба не будет"));
+		}
+		else
+		{
+			HubHUD = Cast<UHubHUDWidget>(RootLayout->PushWidgetToLayer(EUILayer::Game, HubHUDClass));
+			UE_LOG(LogXRU1UI, Display, TEXT("[Hub] HUD '%s' на слое Game: %s"),
+				*GetNameSafe(HubHUDClass.Get()),
+				HubHUD ? TEXT("создан") : TEXT("НЕ создан (пустой стек слоя Game в лейауте?)"));
 		}
 	}
 
@@ -201,7 +226,18 @@ void AHubPlayerController::HandleSelectDoubleClick()
 void AHubPlayerController::SelectPOI(AMissionPointOfInterest* POI)
 {
 	const bool bChanged = SelectedPOI != POI;
+
+	// Выбранной может быть только одна точка: снимаем отметку с прежней, иначе
+	// красными останутся обе.
+	if (bChanged && SelectedPOI)
+	{
+		SelectedPOI->SetSelected(false);
+	}
 	SelectedPOI = POI;
+	if (POI)
+	{
+		POI->SetSelected(true);
+	}
 
 	if (bChanged && POI)
 	{
@@ -230,6 +266,33 @@ void AHubPlayerController::LaunchSelectedPOI()
 	{
 		return;
 	}
+
+	// Брифинг — обязательный шаг между картой и боем, но только для доступной
+	// точки: у заблокированной должен сработать штатный отказ POI (звук и хук
+	// OnSelectionDenied), а не пустой экран с описанием недоступной миссии.
+	if (BriefingScreenClass && !SelectedPOI->IsLocked())
+	{
+		const UGameInstance* GameInstance = GetGameInstance();
+		UGameUIManagerSubsystem* UIManager = GameInstance
+			? GameInstance->GetSubsystem<UGameUIManagerSubsystem>() : nullptr;
+		UPrimaryGameLayout* RootLayout = UIManager ? UIManager->GetRootLayout() : nullptr;
+		if (RootLayout)
+		{
+			UMissionBriefingWidget* Briefing = Cast<UMissionBriefingWidget>(
+				RootLayout->PushWidgetToLayer(EUILayer::Menu, BriefingScreenClass));
+			if (Briefing)
+			{
+				Briefing->SetupFromPOI(SelectedPOI);
+				UE_LOG(LogXRU1UI, Display, TEXT("[Hub] открыт брифинг точки '%s'"),
+					*SelectedPOI->GetActorNameOrLabel());
+				return;
+			}
+		}
+		UE_LOG(LogXRU1UI, Warning,
+			TEXT("[Hub] брифинг '%s' показать не удалось — запускаю миссию напрямую"),
+			*GetNameSafe(BriefingScreenClass.Get()));
+	}
+
 	// Гейт и сам запуск сценария живут в AMissionPointOfInterest: контроллер
 	// только передаёт намерение игрока (BRIEF_HubHologram §6).
 	SelectedPOI->SelectPointOfInterest();

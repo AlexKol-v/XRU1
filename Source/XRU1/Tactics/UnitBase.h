@@ -477,6 +477,16 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Tactics|VFX")
 	FVector GetMuzzleWorldLocation(const FVector& Fallback) const;
 
+private:
+	/**
+	 * Рисует попадание в уже найденной точке. Отдельный метод, потому что вызов
+	 * отложен на время полёта трассера — искры обязаны совпасть с прилётом пули.
+	 */
+	void SpawnImpactVfx(class UNiagaraSystem* ImpactSystem, const FVector& Location,
+		const FVector& Normal, const FVector& Direction) const;
+
+public:
+
 	// --- Сценарный форс исхода выстрела (шаги A4/A7/B4) -----------------------
 
 	/**

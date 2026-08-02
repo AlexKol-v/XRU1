@@ -1,6 +1,7 @@
 #include "TacticsUserSettings.h"
 
 #include "TacticsAudioSubsystem.h"
+#include "TacticalPlayerController.h"
 #include "XRU1Log.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
@@ -55,6 +56,49 @@ void UTacticsUserSettings::SetVideoSettings(const FTacticsVideoSettings& NewSett
 	SetVSyncEnabled(bVerticalSync);
 }
 
+FTacticsCameraSettings UTacticsUserSettings::GetCameraSettings() const
+{
+	FTacticsCameraSettings Settings;
+	Settings.FieldOfView = FMath::Clamp(CameraFieldOfView, 40.f, 110.f);
+	Settings.RotationSensitivity = FMath::Clamp(CameraRotationSensitivity, 0.1f, 4.f);
+	Settings.PitchSensitivity = FMath::Clamp(CameraPitchSensitivity, 0.1f, 4.f);
+	Settings.bInvertPitch = bCameraInvertPitch;
+	Settings.bEdgeScroll = bCameraEdgeScroll;
+	return Settings;
+}
+
+void UTacticsUserSettings::SetCameraSettings(const FTacticsCameraSettings& NewSettings,
+	const UObject* WorldContext)
+{
+	CameraFieldOfView = FMath::Clamp(NewSettings.FieldOfView, 40.f, 110.f);
+	CameraRotationSensitivity = FMath::Clamp(NewSettings.RotationSensitivity, 0.1f, 4.f);
+	CameraPitchSensitivity = FMath::Clamp(NewSettings.PitchSensitivity, 0.1f, 4.f);
+	bCameraInvertPitch = NewSettings.bInvertPitch;
+	bCameraEdgeScroll = NewSettings.bEdgeScroll;
+
+	// Применяем сразу: угол обзора и чувствительность игрок настраивает «на глаз»,
+	// и отложенное применение (по «Применить») лишало бы его обратной связи.
+	ApplyCameraSettings(WorldContext);
+}
+
+void UTacticsUserSettings::ApplyCameraSettings(const UObject* WorldContext)
+{
+	const UTacticsUserSettings* Settings = Get();
+	const UWorld* World = GEngine && WorldContext
+		? GEngine->GetWorldFromContextObject(WorldContext, EGetWorldErrorMode::ReturnNull) : nullptr;
+	if (!Settings || !World)
+	{
+		return;
+	}
+
+	ATacticalPlayerController* PC = Cast<ATacticalPlayerController>(World->GetFirstPlayerController());
+	if (!PC)
+	{
+		return; // не бой (меню, хаб) — применять некуда, и это нормально
+	}
+	PC->ApplyCameraUserSettings(Settings->GetCameraSettings());
+}
+
 const UTacticsAudioSubsystem* UTacticsUserSettings::FindAudioSubsystem(const UObject* WorldContext)
 {
 	if (!WorldContext)
@@ -85,6 +129,8 @@ void UTacticsUserSettings::ResetToProjectDefaults(const UObject* WorldContext)
 	FTacticsVideoSettings DefaultVideo;
 	DefaultVideo.bFullscreen = bFullscreenMode;
 	SetVideoSettings(DefaultVideo);
+
+	SetCameraSettings(FTacticsCameraSettings(), WorldContext);
 
 	UE_LOG(LogXRU1UI, Display,
 		TEXT("[Settings] сброс к дефолтам проекта: Master=%.2f Music=%.2f Sfx=%.2f UI=%.2f Voice=%.2f%s"),
@@ -140,6 +186,14 @@ void UTacticsUserSettings::SetToDefaults()
 	ScreenScale = 1.f;
 	bFullscreenMode = true;
 	bVerticalSync = true;
+
+	// Камера — дефолты структуры: один источник значений по умолчанию.
+	const FTacticsCameraSettings DefaultCamera;
+	CameraFieldOfView = DefaultCamera.FieldOfView;
+	CameraRotationSensitivity = DefaultCamera.RotationSensitivity;
+	CameraPitchSensitivity = DefaultCamera.PitchSensitivity;
+	bCameraInvertPitch = DefaultCamera.bInvertPitch;
+	bCameraEdgeScroll = DefaultCamera.bEdgeScroll;
 	// bInitializedFromProject НЕ сбрасываем: «Сбросить» в меню не должно
 	// превращаться в повторный «первый запуск».
 }

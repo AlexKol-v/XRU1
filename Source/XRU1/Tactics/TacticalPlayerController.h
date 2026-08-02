@@ -392,8 +392,45 @@ protected:
 	void HandleSelectPressed();                       // ЛКМ
 	void HandleCommandPressed();                      // ПКМ
 	void HandleCameraPan(const FInputActionValue& Value);
-	void HandleCameraRotate(const FInputActionValue& Value);
 	void HandleCameraZoom(const FInputActionValue& Value);
+
+	/**
+	 * ВРАЩЕНИЕ Q/E в двух режимах (схема мода Free Camera Rotation): короткое
+	 * нажатие — привычный шаг 45°, удержание — непрерывный поворот. Разделение
+	 * на три обработчика диктует Enhanced Input: решение «это был клик» можно
+	 * принять только на отпускании, когда известно, сколько клавишу держали.
+	 *
+	 * В режиме прицеливания Q/E листают ЦЕЛИ (XCOM), и удержание там ничего не
+	 * крутит: камера всё равно принадлежит кадру прицела.
+	 */
+	void HandleCameraRotateStarted(const FInputActionValue& Value);
+	void HandleCameraRotateHeld(const FInputActionValue& Value);
+	void HandleCameraRotateReleased(const FInputActionValue& Value);
+
+	/** Alt+мышь: свободный обзор (поворот + наклон). Опрашивается в PlayerTick. */
+	void UpdateFreeLook();
+
+public:
+	/**
+	 * Применить настройки камеры игрока: обзор и чувствительность уходят в пешку,
+	 * панорама у края экрана — свойство контроллера, который ею и управляет.
+	 * Зовётся при входе в бой и из экрана настроек (`UTacticsUserSettings`).
+	 */
+	void ApplyCameraUserSettings(const struct FTacticsCameraSettings& Settings);
+
+protected:
+
+	/** Клавиши камеры без Input Action: этаж обзора, центрирование, сброс ракурса. */
+	void UpdateCameraHotkeys();
+
+	/**
+	 * Игнорировать ли ввод камеры прямо сейчас (пауза). Одно место на все входы:
+	 * панораму, зум, вращение, свободный обзор, edge scroll и хоткеи.
+	 */
+	bool IsCameraInputBlocked() const;
+
+	/** Боевой режим ввода (мир + HUD, курсор виден). Ставится при входе в бой и после свободного обзора. */
+	void ApplyCombatInputMode();
 
 	// --- Логика приказов -------------------------------------------------------
 
@@ -577,8 +614,13 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "Tactics|Control")
 	TSubclassOf<AMoveRangeVisualizer> MoveRangeVisualizerClass;
 
-	/** Панорама мышью у края экрана (XCOM). Выключается в BP при желании. */
-	UPROPERTY(EditDefaultsOnly, Category = "Tactics|Control")
+	/**
+	 * Панорама мышью у края экрана (XCOM). Владелец значения — НАСТРОЙКИ ИГРОКА
+	 * (`FTacticsCameraSettings::bEdgeScroll`), поэтому поля в BP здесь нет: оно
+	 * создавало бы иллюзию, что галочка дизайнера что-то решает, хотя вход в бой
+	 * перезаписывает её выбором игрока. Дефолт нужен лишь до первого применения
+	 * настроек.
+	 */
 	bool bEdgeScrollEnabled = true;
 
 	/**
@@ -651,6 +693,35 @@ protected:
 	/** Ширина зоны edge scroll от края вьюпорта, px. */
 	UPROPERTY(EditDefaultsOnly, Category = "Tactics|Control", meta = (ClampMin = "2", ClampMax = "100"))
 	float EdgeScrollMarginPx = 16.f;
+
+	/**
+	 * Сколько секунд держать Q/E, чтобы поворот стал непрерывным. Короче —
+	 * засчитывается как клик на 45°. Мод FCR использует тот же принцип: одиночное
+	 * нажатие даёт фиксированный угол, удержание — свободное вращение.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|Control", meta = (ClampMin = "0.05", ClampMax = "1"))
+	float CameraRotateHoldThreshold = 0.18f;
+
+	// --- Состояние вращения Q/E ------------------------------------------------
+
+	/** Сколько уже держат клавишу поворота (реальное время — как и вся камера). */
+	float CameraRotateHeldTime = 0.f;
+
+	/** Удержание перешло в непрерывный режим: отпускание уже не даст шаг 45°. */
+	bool bCameraRotateFreeMode = false;
+
+	/** Нажатие обслужено листанием целей — вращать камеру этим удержанием нельзя. */
+	bool bCameraRotateConsumedByTargeting = false;
+
+	/** Направление последнего нажатия Q/E: на отпускании значение действия уже нулевое. */
+	float LastCameraRotateDirection = 0.f;
+
+	/** Игрок держит Alt и водит мышью — свободный обзор (см. UpdateFreeLook). */
+	bool bFreeLookActive = false;
+
+	/** Где стоял курсор на входе в свободный обзор — туда он и возвращается каждый кадр. */
+	float FreeLookCursorX = 0.f;
+	float FreeLookCursorY = 0.f;
 
 	// --- Состояние ---------------------------------------------------------------
 
