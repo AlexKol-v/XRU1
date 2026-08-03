@@ -3,6 +3,8 @@
 #include "ActionPointsComponent.h"
 #include "CoverDetectionComponent.h"
 #include "CoverTuningDataAsset.h"
+#include "FogOfWarSubsystem.h"        // пересчёт видимости на подтверждённой смене состояния
+#include "FogRevealableComponent.h"   // владелец скрытия презентации юнита
 #include "GA_Attack.h"
 #include "GA_Overwatch.h"
 #include "TacticalAbility.h"
@@ -41,6 +43,10 @@ AUnitBase::AUnitBase()
 
 	ActionPoints = CreateDefaultSubobject<UActionPointsComponent>(TEXT("ActionPoints"));
 	CoverDetection = CreateDefaultSubobject<UCoverDetectionComponent>(TEXT("CoverDetection"));
+
+	// Туман войны: один владелец скрытия презентации на юнита. Сам себя
+	// регистрирует в подсистеме, ничего не тикает и на стороне игрока инертен.
+	FogRevealable = CreateDefaultSubobject<UFogRevealableComponent>(TEXT("FogRevealable"));
 
 	// Navigation Invoker: навмеш генерится вокруг юнита (RuntimeGeneration=Dynamic).
 	// Радиусы применяются в BeginPlay (могут быть переопределены в BP до старта).
@@ -148,6 +154,21 @@ void AUnitBase::PlayUnitSound(EUnitSoundEvent Event)
 	UTacticsAudioSubsystem* Audio = GameInstance
 		? GameInstance->GetSubsystem<UTacticsAudioSubsystem>() : nullptr;
 	if (!AudioProfile || !Audio)
+	{
+		return;
+	}
+
+	// Туман войны: скрытый юнит молчит. Звук привязан к актору и играет с
+	// аттенюацией — шаги и «занял позицию» невидимого врага дают его позицию на
+	// слух точнее, чем любой значок на экране.
+	//
+	// Гейт стоит ЗДЕСЬ, а не у каждого вызова: точек `PlayUnitSound` уже полтора
+	// десятка (движение, укрытие, способности, боль, смерть), и добавление
+	// шестнадцатой не должно требовать помнить про туман. Боевые события через
+	// него не теряются: выстрел скрытого врага невозможен по построению —
+	// стрельба требует взаимного LOS в пределах того же радиуса обзора
+	// (docs/10_FOG_OF_WAR.md §4).
+	if (UFogRevealableComponent::IsActorPresentationHidden(this))
 	{
 		return;
 	}
@@ -1289,6 +1310,12 @@ void AUnitBase::SetDowned(bool bNewDowned, float ReviveHealth, bool bPlaySound)
 	}
 	// Тяжелораненый лежит без шкалы; поднятый медиком получает её обратно.
 	SetOverheadHUDVisible(!bIsDowned);
+	// Падение/подъём меняет состав источников зрения (`IsUnitAlive` ложна для
+	// Downed), а для врага — ещё и правило «тела видимы всегда».
+	if (UFogOfWarSubsystem* Fog = UFogOfWarSubsystem::Get(this))
+	{
+		Fog->MarkVisibilityDirty(this);
+	}
 	UAbilitySystemComponent* ASC = GetAbilitySystemComponent();
 
 	if (bIsDowned)
@@ -1338,6 +1365,12 @@ void AUnitBase::Die()
 	}
 	bIsDead = true;
 	PlayUnitSound(EUnitSoundEvent::Death);
+	// Труп перестаёт быть источником зрения — видимость всей карты меняется.
+	// Порядок важен: звук смерти играем ДО пересчёта, пока юнит ещё «видим».
+	if (UFogOfWarSubsystem* Fog = UFogOfWarSubsystem::Get(this))
+	{
+		Fog->MarkVisibilityDirty(this);
+	}
 	// Шкала HP над трупом — самый заметный визуальный мусор боя.
 	SetOverheadHUDVisible(false);
 	// Пока назначенный montage играет через BP-хук, Dead state не запускает
@@ -1484,6 +1517,11 @@ void AUnitBase::Evacuate()
 	}
 	bIsEvacuated = true;
 	PlayUnitSound(EUnitSoundEvent::Evacuated);
+	// Ушедший с поля перестал быть источником зрения — пересчитать.
+	if (UFogOfWarSubsystem* Fog = UFogOfWarSubsystem::Get(this))
+	{
+		Fog->MarkVisibilityDirty(this);
+	}
 	SetOverheadHUDVisible(false);
 
 	SetSelectionHighlight(false);

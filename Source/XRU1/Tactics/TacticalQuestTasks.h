@@ -9,6 +9,7 @@
 #include "Templates/SubclassOf.h"
 #include "TacticalQuestTasks.generated.h"
 
+class UFogRevealableComponent;
 class UTacticalAbility;
 
 // Задачи обучения XRU1 для StateTree.
@@ -426,6 +427,20 @@ struct FTacticalTask_ScriptedMoveInstanceData
 
 	UPROPERTY()
 	bool bCameraAttached = false;
+
+	/**
+	 * Взятое у тумана войны удержание «показывать этого актора». Постановка
+	 * главнее LOS: такт ведёт камеру за бойцом, и он обязан быть на экране, даже
+	 * если отряд его формально не видит (у Firaxis это ветка `m_bInMatinee`
+	 * в `ForceModelVisible`).
+	 *
+	 * Слабая ссылка на КОМПОНЕНТ, а не флаг: удержание надо снять именно с того
+	 * актора, у которого взяли, а к `ExitState` поиск по AnchorId может уже не
+	 * найти его (голограмма выключена следующим шагом) — и удержание утекло бы,
+	 * оставив врага видимым навсегда.
+	 */
+	UPROPERTY()
+	TWeakObjectPtr<UFogRevealableComponent> FogRevealHold;
 };
 
 /**
@@ -498,6 +513,20 @@ struct FTacticalTask_ScriptedEnemyTurnInstanceData
 
 	UPROPERTY()
 	bool bCameraAttached = false;
+
+	/**
+	 * Взятое у тумана войны удержание «показывать этого актора». Постановка
+	 * главнее LOS: такт ведёт камеру за бойцом, и он обязан быть на экране, даже
+	 * если отряд его формально не видит (у Firaxis это ветка `m_bInMatinee`
+	 * в `ForceModelVisible`).
+	 *
+	 * Слабая ссылка на КОМПОНЕНТ, а не флаг: удержание надо снять именно с того
+	 * актора, у которого взяли, а к `ExitState` поиск по AnchorId может уже не
+	 * найти его (голограмма выключена следующим шагом) — и удержание утекло бы,
+	 * оставив врага видимым навсегда.
+	 */
+	UPROPERTY()
+	TWeakObjectPtr<UFogRevealableComponent> FogRevealHold;
 };
 
 /**

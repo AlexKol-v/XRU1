@@ -78,6 +78,18 @@ public:
     UFUNCTION(BlueprintCallable, Category = "UI")
     void SetGameLayerHidden(const UWidget* Owner, bool bHidden);
 
+    /**
+     * Виден ли сейчас игровой слой (боевой HUD, HUD хаба).
+     *
+     * Признак «идёт геймплей, а не экран»: пустой стек значит, что HUD никто не
+     * ставил (главное меню), а непустой скрытый — что поверх него открыт
+     * полноэкранный экран (брифинг, результат). Слой субтитров выбирает по
+     * этому признаку высоту строки: в геймплее она встаёт над панелью
+     * способностей, в остальных случаях — у нижнего края.
+     */
+    UFUNCTION(BlueprintPure, Category = "UI")
+    bool IsGameLayerVisible() const;
+
 protected:
     /** Стек игрового HUD-слоя; привязка по имени виджета из разметки. */
     UPROPERTY(BlueprintReadOnly, meta = (BindWidget), Category = "UI")

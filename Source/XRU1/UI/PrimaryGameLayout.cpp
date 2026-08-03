@@ -93,6 +93,16 @@ void UPrimaryGameLayout::SetGameLayerHidden(const UWidget* Owner, bool bHidden)
     RefreshGameLayerVisibility();
 }
 
+bool UPrimaryGameLayout::IsGameLayerVisible() const
+{
+    // Мёртвые владельцы (экран ушёл вместе со своим миром) не считаются: иначе
+    // HUD навсегда оставался бы «скрытым» для читателей этого признака.
+    const bool bHidden = GameLayerHiders.ContainsByPredicate(
+        [](const TWeakObjectPtr<const UWidget>& Weak) { return Weak.IsValid(); });
+
+    return GameStack && !bHidden && GameStack->GetActiveWidget() != nullptr;
+}
+
 void UPrimaryGameLayout::RefreshGameLayerVisibility()
 {
     if (!GameStack)

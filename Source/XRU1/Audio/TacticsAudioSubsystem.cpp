@@ -8,6 +8,7 @@
 #include "Sound/SoundBase.h"
 #include "Sound/SoundClass.h"
 #include "Sound/SoundMix.h"
+#include "SubtitleSubsystem.h"
 #include "TacticsDebug.h"
 #include "TacticsGameInstance.h"
 #include "TacticsSaveGame.h"
@@ -495,7 +496,8 @@ void UTacticsAudioSubsystem::PlayEvacUnit(const FVector& Location)
 	}
 }
 
-UAudioComponent* UTacticsAudioSubsystem::PlayVoice2D(USoundBase* Voice, float VolumeMultiplier)
+UAudioComponent* UTacticsAudioSubsystem::PlayVoice2D(USoundBase* Voice, float VolumeMultiplier,
+	bool bAutoSubtitle)
 {
 	if (!Voice || !GetAudioWorld())
 	{
@@ -511,6 +513,20 @@ UAudioComponent* UTacticsAudioSubsystem::PlayVoice2D(USoundBase* Voice, float Vo
 		VolumeMultiplier, /*PitchMultiplier=*/1.f, /*StartTime=*/0.f, /*ConcurrencySettings=*/nullptr,
 		/*bPersistAcrossLevelTransition=*/false, /*bAutoDestroy=*/true);
 	VoiceComponent = Component;
+
+	// Субтитр живёт на самом ассете озвучки и показывается ровно столько,
+	// сколько звучит реплика: слой субтитров подписывается на конец этого
+	// компонента, поэтому пауза, обрыв следующей репликой и остановка звука
+	// снимают строку сами. Нет данных на ассете — вызов ничего не делает.
+	if (bAutoSubtitle)
+	{
+		if (UXRU1SubtitleSubsystem* Subtitles = GetGameInstance()
+			? GetGameInstance()->GetSubsystem<UXRU1SubtitleSubsystem>() : nullptr)
+		{
+			Subtitles->ShowVoiceSubtitle(Voice, Component);
+		}
+	}
+
 	return Component;
 }
 

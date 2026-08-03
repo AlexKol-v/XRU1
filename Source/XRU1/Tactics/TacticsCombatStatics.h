@@ -256,6 +256,26 @@ public:
 	static ECoverShield GetCoverShieldAgainst(const AActor* Target, const AActor* Shooter,
 		ECoverType& OutShieldCover);
 
+	/**
+	 * ЕДИНСТВЕННАЯ реализация правила «сторона видит цель»: хотя бы один живой
+	 * наблюдатель из Viewers находится в `SquadVisionRange` от цели И имеет до
+	 * неё боевой LOS.
+	 *
+	 * ⚠️ Зачем статик, а не метод подсистемы. Это правило нужно ДВУМ разным
+	 * потребителям с разными полномочиями: Squadsight снайпера (сторона стрелка,
+	 * работает и для AI) и туман войны (только сторона игрока, с кэшем). Пока
+	 * реализаций было две (`SquadHasLineOfSight` и
+	 * `UFogOfWarSubsystem::IsActorCurrentlyVisible`), они отличались лишь
+	 * исключением себя — и это ровно тот «второй источник правды», от которого
+	 * расходятся правила стрельбы и картинка.
+	 *
+	 * Порядок проверок значим: живость → дистанция → трейсы. Дистанция отсекает
+	 * до сферо-свипов (в XCOM это `bBeyondSightRadius` — «кэш неполон, цель за
+	 * радиусом обзора»), иначе каждый запрос платит за заведомо далёкие пары.
+	 */
+	static bool AnyUnitSees(const TArray<AActor*>& Viewers, const AActor* Target,
+		const AActor* Exclude = nullptr);
+
 	/** Видит ли цель ХОТЬ ОДИН живой союзник юнита (для Squadsight снайпера). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Combat")
 	static bool SquadHasLineOfSight(const AActor* Unit, const AActor* Target);

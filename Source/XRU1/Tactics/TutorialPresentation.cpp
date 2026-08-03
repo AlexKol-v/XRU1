@@ -8,6 +8,7 @@
 #include "TacticalCameraPawn.h"
 #include "Components/AudioComponent.h"
 #include "TacticsAudioSubsystem.h"
+#include "SubtitleSubsystem.h"
 #include "XRU1Log.h"
 
 void UTutorialPresentationSubsystem::RequestSkipBeat()
@@ -98,7 +99,10 @@ void UTutorialPresentationSubsystem::StartBeat(const FTacticalTutorialBeat& Beat
 				{
 					ActiveVoiceComponent->Stop();
 				}
-				ActiveVoiceComponent = Audio->PlayVoice2D(Voice);
+				// bAutoSubtitle=false: субтитр такта ведёт сам такт (ниже), и
+				// автосубтитр по данным ассета озвучки перебил бы его текстом
+				// той же реплики, но со своими часами.
+				ActiveVoiceComponent = Audio->PlayVoice2D(Voice, 1.f, /*bAutoSubtitle=*/false);
 			}
 		}
 		else
@@ -106,6 +110,19 @@ void UTutorialPresentationSubsystem::StartBeat(const FTacticalTutorialBeat& Beat
 			UE_LOG(LogXRU1Audio, Warning, TEXT("Такт %s: не загрузилась озвучка %s"),
 				*Beat.BeatId.ToString(), *Beat.Voice.ToString());
 		}
+	}
+
+	// Субтитр отдаётся общему слою: он один на всю игру и рисуется поверх любых
+	// экранов. Раньше строка жила в оверлее подсказок боевого контроллера и вне
+	// боя не существовала физически.
+	if (UXRU1SubtitleSubsystem* Subtitles = UXRU1SubtitleSubsystem::Get(this))
+	{
+		FXRU1SubtitleLine Line;
+		Line.Speaker = ActiveBeat.Speaker;
+		Line.Text = ActiveBeat.Subtitle;
+		Line.bSkippable = true;
+		Line.SourceId = ActiveBeat.BeatId;
+		SubtitleHandle = Subtitles->ShowLine(Line);
 	}
 
 	OnBeatStarted.Broadcast(ActiveBeat);
@@ -124,6 +141,14 @@ void UTutorialPresentationSubsystem::FinishBeat()
 
 	UE_LOG(LogXRU1Quest, Display, TEXT("[Beat] КОНЕЦ %s — ввод разблокирован"),
 		*FinishedBeat.BeatId.ToString());
+
+	// Снимаем ИМЕННО свою строку: если такт уже сменился (обмен репликами),
+	// дескриптор не совпадёт и слой проигнорирует запоздалый вызов.
+	if (UXRU1SubtitleSubsystem* Subtitles = UXRU1SubtitleSubsystem::Get(this))
+	{
+		Subtitles->HideLine(SubtitleHandle);
+	}
+	SubtitleHandle = FXRU1SubtitleHandle();
 
 	// Камеру отпускаем ровно на конце такта — накопленный фоновый интент
 	// (выбор бойца, follow) исполнится сразу же и без потери.

@@ -528,6 +528,15 @@ protected:
 	UFUNCTION()
 	void HandleEnemyUnitActivated(AActor* Unit);
 
+	/**
+	 * Туман сообщил, что актор стал видим или скрылся. Камера обязана реагировать
+	 * в ОБЕ стороны: подхватить действующего врага, вышедшего из-за угла, и
+	 * отпустить того, кто скрылся посреди своего хода — иначе кадр продолжает
+	 * ехать за невидимой пешкой и показывает её маршрут.
+	 */
+	UFUNCTION()
+	void HandleFogVisibilityChanged(AActor* Actor, bool bVisible);
+
 	/** Видит ли ХОТЬ ОДИН живой боец отряда этого актора (порог + линия огня). */
 	bool IsVisibleToSquad(const AActor* Unit) const;
 
@@ -552,10 +561,10 @@ protected:
 	 * зрения — выбежал из-за угла, и камера подхватила его на бегу. Прежняя
 	 * одноразовая проверка в `HandleEnemyUnitActivated` этот случай теряла
 	 * целиком: враг весь ход оставался за кадром, хотя игрок его уже видел.
-	 * Дожимается в `PlayerTick` с тем же троттлингом, что и дебаг LOS.
+	 * Заявка дожимается подпиской на туман (`HandleFogVisibilityChanged`), а не
+	 * опросом в `PlayerTick`: момент смены видимости знает подсистема.
 	 */
 	TWeakObjectPtr<AActor> PendingEnemyCameraUnit;
-	float LastEnemyVisibilityCheckTime = -1000.f;
 
 	/** Реакционный выстрел сейчас играется — второй наблюдатель ждёт своей очереди. */
 	bool bReactionPlaying = false;
@@ -761,6 +770,22 @@ protected:
 
 	/** Текущее применённое состояние скрытия худов отряда. */
 	bool bSquadOverheadHidden = false;
+
+public:
+	/**
+	 * Кадр сейчас принадлежит презентации: прицеливание, кадр выстрела, реакция.
+	 * Экранные оверлеи (указатель на цель миссии) в это время уступают.
+	 *
+	 * ⚠️ Возвращает РЕШЕНИЕ единственного владельца этого правила —
+	 * `UpdateSquadOverheadVisibility`. Отдельно пересчитывать «занят ли кадр»
+	 * нельзя: два независимых определения одного состояния разъедутся, и оверлей
+	 * будет то появляться поверх выстрела, то пропадать без причины.
+	 * У XCOM это то же условие — стрелки прячутся, пока `m_isMenuRaised`.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Camera")
+	bool IsCameraBusyForOverlays() const { return bSquadOverheadHidden; }
+
+protected:
 
 	/** Установка побочных эффектов входимого режима. */
 	void EnterTargetingMode(EPlayerTargetingMode NewMode);

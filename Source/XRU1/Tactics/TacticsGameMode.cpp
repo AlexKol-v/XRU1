@@ -1,7 +1,9 @@
 #include "TacticsGameMode.h"
 #include "XRU1Log.h"
 #include "UnitBase.h"
+#include "FogOfWarSubsystem.h" // новая fog-сессия на каждый запуск сценария
 #include "MissionObjectives.h"
+#include "ObjectivePointerSubsystem.h" // указатель «куда идти» на цели миссии
 #include "ScenarioActorRegistry.h"
 #include "TacticalPlayerController.h"
 #include "TacticalQuestEvents.h"
@@ -119,13 +121,39 @@ void ATacticsGameMode::StartMissionCombat()
 
 	// Эти actors могут жить в streamed sublevel, поэтому подписываемся только
 	// на подтверждённой границе готовности сценария, а не в BeginPlay persistent.
+	// Указатели на цели миссии живут ровно один запуск: retry и переход
+	// Tutorial → Mission01 не должны наследовать стрелку на чужую бомбу.
+	UObjectivePointerSubsystem* Pointers = GetWorld()->GetSubsystem<UObjectivePointerSubsystem>();
+	if (Pointers)
+	{
+		Pointers->ClearAllObjectives();
+	}
+
 	for (TActorIterator<ABombObjective> It(GetWorld()); It; ++It)
 	{
 		It->OnDisarmed.AddUniqueDynamic(this, &ATacticsGameMode::HandleBombDisarmed);
+		// Куда идти — задача UI, а не тумана: цель не прячется никогда (модель
+		// XCOM 2, docs/10_FOG_OF_WAR.md §2.6). Счётчик у стрелки показывает
+		// остаток ходов — аналог `CounterValue` у `XComGameState_IndicatorArrow`.
+		if (Pointers)
+		{
+			Pointers->RegisterObjective(TEXT("Objective.Bomb"), *It,
+				NSLOCTEXT("XRU1.Objective", "PointerBomb", "ЗАРЯД"),
+				EObjectivePointerRule::WhileBombArmed, EObjectivePointerTone::Urgent,
+				/*bShowTurnsRemaining=*/true);
+		}
 	}
 	for (TActorIterator<AEvacZone> It(GetWorld()); It; ++It)
 	{
 		It->OnUnitEvacuated.AddUniqueDynamic(this, &ATacticsGameMode::HandleUnitEvacuated);
+		// Правило показа — «зона включена», поэтому регистрировать можно сразу:
+		// пока туториал её не активировал, указатель молчит сам.
+		if (Pointers)
+		{
+			Pointers->RegisterObjective(TEXT("Objective.Evac"), *It,
+				NSLOCTEXT("XRU1.Objective", "PointerEvac", "ЭВАКУАЦИЯ"),
+				EObjectivePointerRule::WhileEvacActive, EObjectivePointerTone::Normal);
+		}
 	}
 
 	const EDifficultyLevel Difficulty = ResolveDifficulty();
@@ -244,6 +272,17 @@ void ATacticsGameMode::StartMissionCombat()
 	// бомбы нет, но после D2 все голограммы мертвы, и без учёта evac-зоны бой
 	// закончился бы победой ДО шага D3 «эвакуировать отряд».
 	TurnManager->bAutoWinWhenEnemiesDead = bWinWhenAllEnemiesDead && !bHasBomb && !bHasEvacZone;
+
+	// Туман получает новую сессию ДО первого хода: `Showreel_Scene` общая для
+	// Tutorial и Mission01, поэтому идентификатор сессии — пара
+	// `ScenarioId + RunId`, а не имя загруженной карты. Первый полный пересчёт
+	// проходит здесь же, чтобы бой не начинался с кадра, где видна вся
+	// расстановка врагов.
+	if (UFogOfWarSubsystem* Fog = GetWorld()->GetSubsystem<UFogOfWarSubsystem>())
+	{
+		Fog->ResetForScenario(Scenario ? Scenario->ScenarioId : NAME_None,
+			GameInstance ? GameInstance->GetActiveScenarioRunId() : 0);
+	}
 
 	bCombatStarted = true;
 	TurnManager->StartCombat(Players, Enemies);

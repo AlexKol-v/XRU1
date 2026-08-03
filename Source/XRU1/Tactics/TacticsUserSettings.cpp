@@ -2,10 +2,15 @@
 
 #include "TacticsAudioSubsystem.h"
 #include "TacticalPlayerController.h"
+#include "SubtitleProjectSettings.h"
+#include "SubtitleSubsystem.h"
 #include "XRU1Log.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "Internationalization/Culture.h"
+#include "Internationalization/Internationalization.h"
+#include "Misc/ConfigCacheIni.h"
 
 UTacticsUserSettings* UTacticsUserSettings::Get()
 {
@@ -54,6 +59,90 @@ void UTacticsUserSettings::SetVideoSettings(const FTacticsVideoSettings& NewSett
 	SetResolutionScaleNormalized(ScreenScale);
 	SetFullscreenMode(bFullscreenMode ? EWindowMode::WindowedFullscreen : EWindowMode::Windowed);
 	SetVSyncEnabled(bVerticalSync);
+}
+
+FTacticsSubtitleSettings UTacticsUserSettings::GetSubtitleSettings() const
+{
+	FTacticsSubtitleSettings Settings;
+	Settings.bEnabled = bSubtitlesEnabled;
+	Settings.bShowSpeakerNames = bSubtitleSpeakerNames;
+	Settings.TextSize = SubtitleTextSize;
+	Settings.Backdrop = SubtitleBackdrop;
+	return Settings;
+}
+
+void UTacticsUserSettings::SetSubtitleSettings(const FTacticsSubtitleSettings& NewSettings)
+{
+	bSubtitlesEnabled = NewSettings.bEnabled;
+	bSubtitleSpeakerNames = NewSettings.bShowSpeakerNames;
+	SubtitleTextSize = NewSettings.TextSize;
+	SubtitleBackdrop = NewSettings.Backdrop;
+
+	// Движковый выключатель держим в синхроне: субтитры, пришедшие любым другим
+	// путём (SoundWave-cue, будущий плагин Epic), обязаны подчиняться той же
+	// галочке, иначе «субтитры выключены» окажется полуправдой.
+	if (GEngine)
+	{
+		GEngine->bSubtitlesEnabled = bSubtitlesEnabled;
+	}
+
+	// Строку, висящую на экране в момент выключения, снимаем сразу: ждать конца
+	// реплики после снятия галочки игрок не должен.
+	if (!bSubtitlesEnabled)
+	{
+		if (const UWorld* World = GEngine ? GEngine->GetCurrentPlayWorld() : nullptr)
+		{
+			if (UXRU1SubtitleSubsystem* Subtitles = UXRU1SubtitleSubsystem::Get(World))
+			{
+				Subtitles->HideAll();
+			}
+		}
+	}
+}
+
+FString UTacticsUserSettings::GetLanguage()
+{
+	return FInternationalization::Get().GetCurrentLanguage()->GetName();
+}
+
+TArray<FString> UTacticsUserSettings::GetAvailableLanguages()
+{
+	return UXRU1SubtitleSettings::Get().AvailableCultures;
+}
+
+void UTacticsUserSettings::SetPendingLanguage(const FString& Culture)
+{
+	PendingCulture = (Culture == GetLanguage()) ? FString() : Culture;
+}
+
+FString UTacticsUserSettings::GetSelectedLanguage() const
+{
+	return PendingCulture.IsEmpty() ? GetLanguage() : PendingCulture;
+}
+
+bool UTacticsUserSettings::ApplyPendingLanguage()
+{
+	if (PendingCulture.IsEmpty())
+	{
+		return false;
+	}
+
+	const FString Culture = PendingCulture;
+	PendingCulture.Reset();
+
+	if (!FInternationalization::Get().SetCurrentLanguageAndLocale(Culture))
+	{
+		UE_LOG(LogXRU1UI, Warning, TEXT("[Settings] не удалось переключить язык на '%s'"), *Culture);
+		return false;
+	}
+
+	// Персист там же, откуда движок читает язык при старте упакованной игры.
+	GConfig->SetString(TEXT("Internationalization"), TEXT("Culture"), *Culture, GGameUserSettingsIni);
+	GConfig->Flush(false, GGameUserSettingsIni);
+
+	UE_LOG(LogXRU1UI, Display, TEXT("[Settings] язык переключён на '%s'%s"), *Culture,
+		GIsEditor ? TEXT(" (в редакторе выбор при старте не перечитывается)") : TEXT(""));
+	return true;
 }
 
 FTacticsCameraSettings UTacticsUserSettings::GetCameraSettings() const
@@ -132,6 +221,10 @@ void UTacticsUserSettings::ResetToProjectDefaults(const UObject* WorldContext)
 
 	SetCameraSettings(FTacticsCameraSettings(), WorldContext);
 
+	// Субтитры возвращаются к дефолтам структуры; язык остаётся выбранным
+	// игроком (см. комментарий в SetToDefaults).
+	SetSubtitleSettings(FTacticsSubtitleSettings());
+
 	UE_LOG(LogXRU1UI, Display,
 		TEXT("[Settings] сброс к дефолтам проекта: Master=%.2f Music=%.2f Sfx=%.2f UI=%.2f Voice=%.2f%s"),
 		MasterVolume, MusicVolume, SfxVolume, UIVolume, VoiceVolume,
@@ -186,6 +279,15 @@ void UTacticsUserSettings::SetToDefaults()
 	ScreenScale = 1.f;
 	bFullscreenMode = true;
 	bVerticalSync = true;
+
+	// Субтитры — дефолты структуры (тот же приём, что у камеры ниже). Язык при
+	// сбросе НЕ трогаем: игрок, сбросивший настройки на незнакомом языке, не
+	// должен ещё и терять понятный ему интерфейс.
+	const FTacticsSubtitleSettings DefaultSubtitles;
+	bSubtitlesEnabled = DefaultSubtitles.bEnabled;
+	bSubtitleSpeakerNames = DefaultSubtitles.bShowSpeakerNames;
+	SubtitleTextSize = DefaultSubtitles.TextSize;
+	SubtitleBackdrop = DefaultSubtitles.Backdrop;
 
 	// Камера — дефолты структуры: один источник значений по умолчанию.
 	const FTacticsCameraSettings DefaultCamera;

@@ -9,6 +9,7 @@ class AUnitBase;
 class UMaterialInterface;
 class UMediaPlayer;
 class UMediaSource;
+class USubtitleTrackDataAsset;
 class UTexture2D;
 
 /** Экран, для которого запрашивается крупный арт из общей UI-темы. */
@@ -388,6 +389,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "04. Экраны|Интро")
 	TSoftObjectPtr<UMediaPlayer> IntroMediaPlayer;
 
+	/**
+	 * Титры ролика: массив реплик с привязкой ко времени.
+	 *
+	 * В самом видео титров нет и быть не должно — вшитые не переводятся, не
+	 * масштабируются и не отключаются. Ведёт их `UMediaSubtitleDriver` по
+	 * времени плеера выше. Не задан — ролик идёт без титров.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "04. Экраны|Интро")
+	TSoftObjectPtr<USubtitleTrackDataAsset> IntroSubtitleTrack;
+
 	// --- Размеры отдельных элементов ----------------------------------------
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "05. Разметка|Портрет", meta = (ClampMin = "1"))
@@ -523,6 +534,95 @@ public:
 	/** Цвет статусных надписей («НАБЛЮДЕНИЕ» и т.п.). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "08. Боевой фидбек")
 	FLinearColor FloatingStatusColor = FLinearColor(0.72f, 0.94f, 1.f, 1.f);
+
+	// --- 08a. Указатель на цель миссии ---------------------------------------
+	// Аналог XCOM 2 (`UISpecialMissionHUD_Arrows` + `XComGameState_IndicatorArrow`):
+	// цель, ушедшая за край кадра, всё равно показывает направление. Дефолты
+	// подобраны так, чтобы указатель работал и без назначенного DataAsset.
+
+	/** Отступ стрелки от края экрана (px). У XCOM это `ScreenEdgePadding`. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "08a. Указатель цели", meta = (ClampMin = "0"))
+	float ObjectivePointerEdgePadding = 72.f;
+
+	/** Высота метки над точкой цели (см). XCOM: `Offset` со значением 128 uu. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "08a. Указатель цели")
+	float ObjectivePointerWorldZOffset = 150.f;
+
+	/** Размер треугольной стрелки (px). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "08a. Указатель цели", meta = (ClampMin = "4"))
+	float ObjectivePointerArrowSize = 22.f;
+
+	/** Кегль подписи под стрелкой (название цели и расстояние). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "08a. Указатель цели", meta = (ClampMin = "6"))
+	int32 ObjectivePointerFontSize = 13;
+
+	/** Обычная цель (зона эвакуации). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "08a. Указатель цели")
+	FLinearColor ObjectivePointerNormalColor = FLinearColor(0.35f, 0.85f, 1.f, 1.f);
+
+	/** Срочная цель (заряд под таймером). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "08a. Указатель цели")
+	FLinearColor ObjectivePointerUrgentColor = FLinearColor(1.f, 0.62f, 0.15f, 1.f);
+
+	// --- 10. Субтитры ---------------------------------------------------------
+	// Единственное место с абсолютными значениями вида субтитра. Настройки
+	// игрока (вкл/выкл, ступень размера, плотность подложки) не дублируют эти
+	// поля, а применяются к ним множителем — см. UXRU1SubtitleSubsystem::GetResolvedStyle.
+
+	/** Кегль реплики (ступень «Обычный»). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "10. Субтитры", meta = (ClampMin = "8"))
+	int32 SubtitleFontSize = 22;
+
+	/** Кегль имени говорящего. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "10. Субтитры", meta = (ClampMin = "6"))
+	int32 SubtitleSpeakerFontSize = 15;
+
+	/** Кегль подсказки пропуска. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "10. Субтитры", meta = (ClampMin = "6"))
+	int32 SubtitleHintFontSize = 12;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "10. Субтитры")
+	FLinearColor SubtitleTextColor = FLinearColor(0.96f, 0.97f, 1.f, 1.f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "10. Субтитры")
+	FLinearColor SubtitleSpeakerColor = FLinearColor(0.55f, 0.82f, 0.95f, 1.f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "10. Субтитры")
+	FLinearColor SubtitleHintColor = FLinearColor(0.62f, 0.68f, 0.72f, 1.f);
+
+	/** Цвет и непрозрачность подложки (ступень «Полупрозрачная»). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "10. Субтитры")
+	FLinearColor SubtitleBackdropColor = FLinearColor(0.f, 0.02f, 0.04f, 0.62f);
+
+	/** Внутренний отступ подложки. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "10. Субтитры")
+	FMargin SubtitleBackdropPadding = FMargin(24.f, 12.f);
+
+	/** Ширина переноса строки, px. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "10. Субтитры", meta = (ClampMin = "200"))
+	float SubtitleWrapWidth = 980.f;
+
+	/** Отступ снизу вне боя: меню, интро, брифинг, экран результата. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "10. Субтитры", meta = (ClampMin = "0"))
+	float SubtitleCinematicBottomOffset = 96.f;
+
+	/**
+	 * Отступ снизу в бою и хабе: строка встаёт НАД панелью способностей.
+	 * Число, а не привязка к виджету: связывать оверлей с чужой разметкой
+	 * дороже, чем поправить одно поле при переделке HUD.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "10. Субтитры", meta = (ClampMin = "0"))
+	float SubtitleGameplayBottomOffset = 232.f;
+
+	/**
+	 * Рисовать подсказку «[Пробел — пропустить]» у пропускаемых реплик.
+	 *
+	 * Выключено, пока авторские тексты тактов обучения содержат эту подсказку
+	 * внутри самой реплики: иначе она удвоится. Включать после чистки текстов
+	 * (см. `docs/14_SUBTITLES.md`).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "10. Субтитры")
+	bool bSubtitleShowSkipHint = false;
 
 	// CommonUI-стили (Primary/Secondary/Danger кнопки, Title/Body/Caption текст)
 	// удалены 2026-08-03: в ассете они были None, а применить их было некому —

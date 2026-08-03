@@ -63,13 +63,9 @@ void UMissionResultWidget::PlayOutcomeVoice()
 		return; // сценарий молчит — это штатная настройка, не ошибка
 	}
 
-	USoundBase* Voice = Line.LoadSynchronous(); // экран результата — не горячий путь
-	UTacticsAudioSubsystem* Audio = GetGameInstance()
-		? GetGameInstance()->GetSubsystem<UTacticsAudioSubsystem>() : nullptr;
-	if (Voice && Audio)
-	{
-		Audio->PlayVoice2D(Voice);
-	}
+	// Реплика принадлежит ЭКРАНУ: уйдя с итогов, игрок не должен слушать эпилог
+	// поверх хаба (и видеть его субтитр там же).
+	PlayScreenVoice(Line.LoadSynchronous()); // экран результата — не горячий путь
 }
 
 bool UMissionResultWidget::IsTutorialScenario() const

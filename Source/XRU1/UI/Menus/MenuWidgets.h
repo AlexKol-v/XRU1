@@ -4,6 +4,7 @@
 #include "CommonActivatableWidget.h"
 // FKey/EKeys: интро различает клавиши пропуска в NativeOnKeyDown.
 #include "InputCoreTypes.h"
+#include "SubtitleTypes.h"
 #include "TacticsAudioTypes.h"
 #include "TacticsTypes.h"
 #include "TacticalHUDStyleData.h"
@@ -62,6 +63,29 @@ protected:
 
 	/** Подсистема звука UI (nullptr вне рантайма — Designer preview). */
 	UTacticsAudioSubsystem* GetAudioSubsystem() const;
+
+	/**
+	 * Играет реплику, ПРИНАДЛЕЖАЩУЮ ЭКРАНУ (брифинг, итог операции).
+	 *
+	 * Такая реплика обязана умереть вместе с экраном: игрок, закрывший брифинг
+	 * через секунду после открытия, не должен слушать вводную поверх хаба и
+	 * видеть её субтитр на чужом экране. Владение звуком у того, кто его начал —
+	 * стандартная схема UI-аудио (так же устроены экраны в Lyra/CommonUI).
+	 *
+	 * Реплики МИРА (вводная хаба, реплики боя) сюда не относятся: они живут
+	 * своей жизнью и играются напрямую через `UTacticsAudioSubsystem`.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Menu|Audio")
+	void PlayScreenVoice(USoundBase* Voice);
+
+	/**
+	 * Обрывает реплику этого экрана. Идемпотентно.
+	 *
+	 * Субтитр снимать отдельно не нужно: он привязан к тому же звуковому
+	 * компоненту и уходит вместе с ним (`OnAudioFinished` шлётся и при `Stop()`).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Menu|Audio")
+	void StopScreenVoice();
 
 	/**
 	 * Вешает на кнопку звуки интерфейса (наведение/клик). AddUniqueDynamic:
@@ -135,6 +159,9 @@ private:
 	 * с общим именем закрытие настроек, открытых из паузы, сняло бы и паузу.
 	 */
 	FName PauseReasonId;
+
+	/** Звуковой компонент реплики этого экрана; слабая ссылка — он авто-уничтожается. */
+	TWeakObjectPtr<class UAudioComponent> ScreenVoice;
 };
 
 /**
@@ -252,6 +279,19 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Menu|Settings")
 	void ApplyCameraSettings(const FTacticsCameraSettings& NewSettings, bool bSaveToSlot = true);
 
+	// --- Субтитры и язык ------------------------------------------------------
+
+	UFUNCTION(BlueprintPure, Category = "Menu|Settings")
+	FTacticsSubtitleSettings GetSubtitleSettings() const;
+
+	/** Применяет настройки субтитров сразу: строка на экране меняется на глазах. */
+	UFUNCTION(BlueprintCallable, Category = "Menu|Settings")
+	void ApplySubtitleSettings(const FTacticsSubtitleSettings& NewSettings, bool bSaveToSlot = true);
+
+	/** Языки проекта; индекс совпадает с позицией в `Cmb_Language`. */
+	UFUNCTION(BlueprintPure, Category = "Menu|Settings")
+	TArray<FString> GetAvailableLanguages() const;
+
 	/** Возвращает и применяет значения по умолчанию. */
 	UFUNCTION(BlueprintCallable, Category = "Menu|Settings")
 	void ResetToDefaults();
@@ -284,6 +324,15 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UCheckBox> Chk_InvertPitch;
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UCheckBox> Chk_EdgeScroll;
 
+	// --- Субтитры и язык ------------------------------------------------------
+	// Язык применяется ОТЛОЖЕННО (по «Применить»): смена культуры перезагружает
+	// весь текст игры, и делать это на каждый клик по списку нельзя.
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UCheckBox> Chk_Subtitles;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UCheckBox> Chk_SubtitleSpeakers;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UComboBoxString> Cmb_SubtitleSize;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UComboBoxString> Cmb_SubtitleBackdrop;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UComboBoxString> Cmb_Language;
+
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Apply;
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Reset;
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Back;
@@ -297,6 +346,9 @@ private:
 
 	/** Собирает настройки камеры из контролов секции «Камера». */
 	FTacticsCameraSettings CollectCameraSettings() const;
+
+	/** Собирает настройки субтитров из контролов секции «Субтитры». */
+	FTacticsSubtitleSettings CollectSubtitleSettings() const;
 
 	/** Границы, в которых слайдер 0..1 отображается в реальные значения камеры. */
 	static constexpr float CameraFovMin = 45.f;
@@ -324,6 +376,13 @@ private:
 	UFUNCTION() void HandleCameraSliderValue(float NewValue);
 	UFUNCTION() void HandleCameraCaptureEnd();
 	UFUNCTION() void HandleCameraCheckChanged(bool bIsChecked);
+
+	/** Переключение галочек и списков секции «Субтитры»: применяем немедленно. */
+	UFUNCTION() void HandleSubtitleCheckChanged(bool bIsChecked);
+	UFUNCTION() void HandleSubtitleComboChanged(FString SelectedItem, ESelectInfo::Type SelectionType);
+
+	/** Выбор языка: только запоминаем, применение — по «Применить». */
+	UFUNCTION() void HandleLanguageChanged(FString SelectedItem, ESelectInfo::Type SelectionType);
 
 	UFUNCTION() void HandleApplyClicked();
 	UFUNCTION() void HandleResetClicked();
@@ -436,6 +495,15 @@ private:
 	/** Создаёт и запускает звуковой компонент ролика (идемпотентно). */
 	void CreateIntroSound();
 
+	/**
+	 * Запускает ведение титров ролика (идемпотентно).
+	 *
+	 * Титров в самом видео нет намеренно: вшитые не переводятся, не
+	 * масштабируются и не отключаются. Текст лежит в `USubtitleTrackDataAsset`
+	 * (поле темы `IntroSubtitleTrack`), а время даёт сам плеер.
+	 */
+	void StartIntroSubtitles();
+
 	/** Плеер интро из темы; держим ссылку, чтобы отписаться и остановить. */
 	UPROPERTY(Transient)
 	TObjectPtr<UMediaPlayer> IntroPlayer;
@@ -446,6 +514,10 @@ private:
 	 */
 	UPROPERTY(Transient)
 	TObjectPtr<class UMediaSoundComponent> IntroSound;
+
+	/** Драйвер титров ролика; снимается вместе с воспроизведением. */
+	UPROPERTY(Transient)
+	TObjectPtr<class UMediaSubtitleDriver> SubtitleDriver;
 
 	/** Интро уже завершено — второй переход в хаб не нужен. */
 	bool bIntroFinished = false;

@@ -472,8 +472,8 @@ bool UXRU1WidgetAuthoringLibrary::BuildSettingsMenuLayout(const FString& AssetPa
 	const FMenuPalette Palette = LoadPalette();
 	UWidgetTree* Tree = Blueprint->WidgetTree;
 
-	// Секций стало три (звук, изображение, камера) — экран не влезает в окно
-	// целиком, поэтому панель ограничена по высоте и прокручивается.
+	// Секций четыре (звук, изображение, камера, субтитры) — экран не влезает в
+	// окно целиком, поэтому панель ограничена по высоте и прокручивается.
 	UVerticalBox* Footer = nullptr;
 	UVerticalBox* Content = MakeScreenScaffold(Blueprint,
 		NSLOCTEXT("XRU1.Menu", "SettingsTitle", "НАСТРОЙКИ"), Palette, 900.f,
@@ -549,6 +549,37 @@ bool UXRU1WidgetAuthoringLibrary::BuildSettingsMenuLayout(const FString& AssetPa
 	UCheckBox* EdgeScroll = Tree->ConstructWidget<UCheckBox>(UCheckBox::StaticClass(), TEXT("Chk_EdgeScroll"));
 	AddLabeledRow(Tree, Content,
 		NSLOCTEXT("XRU1.Menu", "CamEdgeScroll", "Панорама у края экрана"), EdgeScroll, Palette);
+
+	// --- Субтитры и язык ------------------------------------------------------
+	// Опции всех трёх списков заполняет `NativeOnInitialized`: их порядок обязан
+	// совпадать со значениями enum, а вбитые руками в Designer строки разъедутся
+	// с ними при первом же добавлении варианта — и настройка начнёт врать.
+	// Внешний вид субтитров (шрифт, цвета, подложка, перенос, высота) сюда НЕ
+	// выносится: он живёт в теме `DA_TacticalHUDStyle`, секция «09. Субтитры».
+	AddSectionHeader(Tree, Content,
+		NSLOCTEXT("XRU1.Menu", "SettingsSubtitles", "СУБТИТРЫ И ЯЗЫК"), Palette);
+
+	UCheckBox* Subtitles = Tree->ConstructWidget<UCheckBox>(UCheckBox::StaticClass(), TEXT("Chk_Subtitles"));
+	AddLabeledRow(Tree, Content, NSLOCTEXT("XRU1.Menu", "SubOn", "Субтитры"), Subtitles, Palette);
+
+	UCheckBox* Speakers = Tree->ConstructWidget<UCheckBox>(UCheckBox::StaticClass(), TEXT("Chk_SubtitleSpeakers"));
+	AddLabeledRow(Tree, Content,
+		NSLOCTEXT("XRU1.Menu", "SubSpeakers", "Показывать имена говорящих"), Speakers, Palette);
+
+	UComboBoxString* SubSize = Tree->ConstructWidget<UComboBoxString>(
+		UComboBoxString::StaticClass(), TEXT("Cmb_SubtitleSize"));
+	AddLabeledRow(Tree, Content, NSLOCTEXT("XRU1.Menu", "SubSize", "Размер текста"), SubSize, Palette);
+
+	UComboBoxString* SubBackdrop = Tree->ConstructWidget<UComboBoxString>(
+		UComboBoxString::StaticClass(), TEXT("Cmb_SubtitleBackdrop"));
+	AddLabeledRow(Tree, Content, NSLOCTEXT("XRU1.Menu", "SubBackdrop", "Подложка"), SubBackdrop, Palette);
+
+	// Язык применяется отложенно, по общей кнопке «Применить»: смена культуры
+	// перезагружает весь текст игры, и делать это на каждый щелчок в списке —
+	// значит дёргать экран под руками игрока.
+	UComboBoxString* Language = Tree->ConstructWidget<UComboBoxString>(
+		UComboBoxString::StaticClass(), TEXT("Cmb_Language"));
+	AddLabeledRow(Tree, Content, NSLOCTEXT("XRU1.Menu", "SubLanguage", "Язык"), Language, Palette);
 
 	// В футер, а не в прокручиваемое содержимое: выход с экрана обязан быть на
 	// виду при любой прокрутке.

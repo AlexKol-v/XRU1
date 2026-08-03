@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Subsystems/WorldSubsystem.h"
+#include "SubtitleTypes.h"
 #include "TutorialPresentation.generated.h"
 
 class UAudioComponent;
@@ -132,6 +133,16 @@ private:
 	 * Естественное окончание такта голос НЕ рубит: фраза дотягивает хвост.
 	 */
 	TWeakObjectPtr<UAudioComponent> ActiveVoiceComponent;
+
+	/**
+	 * Субтитр текущей реплики в общем слое (`UXRU1SubtitleSubsystem`).
+	 *
+	 * Временем реплики владеет задача StateTree — она считает `Duration`, обмен
+	 * репликами и пропуск игроком, — поэтому слой субтитров получает строку в
+	 * режиме «снимет владелец»: собственных часов у него для обучения нет и
+	 * разойтись с тактом ему нечем.
+	 */
+	FXRU1SubtitleHandle SubtitleHandle;
 
 	/** Запрошен пропуск текущей реплики. */
 	bool bSkipRequested = false;

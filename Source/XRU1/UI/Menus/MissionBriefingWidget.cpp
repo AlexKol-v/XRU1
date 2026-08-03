@@ -31,17 +31,16 @@ void UMissionBriefingWidget::SetupFromPOI(AMissionPointOfInterest* POI)
 
 void UMissionBriefingWidget::PlayBriefingVoice()
 {
-	// Реплика принадлежит МИССИИ, а не экрану: брифинг один на все операции.
+	// ТЕКСТ реплики принадлежит миссии (брифинг один на все операции), а её
+	// воспроизведение — экрану (см. PlayScreenVoice ниже).
 	const UTacticalScenarioDataAsset* Scenario = PointOfInterest ? PointOfInterest->Scenario : nullptr;
 	if (!Scenario || Scenario->BriefingVoice.IsNull())
 	{
 		return; // реплика не записана — экран просто молчит
 	}
-	USoundBase* Line = Scenario->BriefingVoice.LoadSynchronous(); // экран не горячий путь
-	if (UTacticsAudioSubsystem* Audio = GetAudioSubsystem())
-	{
-		Audio->PlayVoice2D(Line);
-	}
+	// Реплика принадлежит ЭКРАНУ: закрыв брифинг, игрок не должен продолжать
+	// слушать вводную поверх хаба и видеть её субтитр на чужом экране.
+	PlayScreenVoice(Scenario->BriefingVoice.LoadSynchronous()); // экран не горячий путь
 }
 
 void UMissionBriefingWidget::RefreshFromPOI()

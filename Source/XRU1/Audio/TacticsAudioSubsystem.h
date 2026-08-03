@@ -214,9 +214,16 @@ public:
 	 * Реплика «Купола»/бойца (2D, поверх боя). Возвращает компонент, чтобы
 	 * следующая реплика могла оборвать предыдущую: две накладывающиеся фразы
 	 * читаются как баг, а не как «живой эфир».
+	 *
+	 * `bAutoSubtitle` — показать субтитр по данным САМОГО ассета озвучки
+	 * (`USoundSubtitleData` в его `Asset User Data`). Так новая озвученная
+	 * реплика получает текст без правок кода: брифинг, экран результата и
+	 * вводная хаба обслуживаются одним этим вызовом. Выключается там, где текст
+	 * ведёт другой источник со своими часами (такт обучения).
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Audio|Voice")
-	UAudioComponent* PlayVoice2D(USoundBase* Voice, float VolumeMultiplier = 1.f);
+	UAudioComponent* PlayVoice2D(USoundBase* Voice, float VolumeMultiplier = 1.f,
+		bool bAutoSubtitle = true);
 
 	/**
 	 * Вводная Купола про оперативную карту — РОВНО ОДИН раз на кампанию.

@@ -11,6 +11,7 @@
 #include "PrimaryGameLayout.h"
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetSystemLibrary.h"
+#include "Components/AudioComponent.h"
 #include "Components/Button.h"
 #include "Components/CheckBox.h"
 #include "Components/ComboBoxString.h"
@@ -22,6 +23,9 @@
 #include "MediaPlayer.h"
 #include "MediaSoundComponent.h"
 #include "MediaSource.h"
+#include "MediaSubtitleDriver.h"
+#include "SubtitleProjectSettings.h"
+#include "SubtitleTrackDataAsset.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
 
@@ -172,7 +176,13 @@ void UMenuScreenBase::NativeOnDeactivated()
 void UMenuScreenBase::NativeDestruct()
 {
 	// Единственная точка снятия: экран уходит со стека (закрыт, travel, смена
-	// уровня). Ни пауза, ни фон, ни спрятанный HUD не должны пережить свой экран.
+	// уровня). Ни пауза, ни фон, ни спрятанный HUD, ни РЕПЛИКА экрана не должны
+	// пережить свой экран.
+	//
+	// Именно здесь, а не в NativeOnDeactivated: деактивация означает лишь «экран
+	// ушёл под другой» (настройки поверх брифинга), и там реплику рвать нельзя —
+	// её и так ставит на паузу UGamePauseSubsystem вместе с миром.
+	StopScreenVoice();
 	ReleasePauseHold();
 	if (UPrimaryGameLayout* RootLayout = GetRootLayout())
 	{
@@ -180,6 +190,37 @@ void UMenuScreenBase::NativeDestruct()
 		RootLayout->SetGameLayerHidden(this, false);
 	}
 	Super::NativeDestruct();
+}
+
+void UMenuScreenBase::PlayScreenVoice(USoundBase* Voice)
+{
+	// Своя предыдущая реплика обрывается: экран говорит одну фразу за раз.
+	StopScreenVoice();
+
+	if (!Voice)
+	{
+		return; // реплика не записана — экран просто молчит
+	}
+	if (UTacticsAudioSubsystem* Audio = GetAudioSubsystem())
+	{
+		ScreenVoice = Audio->PlayVoice2D(Voice);
+	}
+}
+
+void UMenuScreenBase::StopScreenVoice()
+{
+	if (UAudioComponent* Voice = ScreenVoice.Get())
+	{
+		if (Voice->IsPlaying())
+		{
+			UE_LOG(LogXRU1UI, Display, TEXT("[Menu] экран '%s' уходит — обрывает свою реплику"),
+				*GetName());
+		}
+		// Stop() шлёт OnAudioFinished, поэтому субтитр снимется сам: он привязан
+		// к этому же компоненту, а не к отдельному таймеру.
+		Voice->Stop();
+	}
+	ScreenVoice.Reset();
 }
 
 void UMenuScreenBase::ReleasePauseHold()
@@ -562,6 +603,11 @@ void UIntroPlayerWidget::HandleMediaOpened(FString OpenedUrl)
 	// цепочке ассетов — ролик был открыт (ready=1, ошибок нет), но rate=0.
 	// На флаг PlayOnOpen самого MediaPlayer не полагаемся: он выключен по
 	// умолчанию и его легко потерять при пересоздании ассета.
+	// Титры ведём с момента, когда у ролика реально пошло время: до открытия
+	// `GetTime()` стоит на нуле, и реплика с нулевой отметкой висела бы всю
+	// буферизацию.
+	StartIntroSubtitles();
+
 	if (IntroPlayer && !IntroPlayer->IsPlaying())
 	{
 		const bool bStarted = IntroPlayer->Play();
@@ -617,8 +663,32 @@ void UIntroPlayerWidget::CreateIntroSound()
 		*GetNameSafe(IntroSound->SoundClass));
 }
 
+void UIntroPlayerWidget::StartIntroSubtitles()
+{
+	const UTacticalHUDStyleData* Theme = GetUITheme();
+	USubtitleTrackDataAsset* Track = Theme ? Theme->IntroSubtitleTrack.LoadSynchronous() : nullptr;
+	if (!IntroPlayer || !Track)
+	{
+		return; // титры к ролику не заведены — штатная ситуация
+	}
+
+	if (!SubtitleDriver)
+	{
+		SubtitleDriver = NewObject<UMediaSubtitleDriver>(this, TEXT("IntroSubtitleDriver"));
+	}
+	SubtitleDriver->Start(IntroPlayer, Track, TEXT("Intro"));
+}
+
 void UIntroPlayerWidget::StopIntroPlayback()
 {
+	// Титры снимаются ПЕРВЫМИ: пропуск ролика не должен оставлять строку на
+	// экране ни на кадр — следующий экран уже другой.
+	if (SubtitleDriver)
+	{
+		SubtitleDriver->Stop();
+		SubtitleDriver = nullptr;
+	}
+
 	if (IntroSound)
 	{
 		IntroSound->Stop();
@@ -826,9 +896,52 @@ void USettingsMenuWidget::NativeOnInitialized()
 	if (Chk_InvertPitch) { Chk_InvertPitch->OnCheckStateChanged.AddUniqueDynamic(this, &USettingsMenuWidget::HandleCameraCheckChanged); }
 	if (Chk_EdgeScroll)  { Chk_EdgeScroll->OnCheckStateChanged.AddUniqueDynamic(this, &USettingsMenuWidget::HandleCameraCheckChanged); }
 
+	// Субтитры: опции списков создаются здесь, а не в Designer — порядок обязан
+	// совпадать с порядком значений EXRU1SubtitleTextSize/EXRU1SubtitleBackdrop.
+	if (Cmb_SubtitleSize && Cmb_SubtitleSize->GetOptionCount() == 0)
+	{
+		Cmb_SubtitleSize->AddOption(NSLOCTEXT("XRU1.Menu", "SubSizeNormal", "Обычный").ToString());
+		Cmb_SubtitleSize->AddOption(NSLOCTEXT("XRU1.Menu", "SubSizeLarge", "Крупный").ToString());
+		Cmb_SubtitleSize->AddOption(NSLOCTEXT("XRU1.Menu", "SubSizeExtra", "Очень крупный").ToString());
+	}
+	if (Cmb_SubtitleBackdrop && Cmb_SubtitleBackdrop->GetOptionCount() == 0)
+	{
+		Cmb_SubtitleBackdrop->AddOption(NSLOCTEXT("XRU1.Menu", "SubBackNone", "Без подложки").ToString());
+		Cmb_SubtitleBackdrop->AddOption(NSLOCTEXT("XRU1.Menu", "SubBackSoft", "Полупрозрачная").ToString());
+		Cmb_SubtitleBackdrop->AddOption(NSLOCTEXT("XRU1.Menu", "SubBackSolid", "Плотная").ToString());
+	}
+	// Языки — родными именами («русский», «English»): игрок, случайно выбравший
+	// незнакомый язык, обязан найти свой обратно.
+	if (Cmb_Language && Cmb_Language->GetOptionCount() == 0)
+	{
+		for (const FString& Culture : GetAvailableLanguages())
+		{
+			Cmb_Language->AddOption(UXRU1SubtitleSettings::GetCultureDisplayName(Culture).ToString());
+		}
+	}
+
+	if (Chk_Subtitles) { Chk_Subtitles->OnCheckStateChanged.AddUniqueDynamic(this, &USettingsMenuWidget::HandleSubtitleCheckChanged); }
+	if (Chk_SubtitleSpeakers) { Chk_SubtitleSpeakers->OnCheckStateChanged.AddUniqueDynamic(this, &USettingsMenuWidget::HandleSubtitleCheckChanged); }
+	if (Cmb_SubtitleSize) { Cmb_SubtitleSize->OnSelectionChanged.AddUniqueDynamic(this, &USettingsMenuWidget::HandleSubtitleComboChanged); }
+	if (Cmb_SubtitleBackdrop) { Cmb_SubtitleBackdrop->OnSelectionChanged.AddUniqueDynamic(this, &USettingsMenuWidget::HandleSubtitleComboChanged); }
+	if (Cmb_Language) { Cmb_Language->OnSelectionChanged.AddUniqueDynamic(this, &USettingsMenuWidget::HandleLanguageChanged); }
+
 	if (Btn_Apply) { Btn_Apply->OnClicked.AddUniqueDynamic(this, &USettingsMenuWidget::HandleApplyClicked); RegisterButtonSounds(Btn_Apply); }
 	if (Btn_Reset) { Btn_Reset->OnClicked.AddUniqueDynamic(this, &USettingsMenuWidget::HandleResetClicked); RegisterButtonSounds(Btn_Reset); }
 	if (Btn_Back)  { Btn_Back->OnClicked.AddUniqueDynamic(this, &USettingsMenuWidget::HandleBackClicked);   RegisterButtonSounds(Btn_Back); }
+
+	// Диагностика привязок: `BindWidgetOptional` молчит и когда виджета нет, и
+	// когда имя совпало, а тип другой (ComboBox вместо ComboBoxString). Без этой
+	// строки «настройка ничего не делает» выясняется только опытным путём.
+	UE_LOG(LogXRU1UI, Display,
+		TEXT("[Settings] секция субтитров: Chk_Subtitles=%s Chk_SubtitleSpeakers=%s ")
+		TEXT("Cmb_SubtitleSize=%s Cmb_SubtitleBackdrop=%s Cmb_Language=%s (языков в проекте: %d)"),
+		Chk_Subtitles ? TEXT("+") : TEXT("НЕТ"),
+		Chk_SubtitleSpeakers ? TEXT("+") : TEXT("НЕТ"),
+		Cmb_SubtitleSize ? TEXT("+") : TEXT("НЕТ"),
+		Cmb_SubtitleBackdrop ? TEXT("+") : TEXT("НЕТ"),
+		Cmb_Language ? TEXT("+") : TEXT("НЕТ"),
+		GetAvailableLanguages().Num());
 }
 
 void USettingsMenuWidget::NativeOnActivated()
@@ -893,6 +1006,26 @@ void USettingsMenuWidget::RefreshControlsFromSettings()
 	}
 	if (Chk_InvertPitch) { Chk_InvertPitch->SetIsChecked(CameraSettings.bInvertPitch); }
 	if (Chk_EdgeScroll)  { Chk_EdgeScroll->SetIsChecked(CameraSettings.bEdgeScroll); }
+
+	const FTacticsSubtitleSettings Subtitles = GetSubtitleSettings();
+	if (Chk_Subtitles)         { Chk_Subtitles->SetIsChecked(Subtitles.bEnabled); }
+	if (Chk_SubtitleSpeakers)  { Chk_SubtitleSpeakers->SetIsChecked(Subtitles.bShowSpeakerNames); }
+	if (Cmb_SubtitleSize)      { Cmb_SubtitleSize->SetSelectedIndex(static_cast<int32>(Subtitles.TextSize)); }
+	if (Cmb_SubtitleBackdrop)  { Cmb_SubtitleBackdrop->SetSelectedIndex(static_cast<int32>(Subtitles.Backdrop)); }
+
+	if (Cmb_Language)
+	{
+		// Показываем ВЫБРАННЫЙ язык, а не применённый: игрок мог переключить
+		// список и ещё не нажать «Применить» — список обязан помнить его выбор.
+		const UTacticsUserSettings* UserSettings = UTacticsUserSettings::Get();
+		const FString Selected = UserSettings
+			? UserSettings->GetSelectedLanguage() : UTacticsUserSettings::GetLanguage();
+		const int32 Index = GetAvailableLanguages().IndexOfByKey(Selected);
+		if (Index != INDEX_NONE)
+		{
+			Cmb_Language->SetSelectedIndex(Index);
+		}
+	}
 }
 
 FTacticsAudioSettings USettingsMenuWidget::CollectAudioSettings() const
@@ -995,10 +1128,81 @@ void USettingsMenuWidget::HandleCameraCheckChanged(bool /*bIsChecked*/)
 	ApplyCameraSettings(CollectCameraSettings(), /*bSaveToSlot=*/true);
 }
 
+FTacticsSubtitleSettings USettingsMenuWidget::CollectSubtitleSettings() const
+{
+	// База — текущие настройки: отсутствующий в вёрстке контрол ничего не сбросит.
+	FTacticsSubtitleSettings Settings = GetSubtitleSettings();
+
+	if (Chk_Subtitles)        { Settings.bEnabled = Chk_Subtitles->IsChecked(); }
+	if (Chk_SubtitleSpeakers) { Settings.bShowSpeakerNames = Chk_SubtitleSpeakers->IsChecked(); }
+	if (Cmb_SubtitleSize)
+	{
+		Settings.TextSize = static_cast<EXRU1SubtitleTextSize>(
+			FMath::Clamp(Cmb_SubtitleSize->GetSelectedIndex(), 0, 2));
+	}
+	if (Cmb_SubtitleBackdrop)
+	{
+		Settings.Backdrop = static_cast<EXRU1SubtitleBackdrop>(
+			FMath::Clamp(Cmb_SubtitleBackdrop->GetSelectedIndex(), 0, 2));
+	}
+	return Settings;
+}
+
+void USettingsMenuWidget::HandleSubtitleCheckChanged(bool /*bIsChecked*/)
+{
+	if (bUpdatingControls)
+	{
+		return;
+	}
+	ApplySubtitleSettings(CollectSubtitleSettings(), /*bSaveToSlot=*/true);
+}
+
+void USettingsMenuWidget::HandleSubtitleComboChanged(FString /*SelectedItem*/, ESelectInfo::Type /*SelectionType*/)
+{
+	if (bUpdatingControls)
+	{
+		return;
+	}
+	ApplySubtitleSettings(CollectSubtitleSettings(), /*bSaveToSlot=*/true);
+}
+
+void USettingsMenuWidget::HandleLanguageChanged(FString /*SelectedItem*/, ESelectInfo::Type /*SelectionType*/)
+{
+	if (bUpdatingControls || !Cmb_Language)
+	{
+		return;
+	}
+
+	const TArray<FString> Cultures = GetAvailableLanguages();
+	const int32 Index = Cmb_Language->GetSelectedIndex();
+	if (!Cultures.IsValidIndex(Index))
+	{
+		return;
+	}
+
+	// Только запоминаем. Смена языка перезагружает весь текст игры, поэтому она
+	// происходит по «Применить» — как PendingCulture в Lyra.
+	if (UTacticsUserSettings* UserSettings = UTacticsUserSettings::Get())
+	{
+		UserSettings->SetPendingLanguage(Cultures[Index]);
+	}
+}
+
 void USettingsMenuWidget::HandleApplyClicked()
 {
 	ApplyVideoSettings(CollectVideoSettings(), /*bSaveToSlot=*/true);
 	ApplyCameraSettings(CollectCameraSettings(), /*bSaveToSlot=*/true);
+	ApplySubtitleSettings(CollectSubtitleSettings(), /*bSaveToSlot=*/true);
+
+	// Язык — последним: он перестраивает весь текст экрана, и остальные
+	// настройки должны быть уже применены к моменту перезагрузки строк.
+	if (UTacticsUserSettings* UserSettings = UTacticsUserSettings::Get())
+	{
+		if (UserSettings->ApplyPendingLanguage())
+		{
+			RefreshControlsFromSettings();
+		}
+	}
 }
 
 void USettingsMenuWidget::HandleResetClicked()
@@ -1033,6 +1237,42 @@ FTacticsCameraSettings USettingsMenuWidget::GetCameraSettings() const
 		return UserSettings->GetCameraSettings();
 	}
 	return FTacticsCameraSettings();
+}
+
+FTacticsSubtitleSettings USettingsMenuWidget::GetSubtitleSettings() const
+{
+	if (const UTacticsUserSettings* UserSettings = UTacticsUserSettings::Get())
+	{
+		return UserSettings->GetSubtitleSettings();
+	}
+	return FTacticsSubtitleSettings();
+}
+
+TArray<FString> USettingsMenuWidget::GetAvailableLanguages() const
+{
+	return UTacticsUserSettings::GetAvailableLanguages();
+}
+
+void USettingsMenuWidget::ApplySubtitleSettings(const FTacticsSubtitleSettings& NewSettings, bool bSaveToSlot)
+{
+	UTacticsUserSettings* UserSettings = UTacticsUserSettings::Get();
+	if (!UserSettings)
+	{
+		return;
+	}
+
+	// Применяется мгновенно (как звук и камера): если реплика идёт прямо сейчас,
+	// игрок обязан видеть результат, а не гадать.
+	UserSettings->SetSubtitleSettings(NewSettings);
+	if (bSaveToSlot)
+	{
+		UserSettings->SaveSettings();
+	}
+
+	UE_LOG(LogXRU1UI, Display,
+		TEXT("[Settings] субтитры: вкл=%d имена=%d размер=%d подложка=%d"),
+		NewSettings.bEnabled ? 1 : 0, NewSettings.bShowSpeakerNames ? 1 : 0,
+		static_cast<int32>(NewSettings.TextSize), static_cast<int32>(NewSettings.Backdrop));
 }
 
 void USettingsMenuWidget::ApplyCameraSettings(const FTacticsCameraSettings& NewSettings, bool bSaveToSlot)

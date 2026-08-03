@@ -40,6 +40,9 @@ public class XRU1 : ModuleRules
 			// UMediaSoundComponent наследует USynthComponent, чей Start/Stop живёт
 			// в AudioMixer: без этого модуля звук интро не линкуется.
 			"AudioMixer",
+			// UDeveloperSettings: проектные настройки слоя субтитров и языка
+			// (Subtitles/SubtitleProjectSettings) живут в Project Settings.
+			"DeveloperSettings",
 			// PCG nodes (hub landscape scatter/slope filter)
 			"PCG",
 			// Move-range zone fill (Tactics/MoveRangeVisualizer)
@@ -76,6 +79,7 @@ public class XRU1 : ModuleRules
 			"XRU1/Interaction",
 			"XRU1/PCG",
 			"XRU1/Tactics",
+			"XRU1/Subtitles",
 			"XRU1/UI/Menus"
 		});
 

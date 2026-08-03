@@ -30,6 +30,7 @@
 #include "QuestSubsystem.h"
 #include "Engine/GameViewportClient.h"
 #include "FogOfWarSubsystem.h"
+#include "FogRevealableComponent.h" // ховер не берёт скрытого туманом врага
 #include "GameUIManagerSubsystem.h"
 #include "PrimaryGameLayout.h"
 #include "MenuWidgets.h"
@@ -142,6 +143,15 @@ void ATacticalPlayerController::BeginPlay()
 		TurnManager->OnEnemyUnitActivated.AddDynamic(this, &ATacticalPlayerController::HandleEnemyUnitActivated);
 	}
 
+	// Камера реагирует на туман ПОДПИСКОЙ, а не опросом: подхватить врага, когда
+	// он вышел из-за угла, и — что важнее — отпустить его, когда он скрылся.
+	// Ведомая камера за невидимым актором выдаёт его позицию движением кадра.
+	if (UFogOfWarSubsystem* Fog = UFogOfWarSubsystem::Get(this))
+	{
+		Fog->OnActorVisibilityChanged.AddDynamic(
+			this, &ATacticalPlayerController::HandleFogVisibilityChanged);
+	}
+
 	// Ввод: и мир (клики), и UI (HUD). Тот же режим восстанавливает выход из
 	// свободного обзора — одно описание боевого режима на оба места.
 	ApplyCombatInputMode();
@@ -167,6 +177,11 @@ void ATacticalPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason
 			TurnManager->OnTurnStarted.RemoveDynamic(this, &ATacticalPlayerController::HandleTurnStarted);
 			TurnManager->OnEnemyUnitActivated.RemoveDynamic(
 				this, &ATacticalPlayerController::HandleEnemyUnitActivated);
+		}
+		if (UFogOfWarSubsystem* Fog = World->GetSubsystem<UFogOfWarSubsystem>())
+		{
+			Fog->OnActorVisibilityChanged.RemoveDynamic(
+				this, &ATacticalPlayerController::HandleFogVisibilityChanged);
 		}
 	}
 
@@ -365,27 +380,11 @@ void ATacticalPlayerController::PlayerTick(float DeltaTime)
 	UpdatePathPreviewUnderCursor();
 	UpdateSquadOverheadVisibility();
 
-	// Действующий враг вышел из-за угла и стал виден отряду — подхватываем его
-	// камерой прямо на ходу. Троттлинг тот же, что у дебага LOS: сам предикат
-	// делает сферо-свипы по всем бойцам, каждый кадр это лишнее.
-	if (PendingEnemyCameraUnit.IsValid() && IsEnemyPhaseNow())
-	{
-		const float Now = GetWorld()->GetTimeSeconds();
-		if (Now - LastEnemyVisibilityCheckTime >= LOSDebugInterval)
-		{
-			LastEnemyVisibilityCheckTime = Now;
-			AActor* const Enemy = PendingEnemyCameraUnit.Get();
-			if (UTacticsCombatStatics::IsUnitAlive(Enemy) && IsVisibleToSquad(Enemy))
-			{
-				PendingEnemyCameraUnit = nullptr;
-				if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
-				{
-					Camera->SetFollowTarget(Enemy);
-				}
-			}
-		}
-	}
-	else if (!IsEnemyPhaseNow())
+	// Заявка «подхватить врага камерой» живёт только внутри вражеской фазы.
+	// Само подхватывание и отпускание делает HandleFogVisibilityChanged по
+	// событию тумана — опрос отсюда убран: подсистема сама знает момент, когда
+	// видимость изменилась, и повторять её работу каждый кадр незачем.
+	if (!IsEnemyPhaseNow())
 	{
 		PendingEnemyCameraUnit = nullptr; // ход вернулся игроку — заявка протухла
 	}
@@ -529,7 +528,14 @@ void ATacticalPlayerController::UpdateHoverHighlight()
 	if (TraceUnderCursor(Hit))
 	{
 		AUnitBase* Unit = Cast<AUnitBase>(Hit.GetActor());
-		if (Unit && !Unit->IsDead() && !Unit->IsEvacuated())
+		// Туман войны: скрытый враг не берётся под курсор ВООБЩЕ. Один гейт здесь
+		// закрывает сразу три канала — обводку Custom Depth, панель цели (она
+		// строится по `HoveredUnit`) и начальную цель прицеливания в
+		// `BeginAttackTargeting`. Коллизия скрытого врага остаётся включённой
+		// (он обязан быть препятствием), поэтому трейс по нему по-прежнему
+		// попадает — отсекаем именно здесь, а не отключением коллизии.
+		if (Unit && !Unit->IsDead() && !Unit->IsEvacuated() &&
+			!UFogRevealableComponent::IsActorPresentationHidden(Unit))
 		{
 			// В фазу врага свои юниты не интерактивны — наведением их не подсвечиваем
 			// (как в XCOM). Врагов подсвечиваем всегда, чтобы читать их ход.
@@ -2784,7 +2790,11 @@ bool ATacticalPlayerController::IsVisibleToSquad(const AActor* Unit) const
 {
 	const UWorld* World = GetWorld();
 	const UFogOfWarSubsystem* Fog = World ? World->GetSubsystem<UFogOfWarSubsystem>() : nullptr;
-	return Fog && Fog->IsActorCurrentlyVisible(Unit);
+	// Нет подсистемы — значит никто ничего не прячет: отвечаем «видно». Прежний
+	// фолбэк `Fog && ...` давал ОБРАТНЫЙ ответ и расходился с тем же местом в HUD
+	// (`!Fog || Fog->IsActorCurrentlyVisible(...)`). Два разных умолчания на один
+	// вопрос — заготовка для расхождения камеры и счётчика.
+	return !Fog || Fog->IsActorCurrentlyVisible(Unit);
 }
 
 FTacticalMovePreview ATacticalPlayerController::GetMovePreviewAt(const FVector& Location) const
@@ -2857,8 +2867,9 @@ void ATacticalPlayerController::HandleEnemyUnitActivated(AActor* Unit)
 	if (!IsVisibleToSquad(Unit))
 	{
 		// Пока не видим — берём на заметку. Как только он выйдет из-за угла,
-		// PlayerTick подхватит его камерой прямо на бегу (XCOM показывает
-		// вражеский ход с момента ОБНАРУЖЕНИЯ, а не только с его начала).
+		// туман пришлёт событие, и `HandleFogVisibilityChanged` подхватит его
+		// камерой прямо на бегу (XCOM показывает вражеский ход с момента
+		// ОБНАРУЖЕНИЯ, а не только с его начала).
 		PendingEnemyCameraUnit = Unit;
 		return;
 	}
@@ -2867,6 +2878,43 @@ void ATacticalPlayerController::HandleEnemyUnitActivated(AActor* Unit)
 	if (ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn()))
 	{
 		Camera->SetFollowTarget(Unit); // следуем весь его ход (движение + выстрел)
+	}
+}
+
+void ATacticalPlayerController::HandleFogVisibilityChanged(AActor* Actor, bool bVisible)
+{
+	ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn());
+	if (!Camera || !Actor)
+	{
+		return;
+	}
+
+	if (bVisible)
+	{
+		// Вышел из-за угла посреди своего хода — подхватываем прямо на бегу
+		// (XCOM показывает вражеский ход с момента ОБНАРУЖЕНИЯ, а не с начала).
+		if (PendingEnemyCameraUnit.Get() == Actor && IsEnemyPhaseNow() &&
+			UTacticsCombatStatics::IsUnitAlive(Actor))
+		{
+			PendingEnemyCameraUnit = nullptr;
+			Camera->SetFollowTarget(Actor);
+			UE_LOG(LogXRU1Fog, Log, TEXT("[Fog] камера подхватила %s: он стал виден отряду"),
+				*GetNameSafe(Actor));
+		}
+		return;
+	}
+
+	// Скрылся. Если камера вела именно его — отпускаем и возвращаем заявку:
+	// продолжать следование значит рисовать игроку маршрут невидимого врага.
+	if (Camera->GetFollowTarget() == Actor)
+	{
+		Camera->ClearFollowTarget();
+		if (IsEnemyPhaseNow())
+		{
+			PendingEnemyCameraUnit = Actor; // выйдет снова — снова подхватим
+		}
+		UE_LOG(LogXRU1Fog, Log, TEXT("[Fog] камера отпустила %s: он ушёл из зрения отряда"),
+			*GetNameSafe(Actor));
 	}
 }
 

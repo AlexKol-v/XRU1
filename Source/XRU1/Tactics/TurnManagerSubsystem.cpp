@@ -3,6 +3,7 @@
 #include "ActionPointsComponent.h"
 #include "CoverDetectionComponent.h"
 #include "TacticsCombatStatics.h"
+#include "FogOfWarSubsystem.h" // состав сторон и фаза меняют видимость отряда
 #include "TacticalAIDirectorSubsystem.h"
 #include "TacticsAudioSubsystem.h"
 #include "TacticalQuestEvents.h"
@@ -74,6 +75,11 @@ bool UTurnManagerSubsystem::RegisterUnitInCombat(AActor* Unit)
 	{
 		Cover->EvaluateSurroundings();
 	}
+	// Новый участник боя — новый источник зрения или новая цель скрытия.
+	if (UFogOfWarSubsystem* Fog = UFogOfWarSubsystem::Get(this))
+	{
+		Fog->MarkVisibilityDirty(TacticalUnit);
+	}
 	OnUnitsChanged.Broadcast();
 	return true;
 }
@@ -83,6 +89,13 @@ bool UTurnManagerSubsystem::UnregisterUnitFromCombat(AActor* Unit)
 	if (!Unit)
 	{
 		return false;
+	}
+
+	// Состав сторон меняется — туман обязан пересобрать видимость. Помечаем до
+	// ветвлений: обе ветки ниже уходят в return, и дублировать вызов незачем.
+	if (UFogOfWarSubsystem* Fog = UFogOfWarSubsystem::Get(this))
+	{
+		Fog->MarkVisibilityDirty(Unit);
 	}
 
 	const int32 EnemyIndex = EnemySide.IndexOfByKey(Unit);
@@ -213,6 +226,14 @@ void UTurnManagerSubsystem::BeginPhase(ETurnPhase Phase)
 		Phase == ETurnPhase::Enemy ? TEXT("ВРАГ") : TEXT("None"), TurnNumber);
 	CurrentPhase = Phase;
 	ResetActionPointsForSide(Phase == ETurnPhase::Player ? PlayerSide : EnemySide);
+
+	// Граница хода — обязательная точка сверки тумана: за чужой ход мир мог
+	// измениться способами, которые не проходят через события юнита (телепорт
+	// сценария, дверь, снятая голограмма).
+	if (UFogOfWarSubsystem* Fog = UFogOfWarSubsystem::Get(this))
+	{
+		Fog->MarkVisibilityDirty(this);
+	}
 
 	// Память контактов стареет ровно на границе хода: внутри хода достоверность
 	// не должна «плыть» между решениями одного и того же бойца.

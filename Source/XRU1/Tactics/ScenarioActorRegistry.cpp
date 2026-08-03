@@ -5,6 +5,7 @@
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/World.h"
+#include "FogOfWarSubsystem.h" // включение/выключение staged-актора меняет видимость
 #include "GameFramework/Controller.h"
 #include "TurnManagerSubsystem.h"
 #include "UnitBase.h"
@@ -229,6 +230,15 @@ bool UTacticalScenarioSubsystem::SetActorScenarioActive(AActor* Actor, bool bAct
 					EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
 			}
 		}
+	}
+
+	// Туман обязан узнать о смене состава мира: включённая голограмма может
+	// оказаться вне зрения отряда (тогда её прячет уже туман), а выключенная —
+	// исчезнуть из кэша видимых. Оба механизма пишут в один `bHidden` актора,
+	// поэтому пересчёт здесь не опционален.
+	if (UFogOfWarSubsystem* Fog = UFogOfWarSubsystem::Get(this))
+	{
+		Fog->MarkVisibilityDirty(Actor);
 	}
 
 	Component->OnScenarioActiveChanged(bActive);

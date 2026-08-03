@@ -13,6 +13,7 @@ class UAnimMontage;
 class UCoverDetectionComponent;
 class UCurveFloat;
 class UDecalComponent;
+class UFogRevealableComponent;
 class UNavigationInvokerComponent;
 class UGameplayAbility;
 class UTacticalAbility;
@@ -606,6 +607,15 @@ protected:
 	/** Радиус удаления тайлов навмеша (см). Должен быть больше радиуса генерации. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Nav", meta = (ClampMin = "600"))
 	float NavInvokerRemovalRadius = 5500.f;
+
+	/**
+	 * Туман войны: владелец «показан ли юнит игроку». Создаётся ВСЕМ юнитам, а не
+	 * только врагам — сторона юнита известна лишь на экземпляре, а компонент,
+	 * который на своей стороне ничего не делает, стоит дешевле, чем второе место,
+	 * решающее, кому его выдать. Тюнинг (`Override`) — в BP/на экземпляре.
+	 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tactics|FogOfWar")
+	TObjectPtr<UFogRevealableComponent> FogRevealable;
 
 	/** Кольцо-декаль выбранного юнита (скрыто по умолчанию; материал — в BP). */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tactics|Highlight")

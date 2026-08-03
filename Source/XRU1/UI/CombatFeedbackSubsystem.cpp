@@ -1,5 +1,6 @@
 #include "CombatFeedbackSubsystem.h"
 
+#include "FogRevealableComponent.h" // всплывающий текст не выдаёт скрытого врага
 #include "TacticalHUDStyleData.h"
 #include "TacticsGameInstance.h"
 #include "Engine/GameViewportClient.h"
@@ -62,6 +63,15 @@ void UCombatFeedbackSubsystem::PushEntry(AActor* Target, const FText& Text, ECom
 {
 	UWorld* World = GetWorld();
 	if (!World || !Target || Text.IsEmpty())
+	{
+		return;
+	}
+
+	// Туман войны: текст привязан к якорю в мире и рисуется над ним. Над скрытым
+	// врагом он показывает точную позицию словом «НАБЛЮДЕНИЕ» или числом урона.
+	// Гейт стоит в ОДНОЙ точке входа очереди, а не у каждого вида фидбэка:
+	// урон/промах/лечение/статус приходят сюда все.
+	if (UFogRevealableComponent::IsActorPresentationHidden(Target))
 	{
 		return;
 	}

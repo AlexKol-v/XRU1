@@ -2,6 +2,7 @@
 #include "XRU1Log.h"
 
 #include "ActionPointsComponent.h"
+#include "FogRevealableComponent.h" // постановка показывает бойца поверх правил тумана
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
 #include "Components/SkeletalMeshComponent.h"
@@ -34,6 +35,35 @@ namespace TacticalQuestTasks_Internal
 	{
 		UWorld* World = GetWorld(Context);
 		return World ? World->GetSubsystem<UTacticalScenarioSubsystem>() : nullptr;
+	}
+
+	/** Снять удержание ровно с того компонента, у которого оно было взято. */
+	void ReleaseFogReveal(TWeakObjectPtr<UFogRevealableComponent>& InOutHold)
+	{
+		if (UFogRevealableComponent* Reveal = InOutHold.Get())
+		{
+			Reveal->RemoveScriptedRevealHold();
+		}
+		InOutHold = nullptr;
+	}
+
+	/**
+	 * Взять у тумана войны удержание «показывать этого актора» на время такта.
+	 *
+	 * Постановка главнее LOS: шаг ведёт камеру за бойцом, и пустой кадр вместо
+	 * него — это не «правильно сработавший туман», а сломанное обучение. Ровно
+	 * такое исключение есть у Firaxis: `XComGameState_Unit::ForceModelVisible`
+	 * возвращает `eForceVisible`, пока юнит в matinee или в скампере.
+	 */
+	void HoldFogReveal(AActor* Actor, TWeakObjectPtr<UFogRevealableComponent>& OutHold)
+	{
+		ReleaseFogReveal(OutHold); // такт не может держать два удержания сразу
+		if (UFogRevealableComponent* Reveal = Actor
+			? Actor->FindComponentByClass<UFogRevealableComponent>() : nullptr)
+		{
+			Reveal->AddScriptedRevealHold();
+			OutHold = Reveal;
+		}
 	}
 
 	/** Совпадает ли AnchorId объекта с требуемым. Пустой Anchor означает «любой». */
@@ -762,6 +792,11 @@ EStateTreeRunStatus FTacticalTask_ScriptedMove::EnterState(
 	// Возврат фокуса на отряд в это время подавлен (lock-шаг владеет камерой).
 	if (Inst.bCameraFollowUnit)
 	{
+		// Раз камера летит за бойцом — туман обязан его показать. Удержание берём
+		// на ВЕСЬ такт, а не на время привязки камеры: она может временно уступить
+		// кадру реакции, а исчезать при этом боец не должен.
+		TacticalQuestTasks_Internal::HoldFogReveal(Unit, Inst.FogRevealHold);
+
 		if (const UWorld* World = TacticalQuestTasks_Internal::GetWorld(Context))
 		{
 			const APlayerController* PlayerController = World->GetFirstPlayerController();
@@ -880,6 +915,10 @@ void FTacticalTask_ScriptedMove::ExitState(
 		Controller->StopMovement();
 	}
 
+	// Удержание тумана снимается ВСЕГДА и строго по своей ссылке: дальше видимость
+	// решает фактический LOS.
+	TacticalQuestTasks_Internal::ReleaseFogReveal(Inst.FogRevealHold);
+
 	// Камеру отпускаем строго парно к своему SetFollowTarget: следующий шаг
 	// (второй Scripted Move или Beat) сразу поставит свой фокус поверх.
 	if (Inst.bCameraAttached)
@@ -965,6 +1004,14 @@ EStateTreeRunStatus FTacticalTask_ScriptedEnemyTurn::EnterState(
 		UE_LOG(LogXRU1Quest, Display,
 			TEXT("[Tutorial] Scripted Enemy Turn: %s был деактивирован — включён автоматически"),
 			*Inst.UnitAnchorId.ToString());
+	}
+
+	// Постановочный ход врага показывается игроку целиком: камера ведёт его от
+	// выхода до отбегания. Туман на это время отступает — иначе половина такта
+	// C0/C1 обучения игралась бы за кадром.
+	if (Inst.bCameraFollowUnit)
+	{
+		TacticalQuestTasks_Internal::HoldFogReveal(Unit, Inst.FogRevealHold);
 	}
 
 	// Контроллер мог ещё не заспавниться после активации — Tick повторит.
@@ -1070,6 +1117,9 @@ void FTacticalTask_ScriptedEnemyTurn::ExitState(
 			AI->CancelScriptedTurnProgram();
 		}
 	}
+
+	// Такт кончился — туман снова решает сам.
+	TacticalQuestTasks_Internal::ReleaseFogReveal(Inst.FogRevealHold);
 
 	if (Inst.bCameraAttached)
 	{

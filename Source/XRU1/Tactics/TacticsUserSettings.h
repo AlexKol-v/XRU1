@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/GameUserSettings.h"
+#include "SubtitleTypes.h"
 #include "TacticsAudioTypes.h"
 #include "TacticsUserSettings.generated.h"
 
@@ -70,6 +71,54 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Settings")
 	static void ApplyCameraSettings(const UObject* WorldContext);
 
+	// --- Субтитры -------------------------------------------------------------
+
+	UFUNCTION(BlueprintPure, Category = "Tactics|Settings")
+	FTacticsSubtitleSettings GetSubtitleSettings() const;
+
+	/**
+	 * Пишет настройки субтитров и сразу отражает выключатель в движке
+	 * (`GEngine->bSubtitlesEnabled`), чтобы любой движковый путь субтитров
+	 * подчинялся тому же флажку, что и наш слой.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Settings")
+	void SetSubtitleSettings(const FTacticsSubtitleSettings& NewSettings);
+
+	// --- Язык -----------------------------------------------------------------
+
+	/** Текущий язык игры (код культуры ICU). */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Settings")
+	static FString GetLanguage();
+
+	/** Языки, поддерживаемые проектом (из Project Settings). */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Settings")
+	static TArray<FString> GetAvailableLanguages();
+
+	/**
+	 * Запоминает выбранный в меню язык БЕЗ применения.
+	 *
+	 * Смена языка перезагружает весь текст игры и перестраивает экраны, поэтому
+	 * она происходит по «Применить», а не в момент клика по списку (так же
+	 * устроен `PendingCulture` в Lyra).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Settings")
+	void SetPendingLanguage(const FString& Culture);
+
+	/** Язык, выбранный в меню: отложенный, если он есть, иначе текущий. */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Settings")
+	FString GetSelectedLanguage() const;
+
+	/**
+	 * Применяет отложенный язык и запоминает его между запусками.
+	 *
+	 * Персист идёт в `[Internationalization] Culture` файла `GameUserSettings.ini`
+	 * — ровно туда, откуда движок читает язык при старте упакованной игры
+	 * (`FTextLocalizationManager`). В редакторе это чтение не выполняется, то
+	 * есть «язык запомнился» проверяется только в билде.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Settings")
+	bool ApplyPendingLanguage();
+
 	/** Дефолты проекта: берутся из DA_TacticsAudio, если он назначен. */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Settings")
 	void ResetToProjectDefaults(const UObject* WorldContext);
@@ -110,6 +159,19 @@ protected:
 	UPROPERTY(config) float CameraPitchSensitivity = 1.f;
 	UPROPERTY(config) bool bCameraInvertPitch = false;
 	UPROPERTY(config) bool bCameraEdgeScroll = true;
+
+	/** Субтитры: дефолты те же, что у структуры (см. FTacticsSubtitleSettings). */
+	UPROPERTY(config) bool bSubtitlesEnabled = true;
+	UPROPERTY(config) bool bSubtitleSpeakerNames = true;
+	UPROPERTY(config) EXRU1SubtitleTextSize SubtitleTextSize = EXRU1SubtitleTextSize::Normal;
+	UPROPERTY(config) EXRU1SubtitleBackdrop SubtitleBackdrop = EXRU1SubtitleBackdrop::Soft;
+
+	/**
+	 * Язык, выбранный в меню, но ещё не применённый. Не `config`: между
+	 * запусками язык хранит сам движок в `[Internationalization]`, и второе
+	 * место хранения неизбежно разошлось бы с первым.
+	 */
+	UPROPERTY(Transient) FString PendingCulture;
 
 	/** Настройки уже инициализировались дефолтами проекта (первый запуск позади). */
 	UPROPERTY(config) bool bInitializedFromProject = false;

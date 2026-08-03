@@ -68,20 +68,9 @@ void STutorialHintOverlay::Construct(const FArguments& InArgs)
 			.Visibility(this, &STutorialHintOverlay::GetDenialVisibility)
 			.WrapTextAt(WrapWidth)
 		]
-		// Субтитр такта идёт последним и своим цветом: это речь «Купола», а не
-		// инструкция шага, и путать их нельзя — иначе игрок ищет действие в
-		// реплике, которая ничего от него не требует.
-		+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 14.f, 0.f, 0.f)
-		[
-			SNew(STextBlock)
-			.Font(ObjectiveFont)
-			.ColorAndOpacity(FLinearColor(0.85f, 0.93f, 0.75f))
-			.ShadowOffset(Shadow)
-			.ShadowColorAndOpacity(ShadowColor)
-			.Text(this, &STutorialHintOverlay::GetBeatSubtitle)
-			.Visibility(this, &STutorialHintOverlay::GetSubtitleVisibility)
-			.WrapTextAt(WrapWidth)
-		]
+		// Субтитр реплики отсюда убран: речь рисует общий слой субтитров
+		// (`UXRU1SubtitleSubsystem`) внизу экрана — он один на всю игру, виден
+		// вне боя и настраивается игроком. Здесь остаётся только задача шага.
 	];
 }
 
@@ -101,17 +90,6 @@ FText STutorialHintOverlay::GetDenialText() const
 {
 	const ATacticalPlayerController* Controller = Owner.Get();
 	return Controller ? Controller->GetTutorialDenialText() : FText::GetEmpty();
-}
-
-FText STutorialHintOverlay::GetBeatSubtitle() const
-{
-	const ATacticalPlayerController* Controller = Owner.Get();
-	return Controller ? Controller->GetTutorialBeatSubtitle() : FText::GetEmpty();
-}
-
-EVisibility STutorialHintOverlay::GetSubtitleVisibility() const
-{
-	return GetBeatSubtitle().IsEmpty() ? EVisibility::Collapsed : EVisibility::HitTestInvisible;
 }
 
 EVisibility STutorialHintOverlay::GetTitleVisibility() const

@@ -397,10 +397,14 @@ void UTacticalHUDWidget::RefreshActionButtons()
 		Controller->CanIssueCommand(ETacticalPlayerCommand::HunkerDown));
 	SetEnabled(SkipBtn, Controller &&
 		Controller->CanIssueCommand(ETacticalPlayerCommand::SkipUnitTurn));
-	// Пассивка Осы (ClassAbilityClass пуст): кнопка — ИНДИКАТОР «Прицела
-	// отряда». Горит, когда есть цель, достижимая только через зрение союзника
-	// (своей LOS нет) — пассивка сейчас реально действует; раньше кнопка была
-	// вечно серой и выглядела сломанной.
+	// Пассивка Осы (ClassAbilityClass пуст): кнопка — ИНДИКАТОР «Прицела отряда».
+	//
+	// ⚠️ Признак «Squadsight сейчас работает» — это «цель ДАЛЬШЕ собственного
+	// обзора и всё равно доступна». Прежнее условие «доступна, но своей LOS нет»
+	// стало недостижимым после ревизии обнаружения (2026-07-31): `GetTargetStatus`
+	// требует геометрическую линию огня ВСЕГДА, значит `CanTargetActor` и
+	// `!HasLineOfSight` не могут быть истинны одновременно — кнопка была серой
+	// навсегда. Разбор — docs/13_LOS_TARGETING.md §3.1.
 	bool bAbilityEnabled = Controller &&
 		Controller->CanIssueCommand(ETacticalPlayerCommand::ClassAbility);
 	if (Selected && !Selected->ClassAbilityClass)
@@ -410,8 +414,14 @@ void UTacticalHUDWidget::RefreshActionButtons()
 		{
 			for (AActor* Enemy : Turns2->GetOpposingUnits(Selected))
 			{
-				if (UGA_Attack::CanTargetActor(Selected, Enemy) &&
-					!UTacticsCombatStatics::HasLineOfSight(Selected, Enemy))
+				if (!Enemy)
+				{
+					continue;
+				}
+				const float Distance =
+					FVector::Dist(Selected->GetActorLocation(), Enemy->GetActorLocation());
+				if (Distance > UTacticsCombatStatics::SquadVisionRange &&
+					UGA_Attack::CanTargetActor(Selected, Enemy))
 				{
 					bAbilityEnabled = true;
 					break;

@@ -1205,6 +1205,36 @@ ECoverShield UTacticsCombatStatics::GetCoverShieldAgainst(const AActor* Target, 
 	return ECoverShield::None;
 }
 
+bool UTacticsCombatStatics::AnyUnitSees(const TArray<AActor*>& Viewers, const AActor* Target,
+	const AActor* Exclude)
+{
+	if (!Target)
+	{
+		return false;
+	}
+
+	const FVector TargetLocation = Target->GetActorLocation();
+	for (const AActor* Viewer : Viewers)
+	{
+		if (!Viewer || Viewer == Exclude || !IsUnitAlive(Viewer))
+		{
+			continue;
+		}
+		// Дистанция ПЕРЕД трейсами: сферо-свипы дороже сравнения квадратов, а
+		// далёкая пара отсекается без единого запроса к физике.
+		if (FVector::DistSquared(Viewer->GetActorLocation(), TargetLocation) >
+			SquadVisionRange * SquadVisionRange)
+		{
+			continue;
+		}
+		if (HasLineOfSight(Viewer, Target))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 bool UTacticsCombatStatics::SquadHasLineOfSight(const AActor* Unit, const AActor* Target)
 {
 	if (!Unit || !Target)
@@ -1219,16 +1249,9 @@ bool UTacticsCombatStatics::SquadHasLineOfSight(const AActor* Unit, const AActor
 	}
 
 	// Союзники юнита = противники его противников; проще: все юниты его стороны.
-	for (AActor* Ally : TurnManager->GetSideUnits(Unit))
-	{
-		if (Ally && Ally != Unit && IsUnitAlive(Ally) &&
-			FVector::Dist(Ally->GetActorLocation(), Target->GetActorLocation()) <= SquadVisionRange &&
-			HasLineOfSight(Ally, Target))
-		{
-			return true;
-		}
-	}
-	return false;
+	// Сам юнит исключён: Squadsight — это «цель видит КТО-ТО ДРУГОЙ», собственная
+	// видимость проверяется отдельно в GetTargetStatus.
+	return AnyUnitSees(TurnManager->GetSideUnits(Unit), Target, /*Exclude=*/Unit);
 }
 
 void UTacticsCombatStatics::NotifyCombatNoise(AActor* Instigator, const FVector& Location, float Radius)
