@@ -33,6 +33,14 @@ Fix Up Redirectors и сохранением ссылающихся карт (п
 4. В режиме `P` видимая зелёная область не прерывается на целевых проходах.
 5. В persistent остаются общий арт/NavMesh/light/camera bounds и один
    `BP_TacticalScenarioDirector`; gameplay actors лежат в scenario sublevel.
+   ⚠️ **`NavMeshBoundsVolume` и `NavModifierVolume` обязаны лежать в
+   persistent** вместе с `RecastNavMesh`. Аудит 2026-08-03 нашёл регрессию:
+   единственный рабочий bounds оказался в `SL_Showreel_Tutorial`, а второй,
+   третий и все 10 `NavModifierVolume(NavArea_Null)` — в `SL_Showreel_Mission01`.
+   Последствия: (а) область навигации зависит от того, какой sublevel сейчас
+   ВИДИМ — в зонах миссии навмеша не было вовсе (0 из 81 пробы); (б) когда в
+   редакторе видимы оба sublevel, Null-объёмы миссии режут навигацию обучения —
+   это и есть «дырки» на ровной земле.
 6. `SL_Showreel_Tutorial` и `SL_Showreel_Mission01` не загружены одновременно.
 7. Четыре player BP и нужные enemy BP стоят капсулами на NavMesh.
 8. У врагов заполнены `PatrolPoints`, если они начинают в Patrol.

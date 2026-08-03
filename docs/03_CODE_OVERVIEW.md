@@ -41,7 +41,8 @@
 | `UTacticalQuestEvents` / `ATacticalQuestZone` | подтверждённые доменные события обучения и зоны тактических бойцов |
 | `UTacticalScenarioSubsystem` | реестр акторов сценария по `AnchorId` и единое включение staged-акторов |
 | `UTutorialActionGateSubsystem` | политика текущего шага обучения: что игрок вправе сделать прямо сейчас |
-| `UTutorialPresentationSubsystem` | активный такт обучения: спикер, субтитр, фокус камеры, подсветки |
+| `UTutorialPresentationSubsystem` | активный такт обучения: голос, фокус камеры, выдача строки в слой субтитров |
+| `UXRU1SubtitleSubsystem` (+`SXRU1SubtitleOverlay`) | единый слой субтитров: одна строка на экране, три режима её жизни (владелец / по звуку / по времени), рендер поверх всех экранов. Подробно — `14_SUBTITLES.md` |
 | `STutorialHintOverlay` | Slate-трекер целей обучения поверх viewport (без WBP), настройки — в `DA_Tutorial_Style` |
 | `UTutorialStyleData` | презентация обучения: подсказки-цели и мировые декали шага (маркер точки, рамка зоны); резолвится `Get()` → GameInstance → CDO |
 | StateTree-задачи «XRU1 Tutorial» (`TacticalQuestTasks`) | Tactical Objective с payload, Apply Action Gate, Set Scenario Actor Active, Scripted Shot, Tutorial Beat |

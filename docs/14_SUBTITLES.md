@@ -1,9 +1,9 @@
 # 14. Субтитры и локализация: исследование и принятая архитектура
 
-Статус: **исследование завершено, вариант выбран, реализация не начата.**
-Документ прошёл два независимых прохода; второй проход уточнил факты о паузе,
-таймингах обучения и хранении настроек — расхождения с первым проходом отмечены
-явно в §3.4 и §7.
+Статус: **C++-слой реализован и собран; остаток — контент в редакторе (§8).**
+Документ прошёл два независимых прохода исследования; второй проход уточнил
+факты о паузе, таймингах обучения и хранении настроек — расхождения с первым
+проходом отмечены явно в §3.4 и §7.
 
 Задача: один самодостаточный слой субтитров, который обслуживает обучение
 (с теми же таймингами, что сейчас), любую озвучку в проекте и интро-ролик, а
@@ -288,12 +288,13 @@ Accessibility Guidelines 104):
 
 | Файл | Класс | Ответственность |
 |---|---|---|
-| `SubtitleTypes.h` | `FXRU1SubtitleLine`, `EXRU1SubtitleChannel`, `FXRU1SubtitleHandle` | `Speaker` (FText), `Text` (FText), `Channel`, `bSkippable`, `SourceId` (FName) |
-| `SubtitleSubsystem.h/.cpp` | `UXRU1SubtitleSubsystem : UGameInstanceSubsystem` | Три метода показа (§6.2), `HideLine`, `HideAll`, `GetActiveLine()`, события `OnLineShown/OnLineHidden`, `RefreshActiveLine()` для смены языка и позднего рождения UI |
-| `SubtitleTrackDataAsset.h` | `USubtitleTrackDataAsset : UDataAsset` | Массив `{StartTime, Duration, Speaker, Text}` — титры интро и любых будущих роликов |
-| `MediaSubtitleDriver.h/.cpp` | `UMediaSubtitleDriver : UObject` | Ведёт трек по `UMediaPlayer::GetTime()`, вызывает `ShowLine/HideLine`; на `Stop`/скипе снимает всё |
-| `SoundSubtitleData.h` | `USoundSubtitleData : UAssetUserData` | `Speaker` + `Text`, живущие **на самом ассете озвучки**; поля повторяют `FSubtitleAssetData` |
-| `SubtitleDisplayWidget.h/.cpp` | `UXRU1SubtitleDisplay : UUserWidget` | Рендер: `URichTextBlock` в подложке, ширина переноса, два позиционных пресета, реакция на настройки |
+| `SubtitleTypes.h` | `FXRU1SubtitleLine`, `FXRU1SubtitleHandle`, `FXRU1SubtitleStyle`, `FTacticsSubtitleSettings`, `EXRU1SubtitleChannel/TextSize/Backdrop` | Модель данных слоя: `Speaker` (FText), `Text` (FText), `Channel`, `bSkippable`, `SourceId` (FName) |
+| `SubtitleSubsystem.h/.cpp` | `UXRU1SubtitleSubsystem : UGameInstanceSubsystem` | Три режима показа (§6.2), `HideLine`/`HideAll`, `GetActiveLine()`, `GetResolvedStyle()`, событие `OnLineChanged`, `RefreshDisplay()` для смены языка и позднего рождения UI |
+| `SubtitleProjectSettings.h/.cpp` | `UXRU1SubtitleSettings : UDeveloperSettings` | Проектные знания: `bUseBuiltInDisplay`, `DisplayZOrder`, `AvailableCultures`, `DefaultCulture` |
+| `SubtitleTrackDataAsset.h/.cpp` | `USubtitleTrackDataAsset : UDataAsset` | Массив `{StartTime, Duration, Speaker, Text}` — титры интро и любых будущих роликов; `Duration = 0` означает «до следующей реплики» |
+| `MediaSubtitleDriver.h/.cpp` | `UMediaSubtitleDriver : UObject` | Ведёт трек по `UMediaPlayer::GetTime()` через core ticker, вызывает `ShowLine/HideLine`; `Stop()` снимает свою строку |
+| `SoundSubtitleData.h` | `USoundSubtitleData : UAssetUserData` | `Speaker` + `Text` + `HoldAfterSound`, живущие **на самом ассете озвучки**; поля повторяют `FSubtitleAssetData` |
+| `SubtitleOverlay.h/.cpp` | `SXRU1SubtitleOverlay : SCompoundWidget` | Рендер: имя говорящего, текст, подсказка пропуска в подложке; стиль целиком получает из `GetResolvedStyle()` |
 
 Стиль — новая секция `09. Субтитры` в `UTacticalHUDStyleData` (шрифт, размеры
 трёх ступеней, цвет текста, цвет и непрозрачность подложки, ширина переноса,
@@ -303,12 +304,20 @@ Accessibility Guidelines 104):
 
 ### 6.5. Где живёт рендерер и как встаёт по вертикали
 
-Виджет вставляется в `UPrimaryGameLayout` **отдельным слотом поверх всех
-четырёх стеков** (не стек: субтитр не «экран», он не участвует в push/pop).
-Слот объявляется как `BindWidgetOptional`; если разметка его ещё не содержит,
-слой добавляет виджет в viewport с `ZOrder = 10` (выше оверлея подсказок с его
-`ZOrder = 8`) и пишет предупреждение в лог. Так фича работает сразу после
-сборки, а перенос в разметку — вопрос удобства, а не работоспособности.
+Оверлей кладётся прямо в viewport (`AddViewportWidgetContent`) с
+`ZOrder = DisplayZOrder` из настроек проекта (по умолчанию **10**): выше
+корневого лейаута CommonUI (он добавляется с ZOrder 0) и выше оверлея подсказок
+обучения (`ZOrder = 8`). Слот внутри `UPrimaryGameLayout` сознательно НЕ
+используется: он потребовал бы ручной правки `WBP_PrimaryGameLayout` в
+редакторе, а слой обязан работать сразу после сборки, на любой машине и без
+единого действия дизайнера. Взамен подсистема сама следит за жизненным циклом —
+`PostLoadMapWithWorld` чистит ссылки (viewport-виджеты снимаются вместе с
+миром) и ставит оверлей заново при следующей реплике.
+
+Виджет создаётся **лениво**, на первой же строке: в мирах, где субтитров не
+было, лишнего виджета не появляется. Дисплей заменяем: `bUseBuiltInDisplay=false`
+отключает встроенный оверлей, и рисовать берётся любой другой подписчик
+`OnLineChanged` (например WBP), не трогая ни подсистему, ни источники.
 
 Позиция — два пресета из темы, **выбираются автоматически**:
 
@@ -405,39 +414,66 @@ Accessibility Guidelines 104):
 
 ---
 
-## 8. Порядок внедрения
+## 8. Что реализовано (C++ собран) и что осталось в редакторе
 
-1. **Каркас**: `SubtitleTypes` + `UXRU1SubtitleSubsystem` + `UXRU1SubtitleDisplay`
-   + слот в `UPrimaryGameLayout` + секция темы. Проверка: строка, показанная
-   консольной командой, видна в меню, в хабе и в бою, переживает travel,
-   встаёт по двум пресетам.
-2. **Обучение на слой**: хук в `StartBeat`/`FinishBeat`, удаление слота субтитра
-   из `STutorialHintOverlay` и геттера из контроллера, вынос подсказки
-   «[Пробел — пропустить]» из текста реплики в отдельный элемент (`bSkippable`).
-   Регресс: секции A–D проходятся, реплики и обрывы ведут себя как прежде.
-3. **Озвучка носит текст**: `USoundSubtitleData` + чтение в `PlayVoice2D`;
-   заполнить данные у реплик брифинга, результата и прибытия в хаб.
-4. **Интро**: `USubtitleTrackDataAsset` + `UMediaSubtitleDriver`, тексты из
-   `02_LORE_SCRIPT.md`, времена — по монтажу ролика.
-5. **Настройки**: `FTacticsSubtitleSettings` в `UTacticsUserSettings` + секция
-   на экране настроек.
-6. **Локализация**: цели сбора, аудит `FText::FromString`, `ru → en`,
-   переключатель языка + `RefreshActiveLine` на смене культуры.
+### 8.1. Сделано в коде
 
-Шаги 1–4 самодостаточны и дают результат без локализации; шаг 6 не требует
-переделки слоя — к этому моменту он целиком на `FText`.
+| Блок | Где |
+|---|---|
+| Ядро слоя: модель, подсистема, три режима показа, дескрипторы | `Source/XRU1/Subtitles/SubtitleTypes.h`, `SubtitleSubsystem.h/.cpp` |
+| Встроенный дисплей (Slate), позиция по двум пресетам, подложка | `Source/XRU1/Subtitles/SubtitleOverlay.h/.cpp` |
+| Проектные настройки слоя (ZOrder, замена дисплея, список языков) | `Source/XRU1/Subtitles/SubtitleProjectSettings.h/.cpp` |
+| Титры носителей со своим временем | `SubtitleTrackDataAsset.h/.cpp`, `MediaSubtitleDriver.h/.cpp` |
+| Субтитр на ассете озвучки | `SoundSubtitleData.h` |
+| Стиль субтитров в теме UI (секция «09. Субтитры») + `IntroSubtitleTrack` | `UI/TacticalHUDStyleData.h` |
+| Признак «идёт геймплей» для выбора высоты строки | `UPrimaryGameLayout::IsGameLayerVisible()` |
+| Обучение переведено на слой; из оверлея подсказок субтитр убран | `Tactics/TutorialPresentation.cpp`, `Tactics/TutorialHintOverlay.*` |
+| Автосубтитр любой озвучки | `UTacticsAudioSubsystem::PlayVoice2D(..., bAutoSubtitle)` |
+| Титры интро | `UIntroPlayerWidget::StartIntroSubtitles()` + снятие в `StopIntroPlayback()` |
+| Настройки игрока и отложенная смена языка | `TacticsUserSettings.h/.cpp`, секция в `USettingsMenuWidget` |
+| Цель локализации «Game» (ru → en) без машинных путей | `Config/DefaultEditor.ini`, `Config/Localization/Game_{Gather,Compile}.ini` |
+
+Проверка сборки: модуль собирается, UHT сгенерировал все классы слоя.
+
+### 8.2. Осталось сделать в редакторе (кода не требует)
+
+1. **Титры интро.** Создать `DA_Subtitles_Intro` (класс «Таймлайн субтитров») в
+   `/Game/XRU1Game/Data/Missions`, забить реплики с временами по монтажу ролика
+   (тексты — `02_LORE_SCRIPT.md`) и назначить его в теме UI:
+   `DA_TacticalHUDStyle` → «04. Экраны|Интро» → `Intro Subtitle Track`.
+2. **Субтитры к остальной озвучке.** Открыть ассеты реплик (брифинги миссий,
+   победа/поражение, вводная хаба) → Advanced → `Asset User Data` → `+` →
+   «Субтитр озвучки» → заполнить `Speaker` и `Text`. После этого субтитр
+   появляется сам, без правок кода.
+3. **Экран настроек.** Добавить в `WBP_Settings` контролы с каноничными именами
+   (`Chk_Subtitles`, `Chk_SubtitleSpeakers`, `Cmb_SubtitleSize`,
+   `Cmb_SubtitleBackdrop`, `Cmb_Language`) — C++ привяжет их сам
+   (`BindWidgetOptional`), пока их нет, секция просто отсутствует.
+4. **Подсказка пропуска.** Убрать «[Пробел — пропустить]» из авторских текстов
+   тактов обучения, затем включить `bSubtitleShowSkipHint` в теме — подсказку
+   начнёт рисовать слой (её текст локализуется отдельно от реплики).
+5. **Локализация.** Localization Dashboard → цель `Game` → Gather → перевести
+   `en/Game.archive` → Compile. До первого Gather переключатель языка работает,
+   но переводить ему нечего.
+
+### 8.3. Осталось в коде мелочью
+
+- `ATacticalPlayerController::GetTutorialBeatSubtitle()` больше никем не
+  вызывается. Не удалён намеренно: в момент работы файл правил параллельный
+  агент (туман войны). Убрать при ближайшей правке контроллера.
 
 ---
 
 ## 9. Риски и на что смотреть при реализации
 
-1. **Пересоздание лейаута на travel.** Виджет субтитров умирает вместе с
-   лейаутом; подсистема (GameInstance) — нет. При создании виджета обязателен
-   вызов `RefreshActiveLine()`, иначе строка, показанная до смены мира, исчезнет
-   молча (болезнь, уже описанная в `UDialogueSubsystem::ReplayCurrent`).
+1. **Смена уровня.** Viewport-виджеты снимаются вместе с миром, поэтому на
+   `PostLoadMapWithWorld` слой сбрасывает ссылки на оверлей и гасит активную
+   строку: её владелец остался в прошлом мире и снять её уже не сможет.
+   Оверлей ставится заново на первой же реплике нового мира.
 2. **`bAutoDestroy` у голосового компонента.** `PlayVoice2D` спаунит звук с
-   `bAutoDestroy = true`: подписку на `OnAudioFinished` держать слабой ссылкой,
-   а снятие строки делать идемпотентным (компонент может умереть раньше).
+   `bAutoDestroy = true`, поэтому кроме подписки на `OnAudioFinishedNative`
+   стоит страховочный таймер на длительность звука + 0.5 с: компонент может
+   умереть, не успев оповестить, и строка иначе зависла бы навсегда.
 3. **Такт без озвучки.** GDD допускает субтитр без голоса — режим «по звуку» для
    него неприменим, но такт обучения и так работает в режиме «владелец снимает».
 4. **Позиция в бою.** Отступ «выше иконок способностей» задаётся числом в теме;
