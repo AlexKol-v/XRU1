@@ -18,13 +18,14 @@
 | [07_CONTENT_PROMPTS.md](07_CONTENT_PROMPTS.md) | Генерация арта, видео, голоса, музыки и текстур |
 | [08_AI.md](08_AI.md) | Текущее устройство AI, параметры настройки и программа отладки |
 | [09_UI_HUD.md](09_UI_HUD.md) | Архитектура интерфейса, готовые блоки и остаток HUD/меню |
-| [10_FOG_OF_WAR.md](10_FOG_OF_WAR.md) | Архитектура видимости, actor gating, renderer и план тумана войны |
+| [10_FOG_OF_WAR.md](10_FOG_OF_WAR.md) | Туман войны: сверка с XCOM 2, слой видимости и указатель цели (сделано), план визуального затемнения, план внедрения и проверки |
 | [11_SHARED_MAP_TUTORIAL.md](11_SHARED_MAP_TUTORIAL.md) | Tutorial и Mission01 на одной карте: StateTree, sublevels и Editor-план |
 | [12_TUTORIAL_LAYOUT_SPEC.md](12_TUTORIAL_LAYOUT_SPEC.md) | Требования расстановки обучения: AP-бюджет, дистанции, укрытия, LOS |
 | [13_LOS_TARGETING.md](13_LOS_TARGETING.md) | Исследование выбора цели/LOS: одна система, симметрия Ф5, диагностика |
 | [14_SUBTITLES.md](14_SUBTITLES.md) | Исследование субтитров и локализации: движок 5.7, Lyra, донор; целевой единый слой |
 | [15_COURSE_HOMEWORK_MAP.md](15_COURSE_HOMEWORK_MAP.md) | Домашние задания курса: что зачитывается XRU1, что доделывается в учебном `UE-HW` |
-| [agents/](agents/) | Брифы для отдельных сессий (главное меню, голографический хаб, рефакторинг AI, [исследование тумана войны](agents/BRIEF_FogOfWar_Research.md)), трекеры статуса и [справочник по тулингу агента](agents/AGENT_UNREAL_TOOLING.md) |
+| [agents/](agents/) | Брифы для отдельных сессий (главное меню, голографический хаб, рефакторинг AI, [исследование тумана войны](agents/BRIEF_FogOfWar_Research.md) — выполнено,
+[визуальный слой тумана](agents/BRIEF_FogOfWar_VisualLayer.md) — следующий этап), трекеры статуса и [справочник по тулингу агента](agents/AGENT_UNREAL_TOOLING.md) |
 
 ## Текущий срез — 2026-08-03
 
