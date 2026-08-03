@@ -461,7 +461,14 @@ void AUnitBase::RebuildVisualState()
 
 	// Подшаг к стене — тоже движение: иначе юнит ехал бы к укрытию в статичной
 	// позе вместо шага (см. HugCover).
-	State.bMoving = UTacticsCombatStatics::IsUnitInTransit(this) || bCoverHugStepping;
+	//
+	// ⚠️ А вот ДОВОРОТ на месте движением НЕ считается, хотя общий предикат
+	// `IsUnitInTransit`/`IsMoving` его включает (для очереди приказов это
+	// правильно). Поза обязана следовать за фактическим перемещением: пока
+	// здесь стоял общий предикат, каждый доворот перед выстрелом поднимал бойца
+	// из укрытия в локомоцию и тут же сажал обратно — «встал, резко сел, потом
+	// выстрел» (запись PIE 2026-08-03).
+	State.bMoving = IsPhysicallyMoving();
 	State.bPlayerSide = GetGenericTeamId() == FGenericTeamId(TacticsTeamIds::Player);
 	State.PendingTurnYaw = bTurningInPlace ? PendingTurnAmount : 0.f;
 	State.bShouldPeek = bPeekActive;
@@ -484,6 +491,19 @@ void AUnitBase::RebuildVisualState()
 	else if (State.Cover == ECoverType::Full)                 { State.Pose = EUnitPose::HighCover; }
 	else if (State.Cover == ECoverType::Half)                 { State.Pose = EUnitPose::CrouchCover; }
 	else                                                      { State.Pose = EUnitPose::Stand; }
+
+	// СМЕНА ПОЗЫ — единственный наблюдаемый след «встал/сел» в записи PIE.
+	// Montage играет поверх позы и в логе не виден, поэтому без этой строки
+	// жалобы вида «встал, сел и выстрелил сидя» неотличимы друг от друга:
+	// смена стойки укрытия, потеря укрытия после подшага и blend-out монтажа
+	// выглядят на экране одинаково.
+	if (State.Pose != VisualState.Pose)
+	{
+		UE_LOG(LogXRU1Combat, Display,
+			TEXT("[Pose] %s: %d → %d (0=Stand 1=Moving 2=Crouch 3=High 4=OW 5=Hunker 6=Downed 7=Dead), укрытие=%d, движется=%d, доворот=%d"),
+			*GetName(), static_cast<int32>(VisualState.Pose), static_cast<int32>(State.Pose),
+			static_cast<int32>(State.Cover), State.bMoving ? 1 : 0, bTurningInPlace ? 1 : 0);
+	}
 
 	VisualState = State;
 }
@@ -709,7 +729,7 @@ void AUnitBase::HugCover()
 }
 
 void AUnitBase::FaceTowardsSmooth(const FVector& TargetLocation, bool bPlayTurnAnimation,
-	float TurnRateOverride)
+	float TurnRateOverride, float MinAngleOverride)
 {
 	FVector ToTarget = TargetLocation - GetActorLocation();
 	ToTarget.Z = 0.f;
@@ -721,10 +741,11 @@ void AUnitBase::FaceTowardsSmooth(const FVector& TargetLocation, bool bPlayTurnA
 	const float CurrentYaw = GetActorRotation().Yaw;
 	const float DesiredYaw = ToTarget.Rotation().Yaw;
 	const float Delta = FMath::FindDeltaAngleDegrees(CurrentYaw, DesiredYaw);
+	const float MinAngle = MinAngleOverride > 0.f ? MinAngleOverride : TurnInPlaceMinAngle;
 
 	// Мелкий доворот проигрывать нечем: клипы начинаются с 45°, а на 10° любой
 	// из них выглядит как подёргивание. Такие углы сводим сразу.
-	if (FMath::Abs(Delta) < TurnInPlaceMinAngle)
+	if (FMath::Abs(Delta) < MinAngle)
 	{
 		// Предыдущий большой turn мог ещё жить в Tick. Перед мгновенным малым
 		// поворотом атомарно гасим его, иначе следующий кадр повернёт actor назад.
@@ -737,7 +758,7 @@ void AUnitBase::FaceTowardsSmooth(const FVector& TargetLocation, bool bPlayTurnA
 		{
 			UE_LOG(LogXRU1Combat, Display,
 				TEXT("[Turn] %s: мгновенный доворот, yaw=%.0f (дельта %.0f° < %.0f°)"),
-				*GetName(), DesiredYaw, Delta, TurnInPlaceMinAngle);
+				*GetName(), DesiredYaw, Delta, MinAngle);
 		}
 		NotifyUnitStateChanged();
 		return;
@@ -754,9 +775,33 @@ void AUnitBase::FaceTowardsSmooth(const FVector& TargetLocation, bool bPlayTurnA
 	NotifyUnitStateChanged();
 }
 
+bool AUnitBase::IsPhysicallyMoving() const
+{
+	// Подшаг к стене — тоже перемещение (иначе юнит ехал бы к укрытию в
+	// статичной позе). Доворот на месте — НЕТ, см. RebuildVisualState.
+	if (bCoverHugStepping)
+	{
+		return true;
+	}
+	if (const AUnitAIController* UnitAI = Cast<AUnitAIController>(GetController()))
+	{
+		return UnitAI->IsFollowingPath();
+	}
+	return GetVelocity().SizeSquared2D() > FMath::Square(5.f);
+}
+
 void AUnitBase::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+
+	// Поза обязана следовать за движением, даже если приказ пришёл МИМО C++ —
+	// презентация StepOut двигает бойца узлом «AI Move To» прямо из BP, и никто
+	// не публикует visual state. Без этой сверки юнит уезжал на огневую точку в
+	// позе укрытия и «проскальзывал сидя».
+	if (IsPhysicallyMoving() != VisualState.bMoving)
+	{
+		NotifyUnitStateChanged();
+	}
 
 	if (bCoverHugStepping)
 	{

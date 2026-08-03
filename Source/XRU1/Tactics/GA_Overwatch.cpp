@@ -151,8 +151,10 @@ void UGA_Overwatch::EndAbility(
 		BoundPerception = nullptr;
 	}
 
-	const AActor* Avatar = GetAvatarActorFromActorInfo();
-	if (UWorld* World = Avatar ? Avatar->GetWorld() : nullptr)
+	// ⚠️ Мир — у способности, не через аватара: при выходе из PIE GAS отменяет
+	// способности уже после сброса ActorInfo, и обращение к аватару ловит
+	// ensure(CurrentActorInfo) (см. тот же фикс в UGA_Attack::EndAbility).
+	if (UWorld* World = GetWorld())
 	{
 		if (UTurnManagerSubsystem* TurnManager = World->GetSubsystem<UTurnManagerSubsystem>())
 		{
@@ -496,10 +498,27 @@ bool UGA_Overwatch::BeginReactionAction(AActor* Target)
 			FMath::Max(1.f, ReactionActionTimeout), /*bLoop=*/false);
 	}
 
-	UE_LOG(LogTacticsOverwatchAction, Log,
-		TEXT("[ReactionAction] Begin id=%s shooter=%s target=%s chance=%.1f paused=%d"),
+	// Состав презентации реакции печатается тем же набором полей, что и у обычной
+	// атаки: стойка объясняет, встаёт ли боец из укрытия, отклонение корпуса —
+	// сколько предстоит довернуть до выстрела (см. фазу [AimTurn]).
+	UE_LOG(LogTacticsOverwatchAction, Display,
+		TEXT("[ReactionAction] Begin id=%s shooter=%s target=%s chance=%.1f paused=%d стойка=%s montage=%s дистанция=%.0f отклонение корпуса=%.1f° settle=%.2f с"),
 		*ActionId.ToString(EGuidFormats::Digits), *GetNameSafe(Unit), *GetNameSafe(Target),
-		ResolvedHitChance, PausedReactionMover.IsValid() ? 1 : 0);
+		ResolvedHitChance, PausedReactionMover.IsValid() ? 1 : 0,
+		FiringStance == EFiringStance::OverCover ? TEXT("OverCover")
+			: FiringStance == EFiringStance::StepOut ? TEXT("StepOut") : TEXT("Open"),
+		*GetNameSafe(FireMontage),
+		FVector::Dist(Unit->GetActorLocation(), Target->GetActorLocation()),
+		UTacticsCombatStatics::GetFacingErrorDegrees(Unit, Target->GetActorLocation()),
+		PreReactionCameraSettleDelay);
+
+	// Доворот реагирующего с места идёт ВНУТРИ паузы наводки камеры — так же,
+	// как у обычной атаки. StepOut доворачивается позже, latent-фазой BP: до
+	// прибытия на огневую точку разворачивать бойца бессмысленно.
+	if (FiringStance == EFiringStance::Open)
+	{
+		StartAimTurnTowardsTarget(ActionId, TEXT("вместе с наводкой камеры реакции"));
+	}
 
 	// Цель уже замерла, камера наведена — короткая пауза, ПОТОМ выстрел:
 	// иначе кадр «дёргается и сразу едет дальше» (фидбэк по реакции Танка).
@@ -519,6 +538,19 @@ bool UGA_Overwatch::BeginReactionAction(AActor* Target)
 	}
 	OnReactionActionStarted(Target, ActionId);
 	return true;
+}
+
+float UGA_Overwatch::GetPresentationHoldDelay(const FGuid& ActionId) const
+{
+	// Сорванная реакция кадр не держит — возврат в укрытие сразу (как у атаки).
+	if (!ReactionAction.Matches(ActionId) || !ReactionAction.bShotCommitted)
+	{
+		return 0.f;
+	}
+	// Симметрично атаке: смерть цели — это анимация падения, её держим дольше.
+	const AActor* ReactionTarget = ReactionAction.Target.Get();
+	const bool bTargetKilled = ReactionTarget && !UTacticsCombatStatics::IsUnitAlive(ReactionTarget);
+	return bTargetKilled ? PostReactionKillHoldDelay : PostReactionHoldDelay;
 }
 
 void UGA_Overwatch::StartReactionPresentation(FGuid ActionId)
@@ -600,10 +632,12 @@ bool UGA_Overwatch::FireCommit(const FGuid& ActionId, bool& bOutHit)
 		}
 	}
 
-	UE_LOG(LogTacticsOverwatchAction, Log,
-		TEXT("[ReactionAction] Commit id=%s hit=%d used=%d/%d"),
+	// Отклонение корпуса в момент реакции — та же приёмочная метрика, что у атаки.
+	UE_LOG(LogTacticsOverwatchAction, Display,
+		TEXT("[ReactionAction] Commit id=%s hit=%d used=%d/%d отклонение корпуса от цели=%.1f°"),
 		*ActionId.ToString(EGuidFormats::Digits), bOutHit ? 1 : 0,
-		ReactionShotsUsed, MaxReactionShots);
+		ReactionShotsUsed, MaxReactionShots,
+		Target ? UTacticsCombatStatics::GetFacingErrorDegrees(Shooter, Target->GetActorLocation()) : 0.f);
 	return true;
 }
 
@@ -727,12 +761,11 @@ void UGA_Overwatch::HandleReactionActionTimeout(FGuid ActionId)
 
 void UGA_Overwatch::ClearReactionActionWatchdog()
 {
-	if (AActor* Avatar = GetAvatarActorFromActorInfo())
+	// Мир — у способности: путь идёт из EndAbility, где ActorInfo при выходе
+	// из PIE уже сброшен (ensure(CurrentActorInfo), запись 2026-08-03).
+	if (UWorld* World = GetWorld())
 	{
-		if (UWorld* World = Avatar->GetWorld())
-		{
-			World->GetTimerManager().ClearTimer(ReactionActionWatchdogTimer);
-		}
+		World->GetTimerManager().ClearTimer(ReactionActionWatchdogTimer);
 	}
 }
 
@@ -769,8 +802,7 @@ bool UGA_Overwatch::IsFrozenReactionCommitValid() const
 
 void UGA_Overwatch::EndReactionPresentation() const
 {
-	const AActor* Avatar = GetAvatarActorFromActorInfo();
-	const UWorld* World = Avatar ? Avatar->GetWorld() : nullptr;
+	const UWorld* World = GetWorld();
 	if (ATacticalPlayerController* PC = World
 		? Cast<ATacticalPlayerController>(World->GetFirstPlayerController())
 		: nullptr)
@@ -795,8 +827,7 @@ void UGA_Overwatch::StopReactionMontage(
 
 void UGA_Overwatch::CheckCombatOutcomeAfterReaction() const
 {
-	const AActor* Shooter = GetAvatarActorFromActorInfo();
-	const UWorld* World = Shooter ? Shooter->GetWorld() : nullptr;
+	const UWorld* World = GetWorld();
 	if (UTurnManagerSubsystem* TurnManager = World
 		? World->GetSubsystem<UTurnManagerSubsystem>()
 		: nullptr)

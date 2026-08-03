@@ -115,6 +115,42 @@ void UAnimNotify_FireCommit::CommitFromAnimation(USkeletalMeshComponent* MeshCom
 		return true;
 	};
 
+	/**
+	 * Момент выстрела ВНУТРИ montage — данные, по которым видно «стреляет уже
+	 * садясь»: позиция в клипе, полная длина и ВЕС montage. Вес < 1 означает,
+	 * что montage уже блендится наружу и поза едет обратно в стойку укрытия;
+	 * тогда выстрел визуально происходит в чужой позе, даже если механика верна.
+	 */
+	auto LogCommitFrame = [AnimInstance, MontageInstanceId, Unit](const TCHAR* Kind)
+	{
+		const FAnimMontageInstance* Instance = AnimInstance
+			? AnimInstance->GetMontageInstanceForID(MontageInstanceId)
+			: nullptr;
+		if (!Instance || !Instance->Montage)
+		{
+			return;
+		}
+		const float Length = Instance->Montage->GetPlayLength();
+		const float Position = Instance->GetPosition();
+		const float Weight = Instance->GetWeight();
+		// Неполный вес значит разное в начале и в конце клипа, и лечится тоже
+		// по-разному: в начале — notify стоит раньше, чем montage успел перебить
+		// позу (выстрел «сидя»), в конце — montage уже уходит в blend-out.
+		const TCHAR* WeightHint = TEXT("");
+		if (Weight < 0.9f)
+		{
+			WeightHint = Position < Length * 0.5f
+				? TEXT(" (montage ЕЩЁ НЕ НАБРАЛ ВЕС — выстрел уходит в старой позе)")
+				: TEXT(" (montage УЖЕ ГАСНЕТ — выстрел в переходной позе)");
+		}
+		UE_LOG(LogFireCommitNotify, Display,
+			TEXT("[FireCommit] %s %s: montage=%s кадр %.2f/%.2f с, вес %.2f%s, blendIn=%.2f blendOut=%.2f с, поза=%d"),
+			Kind, *GetNameSafe(Unit), *GetNameSafe(Instance->Montage), Position, Length, Weight,
+			WeightHint,
+			Instance->Montage->GetDefaultBlendInTime(), Instance->Montage->GetDefaultBlendOutTime(),
+			static_cast<int32>(Unit->GetVisualState().Pose));
+	};
+
 	bool bHit = false;
 	if (UGA_Attack* Attack = FindActiveAbilityInstance<UGA_Attack>(Unit, Unit->AttackAbilityClass))
 	{
@@ -135,12 +171,13 @@ void UAnimNotify_FireCommit::CommitFromAnimation(USkeletalMeshComponent* MeshCom
 		{
 			RejectReason = TEXT("attack montage instance was rejected by action guard");
 		}
-		else if (Attack->FireCommit(ActionId, bHit))
-		{
-			return;
-		}
 		else
 		{
+			LogCommitFrame(TEXT("атака"));
+			if (Attack->FireCommit(ActionId, bHit))
+			{
+				return;
+			}
 			RejectReason = TEXT("attack FireCommit returned false");
 		}
 	}
@@ -167,6 +204,7 @@ void UAnimNotify_FireCommit::CommitFromAnimation(USkeletalMeshComponent* MeshCom
 		}
 		else
 		{
+			LogCommitFrame(TEXT("реакция"));
 			Overwatch->FireCommit(ActionId, bHit);
 			return;
 		}

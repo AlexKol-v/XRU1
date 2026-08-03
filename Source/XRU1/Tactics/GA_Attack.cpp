@@ -308,43 +308,87 @@ void UGA_Attack::ActivateAbility(
 			FMath::Max(1.f, FireActionTimeout), /*bLoop=*/false);
 	}
 
-	UE_LOG(LogTacticsAttackAction, Log,
-		TEXT("[FireAction] Begin id=%s shooter=%s target=%s chance=%.1f"),
+	// Полный состав презентации в ОДНОЙ строке: по ней при разборе записи видно,
+	// почему выстрел выглядел так, а не иначе — стойка объясняет «выстрелил не
+	// вставая из-за укрытия» (Open вместо OverCover), отклонение корпуса —
+	// сколько предстоит довернуть, settle — откуда пауза перед montage.
+	UE_LOG(LogTacticsAttackAction, Display,
+		TEXT("[FireAction] Begin id=%s shooter=%s target=%s chance=%.1f стойка=%s montage=%s дистанция=%.0f отклонение корпуса=%.1f° settle=%.2f с"),
 		*ActionId.ToString(EGuidFormats::Digits), *GetNameSafe(Shooter), *GetNameSafe(Target),
-		ResolvedHitChance);
+		ResolvedHitChance,
+		FiringStance == EFiringStance::OverCover ? TEXT("OverCover")
+			: FiringStance == EFiringStance::StepOut ? TEXT("StepOut") : TEXT("Open"),
+		*GetNameSafe(FireMontage),
+		FVector::Dist(Shooter->GetActorLocation(), Target->GetActorLocation()),
+		UTacticsCombatStatics::GetFacingErrorDegrees(Shooter, Target->GetActorLocation()),
+		PreShotCameraSettleDelay);
 
 	// Здесь НЕТ ResolveShot и EndAbility: BP/C++ coordinator должен доиграть
 	// StepOut/montage/ReturnToAnchor и вызвать terminal API.
 	//
-	// Камера наводится сразу, а старт montage (через BP-хук) откладывается на
-	// PreShotCameraSettleDelay: игрок успевает увидеть, КТО и В КОГО стреляет.
+	// ⚠️ Презентация стартует В ТОТ ЖЕ КАДР, что и команда игрока: раньше здесь
+	// стоял таймер на PreShotCameraSettleDelay, и между нажатием и первым
+	// движением бойца висела мёртвая пауза («нажимаю — микропауза — юнит
+	// выходит»). Теперь ждёт только стрелковая анимация: остаток времени на
+	// наводку камеры затянут в фазу доворота (GetCameraSettleRemaining), а
+	// выход на огневую точку идёт параллельно наезду кадра.
+	PresentationStartTime = Shooter->GetWorld() ? Shooter->GetWorld()->GetTimeSeconds() : 0.0;
 	NotifyShotPresentation(Shooter, Target);
-	if (PreShotCameraSettleDelay > 0.f)
+
+	// Доворот стреляющего в ОТКРЫТОМ ПОЛЕ стартует ВМЕСТЕ с камерой: пока кадр
+	// едет, боец разворачивается, и к старту montage угол уже сведён.
+	//
+	// Другие стойки доворачиваются позже и по своим причинам: StepOut — после
+	// прибытия на огневую точку (по дороге корпус ведёт path following),
+	// OverCover — уже стоя, во время подъёма из-за укрытия (порядок «встал →
+	// довернулся → выстрелил», см. ScheduleAimTurnAfterRise).
+	if (FiringStance == EFiringStance::Open)
 	{
-		if (UWorld* World = Shooter->GetWorld())
-		{
-			UE_LOG(LogTacticsAttackAction, Display,
-				TEXT("[FireAction] Камера наведена, montage через %.2f с (settle) id=%s"),
-				PreShotCameraSettleDelay, *ActionId.ToString(EGuidFormats::Digits));
-			World->GetTimerManager().SetTimer(PresentationDelayTimer,
-				FTimerDelegate::CreateUObject(this, &UGA_Attack::StartFireActionPresentation, ActionId),
-				PreShotCameraSettleDelay, /*bLoop=*/false);
-			return;
-		}
+		StartAimTurnTowardsTarget(ActionId, TEXT("вместе с наводкой камеры"));
 	}
+	UE_LOG(LogTacticsAttackAction, Display,
+		TEXT("[FireAction] Презентация стартует сразу; montage подождёт кадр ещё %.2f с id=%s"),
+		PreShotCameraSettleDelay, *ActionId.ToString(EGuidFormats::Digits));
 	OnFireActionStarted(Target, ActionId);
 }
 
-void UGA_Attack::StartFireActionPresentation(FGuid ActionId)
+float UGA_Attack::GetCameraSettleRemaining(const FGuid& ActionId) const
 {
-	// Транзакцию могли abort'нуть за время паузы — устаревший таймер молчит.
-	if (FireAction.Matches(ActionId))
+	if (!FireAction.Matches(ActionId) || PreShotCameraSettleDelay <= 0.f)
 	{
-		UE_LOG(LogTacticsAttackAction, Display,
-			TEXT("[FireAction] Settle-пауза окончена → старт montage id=%s"),
-			*ActionId.ToString(EGuidFormats::Digits));
-		OnFireActionStarted(FireAction.Target.Get(), ActionId);
+		return 0.f;
 	}
+	const UWorld* World = GetWorld();
+	if (!World || PresentationStartTime <= 0.0)
+	{
+		return 0.f;
+	}
+	// Отсчёт от НАЧАЛА транзакции: пока боец бежал на огневую точку, кадр уже
+	// ехал, поэтому у StepOut остаток обычно нулевой и montage не ждёт ничего.
+	//
+	// ⚠️ Из ожидания вычитается время ДО ВЫСТРЕЛА ВНУТРИ montage: кадру нужно
+	// успеть к моменту выстрела, а не к первому кадру анимации. Без этого боец
+	// у полуукрытия неподвижно ждал всю паузу и только потом начинал вставать —
+	// «что-то делает, потом встаёт и стреляет» (запись PIE 2026-08-03).
+	const double Elapsed = World->GetTimeSeconds() - PresentationStartTime;
+	const float MontageLeadIn = FindFireCommitTime(FireAction.FireMontage.Get());
+	return FMath::Max(0.f,
+		PreShotCameraSettleDelay - MontageLeadIn - static_cast<float>(Elapsed));
+}
+
+float UGA_Attack::GetPresentationHoldDelay(const FGuid& ActionId) const
+{
+	// Держать кадр незачем, если выстрела не было: сорванный montage должен
+	// возвращать бойца в укрытие сразу, а не после паузы «на чтение урона».
+	if (!FireAction.Matches(ActionId) || !FireAction.bShotCommitted)
+	{
+		return 0.f;
+	}
+	// Убитая цель держится дольше: игрок должен увидеть падение, а не только
+	// цифру урона (та же логика, что в CompleteFireAction).
+	const AActor* ShotTarget = FireAction.Target.Get();
+	const bool bTargetKilled = ShotTarget && !UTacticsCombatStatics::IsUnitAlive(ShotTarget);
+	return bTargetKilled ? PostKillHoldDelay : PostShotHoldDelay;
 }
 
 void UGA_Attack::FinishPostShotHold(FGuid ActionId)
@@ -365,13 +409,14 @@ void UGA_Attack::EndAbility(
 	bool bWasCancelled)
 {
 	// Отложенные таймеры презентации не должны пережить транзакцию.
-	if (const AActor* Avatar = GetAvatarActorFromActorInfo())
+	//
+	// ⚠️ Мир берём у СПОСОБНОСТИ, а не через GetAvatarActorFromActorInfo():
+	// при выходе из PIE GAS отменяет способности уже после сброса ActorInfo, и
+	// тот путь ловил ensure(CurrentActorInfo) с пятисекундным дампом стека в лог
+	// (поймано в записи 2026-08-03).
+	if (UWorld* World = GetWorld())
 	{
-		if (UWorld* World = Avatar->GetWorld())
-		{
-			World->GetTimerManager().ClearTimer(PresentationDelayTimer);
-			World->GetTimerManager().ClearTimer(PostHoldTimer);
-		}
+		World->GetTimerManager().ClearTimer(PostHoldTimer);
 	}
 
 	if (FireAction.IsActive())
@@ -410,6 +455,17 @@ UAnimMontage* UGA_Attack::GetFireActionPresentation(const FGuid& ActionId,
 	OutStance = FireAction.FiringStance;
 	OutHomeRootLocation = FireAction.HomeRootLocation;
 	OutPresentationRootLocation = FireAction.PresentationRootLocation;
+
+	// Этот запрос — первый шаг BP-ветки презентации. Его наличие в логе значит
+	// «BP получил план», а следующая за ним ветка ([AimTurn] или AI Move To)
+	// показывает, куда ветка ушла. Без этой строки зависшая презентация видна
+	// только по watchdog'у, и непонятно, дошла ли она вообще до BP.
+	UE_LOG(LogTacticsAttackAction, Display,
+		TEXT("[FireAction] BP запросил план id=%s: стойка=%s montage=%s"),
+		*ActionId.ToString(EGuidFormats::Digits),
+		OutStance == EFiringStance::OverCover ? TEXT("OverCover")
+			: OutStance == EFiringStance::StepOut ? TEXT("StepOut") : TEXT("Open"),
+		*GetNameSafe(FireAction.FireMontage.Get()));
 	return FireAction.FireMontage.Get();
 }
 
@@ -531,9 +587,13 @@ bool UGA_Attack::FireCommit(const FGuid& ActionId, bool& bOutHit)
 		}
 	}
 
-	UE_LOG(LogTacticsAttackAction, Log,
-		TEXT("[FireAction] Commit id=%s hit=%d chance=%.1f"),
-		*ActionId.ToString(EGuidFormats::Digits), bOutHit ? 1 : 0, HitChance);
+	// Отклонение корпуса В МОМЕНТ выстрела — приёмочная метрика доворота:
+	// «стреляет ли боец туда, куда смотрит». Ненулевое значение здесь означает,
+	// что фаза AimTurn не успела или её кто-то перебил.
+	UE_LOG(LogTacticsAttackAction, Display,
+		TEXT("[FireAction] Commit id=%s hit=%d chance=%.1f отклонение корпуса от цели=%.1f°"),
+		*ActionId.ToString(EGuidFormats::Digits), bOutHit ? 1 : 0, HitChance,
+		Target ? UTacticsCombatStatics::GetFacingErrorDegrees(Shooter, Target->GetActorLocation()) : 0.f);
 	return true;
 }
 
@@ -622,10 +682,18 @@ void UGA_Attack::HandleFireActionTimeout(FGuid ActionId)
 {
 	if (FireAction.Matches(ActionId))
 	{
+		// Watchdog срабатывает только на сломанной презентации, поэтому печатаем
+		// ВСЁ, что позволяет понять, на каком шаге она встала: привязался ли
+		// montage instance (значит montage реально играл) и какая была стойка —
+		// StepOut-ветка идёт через AI Move To и висит иначе, чем стрельба с места.
 		UE_LOG(LogTacticsAttackAction, Error,
-			TEXT("[FireAction] Watchdog abort id=%s phase=%d committed=%d"),
+			TEXT("[FireAction] Watchdog abort id=%s phase=%d committed=%d стойка=%s montage=%s instance=%d shooter=%s"),
 			*ActionId.ToString(EGuidFormats::Digits), static_cast<int32>(FireAction.Phase),
-			FireAction.bShotCommitted ? 1 : 0);
+			FireAction.bShotCommitted ? 1 : 0,
+			FireAction.FiringStance == EFiringStance::OverCover ? TEXT("OverCover")
+				: FireAction.FiringStance == EFiringStance::StepOut ? TEXT("StepOut") : TEXT("Open"),
+			*GetNameSafe(FireAction.FireMontage.Get()), FireAction.MontageInstanceId,
+			*GetNameSafe(FireAction.Shooter.Get()));
 		AbortFireAction(ActionId);
 	}
 }
@@ -718,8 +786,9 @@ void UGA_Attack::NotifyShotPresentation(AActor* Shooter, AActor* Target) const
 
 void UGA_Attack::EndShotPresentation() const
 {
-	const AActor* Shooter = GetAvatarActorFromActorInfo();
-	const UWorld* World = Shooter ? Shooter->GetWorld() : nullptr;
+	// Мир — у способности: этот путь идёт из EndAbility, который при выходе из
+	// PIE вызывается уже без ActorInfo (см. фикс ensure там же).
+	const UWorld* World = GetWorld();
 	if (ATacticalPlayerController* PC = World
 		? Cast<ATacticalPlayerController>(World->GetFirstPlayerController())
 		: nullptr)
@@ -744,8 +813,7 @@ void UGA_Attack::StopFireActionMontage(
 
 void UGA_Attack::CheckCombatOutcomeAfterAction() const
 {
-	const AActor* Shooter = GetAvatarActorFromActorInfo();
-	const UWorld* World = Shooter ? Shooter->GetWorld() : nullptr;
+	const UWorld* World = GetWorld();
 	if (UTurnManagerSubsystem* TurnManager = World
 		? World->GetSubsystem<UTurnManagerSubsystem>()
 		: nullptr)

@@ -167,7 +167,26 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Overwatch", meta = (ClampMin = "0"))
 	float ReactionMinTravel = 50.f;
 
+	/** Удержание кадра реакции: убитая цель держится дольше живой. */
+	virtual float GetPresentationHoldDelay(const FGuid& ActionId) const override;
+
+	/** Hold отработан latent-фазой возврата — терминал его повторять не должен. */
+	virtual void MarkPresentationHoldDone(const FGuid& ActionId) override
+	{
+		if (ReactionAction.Matches(ActionId))
+		{
+			ReactionPostHoldDoneId = ActionId;
+		}
+	}
+
 protected:
+	/** Контекст для общих latent-фаз презентации (доворот перед выстрелом). */
+	virtual const FTacticalFireActionContext* GetPresentationAction(
+		const FGuid& ActionId) const override
+	{
+		return ReactionAction.Matches(ActionId) ? &ReactionAction : nullptr;
+	}
+
 	/** Новый pre-presentation вход одной вложенной reaction-транзакции. */
 	UFUNCTION(BlueprintImplementableEvent, Category = "Tactics|Overwatch|Action")
 	void OnReactionActionStarted(AActor* Target, FGuid ActionId);

@@ -52,6 +52,23 @@
 Query-операции `blueprint` автоматически уходят в `blueprint_query`, остальные —
 в `blueprint_modify` (с авто-компиляцией).
 
+**Вставка узла в существующую exec-цепочку — проверенный рецепт (2026-08-03).**
+Так были добавлены latent-узлы доворота в `BP_GA_Attack`/`BP_GA_Overwatch`:
+
+1. `add_node` берёт параметры узла ТОЛЬКО из `node_params` и ТОЛЬКО под этими
+   ключами: `{"function": "...", "target_class": "/Script/XRU1.TacticalAbility"}`
+   для `CallFunction`, `{"variable": "..."}` для `VariableGet/VariableSet`.
+   `function_name` игнорируется — ответ «Function name is required».
+2. Узлы адресуются либо своим `node_id` (его получают только созданные мостом),
+   либо `node_guid` из `blueprint_query` — `FindNodeById` понимает оба.
+3. ⚠️ `connect_pins` **не разрывает** прежнюю связь exec-выхода: он делает
+   `MakeLinkTo`, и компиляция падает с «У исполнительного выходного контакта не
+   может быть несколько подключений». Порядок обязателен: сначала
+   `disconnect_pins` старой пары, потом два `connect_pins` (источник → новый,
+   новый → прежний приёмник).
+4. `get_node_pins` показывает `connected_to` с guid'ами — им и проверять
+   результат: правки моста верифицируются чтением, а не доверием к `success`.
+
 ### 1.3 Собственные инструменты моста (3)
 
 `unreal_status`, `unreal_get_project_context`, `unreal_get_ue_context`

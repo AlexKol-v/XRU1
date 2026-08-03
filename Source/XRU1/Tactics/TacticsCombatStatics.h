@@ -269,6 +269,14 @@ public:
 	static void FaceActorTowards(AActor* Actor, const FVector& TargetLocation);
 
 	/**
+	 * Насколько корпус актора отвёрнут от точки (град, 0…180; только yaw).
+	 * Метрика читаемости выстрела: 0 — смотрит точно на цель. Используется
+	 * фазой доворота и логами выстрела («в кого он вообще целился»).
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Combat")
+	static float GetFacingErrorDegrees(const AActor* Actor, const FVector& TargetLocation);
+
+	/**
 	 * Шум боя в точке: враги источника в радиусе Radius переходят в режим
 	 * разведки (Investigate, идут на звук) — XCOM-жёлтая тревога от выстрелов.
 	 */

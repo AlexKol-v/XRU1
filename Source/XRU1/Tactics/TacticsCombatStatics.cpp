@@ -401,6 +401,22 @@ void UTacticsCombatStatics::FaceActorTowards(AActor* Actor, const FVector& Targe
 	}
 }
 
+float UTacticsCombatStatics::GetFacingErrorDegrees(const AActor* Actor, const FVector& TargetLocation)
+{
+	if (!Actor)
+	{
+		return 0.f;
+	}
+	FVector ToTarget = TargetLocation - Actor->GetActorLocation();
+	ToTarget.Z = 0.f;
+	if (!ToTarget.Normalize())
+	{
+		return 0.f;
+	}
+	return FMath::Abs(FMath::FindDeltaAngleDegrees(
+		Actor->GetActorRotation().Yaw, ToTarget.Rotation().Yaw));
+}
+
 void UTacticsCombatStatics::GetFiringPositions(const UWorld* World, const AActor* Unit,
 	const FVector& EyeLocation, const FVector& OtherLocation,
 	TArray<FVector, TInlineAllocator<4>>& OutEyePositions)

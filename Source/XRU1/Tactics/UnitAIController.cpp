@@ -1644,6 +1644,19 @@ bool AUnitAIController::IsMoving() const
 		GetMoveStatus() != EPathFollowingStatus::Idle;
 }
 
+bool AUnitAIController::IsFollowingPath() const
+{
+	// Только фактическое перемещение: маршрут в работе или активный path
+	// following. Settlement (подшаг/доворот) сюда НЕ входит — см. комментарий
+	// в заголовке о том, почему это не то же самое, что IsMoving.
+	const APawn* ControlledPawn = GetPawn();
+	if (!ControlledPawn || !UTacticsCombatStatics::IsUnitAlive(ControlledPawn))
+	{
+		return false;
+	}
+	return bFollowingRoute || GetMoveStatus() != EPathFollowingStatus::Idle;
+}
+
 EPathFollowingRequestResult::Type AUnitAIController::MoveAlongRoute(const TArray<FVector>& RoutePoints,
 	float AcceptanceRadius)
 {

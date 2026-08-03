@@ -281,10 +281,14 @@ public:
 	 *
 	 * Мелкие довороты (меньше `TurnInPlaceMinAngle`) выполняются мгновенно —
 	 * анимации на них всё равно не хватит.
+	 *
+	 * `MinAngleOverride > 0` опускает этот порог для конкретного вызова. Нужен
+	 * довороту перед выстрелом: там анимация не играется вовсе, поэтому смысла
+	 * щёлкать корпусом на 10–20° нет — угол сводится тем же плавным поворотом.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Visual")
 	void FaceTowardsSmooth(const FVector& TargetLocation, bool bPlayTurnAnimation = true,
-		float TurnRateOverride = 0.f);
+		float TurnRateOverride = 0.f, float MinAngleOverride = 0.f);
 
 	/**
 	 * Превью наведения на выбранную цель. В открытом поле запускает обычный
@@ -297,6 +301,14 @@ public:
 	/** Идёт ли сейчас плавный доворот на месте (для BP-логики и отладки). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Visual")
 	bool IsTurningInPlace() const { return bTurningInPlace; }
+
+	/**
+	 * Юнит ФАКТИЧЕСКИ перемещается (маршрут или подшаг к укрытию). Именно это,
+	 * а не «занят» (`AUnitAIController::IsMoving`), определяет позу: доворот на
+	 * месте перемещением не является.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Visual")
+	bool IsPhysicallyMoving() const;
 
 	/**
 	 * PathFollowing уже завершился, но финальная поза после движения ещё нет:

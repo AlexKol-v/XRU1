@@ -54,14 +54,17 @@ public:
 	float FireActionTimeout = 10.f;
 
 	/**
-	 * Пауза между наводкой камеры и стартом стрелковой анимации (сек):
-	 * кадр «из-за плеча» успевает доехать и зафиксироваться, ПОТОМ выстрел.
-	 * Держать короткой: сообщество XCOM 2 (мод Stop Wasting My Time) массово
-	 * вырезает длинные паузы — зло именно задержки ПОСЛЕ действия, а не
-	 * короткий подлёт перед ним. 0 — прежнее поведение (montage сразу).
+	 * Сколько времени кадру «из-за плеча» даётся на подлёт ДО МОМЕНТА ВЫСТРЕЛА
+	 * (сек, от начала действия).
+	 *
+	 * ⚠️ Это не «пауза перед анимацией»: само действие не задерживается вообще,
+	 * а из ожидания вычитается время до `FireCommit` внутри montage — анимация
+	 * подъёма/вскидывания и есть та фора, которая нужна камере. Держать
+	 * короткой: сообщество XCOM 2 (мод Stop Wasting My Time) массово вырезает
+	 * длинные паузы. 0 — montage всегда стартует немедленно.
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Tactics|Attack", meta = (ClampMin = "0"))
-	float PreShotCameraSettleDelay = 0.75f;
+	float PreShotCameraSettleDelay = 0.4f;
 
 	/**
 	 * Удержание кадра ПОСЛЕ выстрела (сек): цифры урона и результат читаются,
@@ -157,7 +160,30 @@ public:
 	/** Точность юнита по цели до укрытия: BaseAim минус штраф Squadsight (если нет своей LOS). */
 	static float ComputeEffectiveAim(const AUnitBase* Shooter, const AActor* Target);
 
+public:
+	/** Остаток «кадр ещё доезжает» для этой атаки (см. PreShotCameraSettleDelay). */
+	virtual float GetCameraSettleRemaining(const FGuid& ActionId) const override;
+
+	/** Удержание кадра после выстрела: убитая цель держится дольше живой. */
+	virtual float GetPresentationHoldDelay(const FGuid& ActionId) const override;
+
+	/** Hold отработан latent-фазой возврата — терминал его повторять не должен. */
+	virtual void MarkPresentationHoldDone(const FGuid& ActionId) override
+	{
+		if (FireAction.Matches(ActionId))
+		{
+			PostHoldDoneActionId = ActionId;
+		}
+	}
+
 protected:
+	/** Контекст для общих latent-фаз презентации (доворот перед выстрелом). */
+	virtual const FTacticalFireActionContext* GetPresentationAction(
+		const FGuid& ActionId) const override
+	{
+		return FireAction.Matches(ActionId) ? &FireAction : nullptr;
+	}
+
 	/**
 	 * Новый вход presentation. BP обязан выбрать montage/StepOut по уже
 	 * зафиксированной цели и затем вызвать FireCommit(ActionId) из notify.
@@ -180,9 +206,6 @@ private:
 	/** Watchdog, не штатный сигнал окончания montage. */
 	FTimerHandle FireActionWatchdogTimer;
 
-	/** Отложенный старт презентации (см. PreShotCameraSettleDelay). */
-	FTimerHandle PresentationDelayTimer;
-
 	/** Форс, потреблённый этой атакой: abort без commit возвращает его юниту. */
 	FScriptedShotOverride ConsumedScriptedShot;
 	bool bConsumedScriptedShotValid = false;
@@ -193,7 +216,9 @@ private:
 	/** Транзакция, чей post-hold уже отработан (повторный Complete проходит). */
 	FGuid PostHoldDoneActionId;
 
-	void StartFireActionPresentation(FGuid ActionId);
+	/** Момент старта транзакции (world time) — от него отсчитывается наводка камеры. */
+	double PresentationStartTime = 0.0;
+
 	void FinishPostShotHold(FGuid ActionId);
 	void HandleFireActionTimeout(FGuid ActionId);
 	void ClearFireActionWatchdog();
