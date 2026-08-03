@@ -1,6 +1,6 @@
 # Постоянный гайд по Unreal Editor
 
-Актуально на 2026-07-29. Это справочник повторяемых операций. Закрытых
+Актуально на 2026-08-03. Это справочник повторяемых операций. Закрытых
 пошаговых чек-листов анимаций/HUD здесь нет.
 
 ## 1. Основные пути ассетов
@@ -18,9 +18,10 @@
 | Общая карта Tutorial/Mission01 | `/Game/XRU1Game/Maps/Main_Map_Showreel` |
 
 Сторонние паки не перестраивать без необходимости. Новые проектные ассеты
-класть в `XRU1Game`; карта `Main_Map_Showreel` лежит в `XRU1Game/Maps`,
-чтобы не ломать её зависимости. Перед финальной сдачей можно сделать дубликат
-в `XRU1Game/Maps` через Editor с Fix Up Redirectors.
+класть в `XRU1Game`; общая боевая карта уже лежит в `XRU1Game/Maps`.
+Перенос ассетов между папками — только Move/Rename в редакторе с последующим
+Fix Up Redirectors и сохранением ссылающихся карт (порядок и ловушки —
+[06_CONVENTIONS §3.2](06_CONVENTIONS.md), [agents/AGENT_UNREAL_TOOLING §5.2.8](agents/AGENT_UNREAL_TOOLING.md)).
 
 ## 2. Обязательная настройка тактической карты
 
@@ -84,9 +85,11 @@ PageUp/PageDown, центрирование C/V, обзор и чувствит�
 - RecastNavMesh не зарегистрирован для ожидаемого агента — сверить Project
   Settings → Navigation System → Supported Agents и пересобрать Paths;
 - `MM_Sky` не компилируется для SM6 — исправить материал или заменить sky;
-- один из Level Blueprint/streamed sublevels вызывает `SpawnActor` с пустым
-  Class; основной Level Blueprint MCP не читает, проверить вручную через
-  Find in Blueprints.
+- `NavData RegistrationFailed_AgentNotValid` — сверить Supported Agents и
+  пересобрать Paths.
+
+Закрыто: `SpawnActor` с пустым Class оказался `HUDClass=None` у `GM_Tactics`
+(движок спавнил `AHUD` без класса); назначен базовый `/Script/Engine.HUD`.
 
 ## 4. Юниты, AnimBP и оружие
 

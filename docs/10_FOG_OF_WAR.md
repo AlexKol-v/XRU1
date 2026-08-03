@@ -167,7 +167,7 @@ uses about **20 ms** on my i7 per call in debug scripts» — поэтому с�
 **Почему.** Гейт акторов трёхмерен по построению — LOS считается сферо-свипами в
 мире, этажи ему безразличны. Неверной от плоской сетки может стать только
 картинка затемнения, и только там, где над тактической зоной реально стоит
-боевой второй этаж. На `Showreel_Scene` бой идёт по земле; `AddViewFloorStep`
+боевой второй этаж. На `Main_Map_Showreel` бой идёт по земле; `AddViewFloorStep`
 у камеры — это обзорный инструмент, а не признак многоэтажного боя.
 Условие пересмотра записано в §7: как только в сценарии появляется враг,
 стоящий над другим врагом по тем же X/Y, полоса этажа становится обязательной.
@@ -465,7 +465,7 @@ markers, mid-combat save, дистанционный штраф squadsight, от
 | Труп / Downed | остаются видимыми независимо от LOS (правило XCOM, §2.5) |
 | Сценарный такт показывает врага вне LOS | override работает, такт не ломается (§5.3) |
 | Кадр выстрела / смерти | юнит не исчезает посреди монтажа |
-| Tutorial → Mission01 на `Showreel_Scene` | новая fog-сессия; кэш и подписки прошлого run не переносятся |
+| Tutorial → Mission01 на `Main_Map_Showreel` | новая fog-сессия; кэш и подписки прошлого run не переносятся |
 | Retry сценария | нет видимых один кадр врагов прошлого запуска |
 | Low scalability / fog material off | механические гейты продолжают работать |
 | Профиль | один полный пересчёт ≈1 мс; в кадре без событий пересчётов нет |
@@ -489,9 +489,10 @@ markers, mid-combat save, дистанционный штраф squadsight, от
 1. `Project Settings → Collision`: канал `FogVision`, Default Response `Ignore`;
    `Block` — непрозрачной архитектуре, крупным укрытиям, закрытым дверям, земле;
    `Ignore` — пешкам, VFX, мелкому декору. Стекло — решить явно и одинаково.
-2. `DA_Fog_Showreel` (`UFogOfWarConfigDataAsset`): cell size 100 см, bounds только
+2. `DA_Fog_Showreel` (`UFogOfWarConfigDataAsset`, кладётся в
+   `/Game/XRU1Game/Data/Core` — 06_CONVENTIONS §3): cell size 100 см, bounds только
    вокруг тактической зоны, `bStartFullyExplored = true` для туториала.
-3. Один `BP_FogOfWarBoundsVolume` на `Showreel_Scene`, локальные X/Y выровнены с
+3. Один `BP_FogOfWarBoundsVolume` на `Main_Map_Showreel`, локальные X/Y выровнены с
    материалом.
 4. `RT_Fog_Showreel` (`R8G8B8A8`, sRGB off, Clamp, 256×256 → 512 только по профилю).
 5. `M_PP_FogOfWar` (`Material Domain = Post Process`, `Blendable Location = Scene

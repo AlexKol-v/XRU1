@@ -52,7 +52,7 @@
 |---|---|---|
 | `AMissionPointOfInterest` | [MissionPointOfInterest.h](../../Source/XRU1/Tactics/MissionPointOfInterest.h) | Сама точка интереса: `Scenario`, `RequiredCompletedMission`, `Title`, `Description`, `IsLocked()`, `SelectPointOfInterest()`, попап при наведении |
 | `UTacticsGameInstance::StartCombatScenario` | [TacticsGameInstance.h](../../Source/XRU1/Tactics/TacticsGameInstance.h) | Запуск сценария; POI уже её вызывает |
-| `DA_Scenario_Tutorial` / `DA_Scenario_Mission01` | `/Game/XRU1Game/Data/` | Назначаются в поле `Scenario` каждой POI |
+| `DA_Scenario_Tutorial` / `DA_Scenario_Mission01` | `/Game/XRU1Game/Data/Missions/` | Назначаются в поле `Scenario` каждой POI |
 | `UTacticsSaveGame::CompletedMissions` | [TacticsSaveGame.h](../../Source/XRU1/Tactics/TacticsSaveGame.h) | Источник блокировки Mission01 |
 | `UTacticsAudioSubsystem` | [TacticsAudioSubsystem.h](../../Source/XRU1/Audio/TacticsAudioSubsystem.h) | `PlayUIHover()`, `PlayUIClick()`, `PlayUIDenied()` |
 | `UPrimaryGameLayout` + `UGameUIManagerSubsystem` | `Source/XRU1/UI/` | Слои HUD/Menu для интерфейса хаба |
@@ -169,10 +169,15 @@ AHologramMapActor : AActor
 - В центре — `BP_HologramMap`. К его `RotationRoot` прикрепить две
   `BP_HubPOI_Marker`:
 
-| Маркер | `MissionId` | `Scenario` | `RequiredCompletedMission` | `Title` |
+| Маркер | `MissionId` | `Scenario` | Блокировка | Название |
 |---|---|---|---|---|
-| POI обучения | `Tutorial` | `DA_Scenario_Tutorial` | `None` | Полигон «Купол» |
-| POI миссии | `Mission01` | `DA_Scenario_Mission01` | `Tutorial` | Станция «Узел-7» |
+| POI обучения | `Tutorial` | `DA_Scenario_Tutorial` | нет | Полигон «Купол» (из сценария) |
+| POI миссии | `Mission01` | `DA_Scenario_Mission01` | `DA_Scenario_Mission01.RequiredMissions` → Tutorial | Станция «Узел-7» (из сценария) |
+
+⚠️ 2026-08-03: `Title`, `Description` и legacy-поле `RequiredCompletedMission`
+на маркерах **очищены** — название, описание и требование берутся из сценария
+(`DisplayName`/`BriefingText`/`RequiredMissions`), чтобы текст не жил в двух
+местах.
 
 - `LevelToLoad` у обоих оставить **пустым**: маршрут идёт через `Scenario`.
 - Прописать `HubLevel = L_Hub` в `BP_TacticsGameInstance`.

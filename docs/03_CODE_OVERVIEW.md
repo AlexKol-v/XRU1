@@ -1,6 +1,6 @@
 # Обзор кодовой базы XRU1
 
-Актуально на 2026-07-29. Документ описывает действующую архитектуру, а не
+Актуально на 2026-08-03. Документ описывает действующую архитектуру, а не
 историю её появления. Игровой модуль — `Source/XRU1`, UE 5.7.
 
 ## 1. Границы модулей
@@ -48,6 +48,7 @@
 | `TacticsDebug` | общий реестр debug-cvar (`xru1.AI.LogCombat`, `xru1.Tutorial.LogGate`, …) и команда `xru1.LOS.Explain` |
 | `UTacticsAudioSubsystem` | единственная точка воспроизведения звука и применения громкостей |
 | `UTacticsCombatStatics` | LOS, шанс, firing positions, cover shield, урон и общие predicates |
+| `UCombatFeedbackSubsystem` | всплывающий боевой текст (урон/лечение/промах/статус) поверх viewport |
 
 Правило владения: механическое состояние находится в C++; Blueprint отображает
 состояние, запускает монтаж/VFX/SFX и сообщает строго определённые presentation
@@ -283,7 +284,7 @@ GameMode ждёт `OnLevelShown`, после stream регистрирует uni
 переоткрывает тот же shared World.
 
 `STQuestSystem` уже был перенесён из донора. Добавлены Asset Manager scan
-`/Game/XRU1Game/Quests`, зависимости `STQuestSystem`/`GameplayMessageRuntime`,
+`/Game/XRU1Game/Data` (единственный корень Data Assets), зависимости `STQuestSystem`/`GameplayMessageRuntime`,
 нативные каналы `Quest.Event.Tactical.*`, единый broadcaster и
 `ATacticalQuestZone`, который распознаёт AI-controlled бойцов стороны игрока.
 Состояние квеста становится Active только после валидного `QuestLogic` и
@@ -330,10 +331,13 @@ quest-событий, поэтому отменённое действие не 
 `AUnitBase::PlayUnitSound(EUnitSoundEvent)` — единственный вход для звуков
 юнита; Blueprint ничего подключать не обязан. Громкости применяются
 `UTacticsGameInstance::ApplySavedUserSettings()` сразу после создания или
-загрузки слота, а меню настроек пишет в тот же слот.
+загрузки слота; настройки хранит `UTacticsUserSettings` (`GameUserSettings.ini`),
+а не слот кампании.
 
-Ассетов звука под бой в проекте пока нет: каркас рассчитан на подстановку
-файлов в Data Asset без единой правки кода.
+Контент звука на месте: импортированы выстрелы, шаги, foley, реакции, интерфейс,
+музыка и озвучка «Купола»; классовые профили наследуют общий
+`DA_UnitAudio_Common` через `ParentProfile`. Открытый остаток — назначить `PM_*`
+физматериалы полам (без них шаг всегда берёт `DefaultFootstep`).
 
 ## 9.6. Визуал выстрела
 
@@ -402,7 +406,7 @@ quest-событий, поэтому отменённое действие не 
 
 Логи разведены по доменным категориям вместо общего `LogTemp`:
 `LogXRU1AI`, `LogXRU1Combat`, `LogXRU1Turns`, `LogXRU1Scenario`,
-`LogXRU1Quest`, `LogXRU1Audio`, `LogXRU1UI`
+`LogXRU1Quest`, `LogXRU1Audio`, `LogXRU1UI`, `LogXRU1Camera`
 ([XRU1Log.h](../Source/XRU1/XRU1Log.h)). Подробность включается точечно:
 `Log LogXRU1AI Verbose`.
 
@@ -422,6 +426,10 @@ P0/P1 на ближайшие этапы:
 
 Отложено:
 
-- общая переработка тактической/action-camera;
+- анимация доворота корпуса и Aim Offset (разбор — §5);
 - IK второй руки;
 - PCG-полировка окружения и косметические эффекты.
+
+Переработка тактической/action-камеры **закрыта** 2026-08-02 (модель XCOM 2:
+свободное вращение, наклон от зума, этажи обзора, кадр выстрела по точке
+выстрела) — [11 §5.0.23](11_SHARED_MAP_TUTORIAL.md).

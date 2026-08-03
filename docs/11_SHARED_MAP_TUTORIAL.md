@@ -1,6 +1,6 @@
 # Tutorial и Mission01 на общей карте
 
-Актуально на 2026-07-30. Документ фиксирует production-архитектуру обучения
+Актуально на 2026-08-03. Документ фиксирует production-архитектуру обучения
 «Полигон “Купол”» и миссии «Станция “Узел-7”» на **одном persistent World**.
 
 ## 0. Фактические пути ассетов
@@ -23,9 +23,10 @@
 > тянет за собой fixup редиректоров в `Maps/`. Runtime-ссылка идёт из
 > `DA_Scenario_*.ScenarioSublevel`, поэтому имя папки ни на что не влияет.
 
-Asset Manager сканирует на primary assets типа `Quest` **две** папки —
-`/Game/XRU1Game/Quests` и `/Game/XRU1Game/Data` (`PrimaryAssetTypesToScan` в
-`Config/DefaultGame.ini`). Quest Definition вне них в registry не попадёт:
+Asset Manager сканирует на primary assets типа `Quest` ОДИН корень —
+`/Game/XRU1Game/Data` (рекурсивно, `PrimaryAssetTypesToScan` в
+`Config/DefaultGame.ini`; путь `/Quests` убран 2026-08-03 — там остались только
+StateTree-графы). Quest Definition вне них в registry не попадёт:
 `MakeQuestAvailable` молча ничего не сделает, и сценарий упадёт с
 «Quest ... нельзя запустить из состояния 0». Перенос `DA_Quest_*` в новую папку
 требует правки скана и **перезапуска редактора** — registry строится на старте.
@@ -120,8 +121,8 @@ Hub POI
 
 ### 3.2 Quest registry и безопасный runner
 
-- `DefaultGame.ini` сканирует primary assets типа `Quest` только в
-  `/Game/XRU1Game/Quests`.
+- `DefaultGame.ini` сканирует primary assets типа `Quest` в
+  `/Game/XRU1Game/Data` (рекурсивно; `DA_Quest_*` лежат в `Data/Missions`).
 - `UQuestDefinition` — `UPrimaryDataAsset`, а логика хранится отдельно в
   `StateTree`.
 - Старт без `QuestLogic` отклоняется до spawn. Spawn `AQuestRunnerActor`
@@ -406,7 +407,7 @@ OnLevelShown
 
 ### 4.4 Scenario Data Assets
 
-Создать в `/Game/XRU1Game/Data`:
+Создать в `/Game/XRU1Game/Data/Missions`:
 
 | Поле | `DA_Scenario_Tutorial` | `DA_Scenario_Mission01` |
 |---|---|---|
@@ -423,9 +424,11 @@ OnLevelShown
 Mission01 при `-1` получает 12/10/8.
 
 В Hub у POI полигона назначить `Scenario = DA_Scenario_Tutorial`, у POI Узла-7
-— `DA_Scenario_Mission01`; `LevelToLoad` очистить. `RequiredCompletedMission`
-для Mission01 = `Tutorial`, для Tutorial = `None`. Поле `MissionId` остаётся
-legacy/UI fallback: runtime ID нового пути берётся из `Scenario.ScenarioId`.
+— `DA_Scenario_Mission01`; `LevelToLoad` очистить. Требование прохождения живёт
+в САМОМ сценарии (`DA_Scenario_Mission01.RequiredMissions` → `DA_Scenario_Tutorial`);
+legacy-поля POI `RequiredCompletedMission`, `Title` и `Description` очищены
+2026-08-03 — иначе один и тот же текст и гейт хранились бы в двух местах.
+Поле `MissionId` остаётся UI-fallback: runtime ID берётся из `Scenario.ScenarioId`.
 
 ### 4.5 Quest Definition и StateTree
 
@@ -740,9 +743,10 @@ frame. До payload-aware task оставлять один exact objective на 
 5. **Камера реакции — монопольная**: на время реакционного выстрела
    camera-follow сценарного хода врага отпускается и возвращается после
    (раньше follow перетягивал кадр обратно на бегущего — реакция «дёргалась»).
-6. **Маркеры точек и круги радиуса** переведены на тонкий `M_DefuseRing`
-   (`DA_TacticalHUDStyle.TutorialDestinationMarkerMaterial`); кольцо
-   ВЫБРАННОГО бойца — прежнее (оно не из Theme). Толщина кольца — константа
+6. **Маркеры точек и круги радиуса** переведены на тонкий `M_DefuseRing`;
+   кольцо ВЫБРАННОГО бойца — прежнее (оно не из Theme). ⚠️ С 2026-08-03 это
+   ДВА разных поля: кольцо дальности способности — `DA_TacticalHUDStyle.RangeRingMaterial`,
+   маркер разрешённой точки шага — `DA_Tutorial_Style.DestinationMarkerMaterial`. Толщина кольца — константа
    0.02 UV в материале (нода у Divide), правится в редакторе материала.
 7. **D1-беат наводит камеру на зону эвакуации** (`FocusAnchorId=Evac_Tutorial`)
    после обезвреживания бомбы.
@@ -1458,8 +1462,8 @@ Unit_Tutorial_Assault_B  (Кадет: BP_Unit_Assault, InitialHealth=10, bStartD
 
 Подсветка прямоугольной зоны шага: `Tactical Objective`, чей
 `RequiredTargetAnchor` — `ATacticalQuestZone`, автоматически включает декаль
-по габаритам её бокса (синяя рамка `M_TutorialZoneFrame`; материал/параметры —
-`DA_TacticalHUDStyle.TutorialZoneMarkerMaterial`) и гасит её на выходе из шага.
+по габаритам её бокса (рамка `M_ZoneFrame`; материал —
+`DA_Tutorial_Style.ZoneMarkerMaterial`) и гасит её на выходе из шага.
 
 Черновые позиции новых точек расставлены скриптом 2026-07-31 в валидной зоне —
 двигать свободно, AnchorId при перетаскивании сохраняется. Старые `Move_B2_01/02`
@@ -1468,8 +1472,9 @@ Unit_Tutorial_Assault_B  (Кадет: BP_Unit_Assault, InitialHealth=10, bStartD
 ⚠️ Тайминг пустой фазы врага: после смерти Holo_A/Holo_B живых врагов может не
 быть, тогда фаза врага возвращается мгновенно и постановочные перебежки
 (B2a/B2b) доигрываются уже под баннером «ВАШ ХОД» при закрытом вводе — states
-держатся задачами Scripted Move, порядок не ломается. В C1 сближение делает
-штатный ход Holo_D (патруль), поэтому там фаза врага полноценная.
+держатся задачами Scripted Move, порядок не ломается. В C1 ход Holo_D ведёт
+задача `Scripted Enemy Turn` (v2.3; патруль убран), поэтому там фаза врага
+полноценная.
 
 У раненых постановочных бойцов текущее HP задаётся на экземпляре полем
 `InitialHealth` (0 = полное); быстрый рантайм-инструмент — `SetHealthDirect`.
@@ -1783,7 +1788,7 @@ StateTree описывает **что ждём**, но не должен сам 
 
 Видимая подсветка равна проверке по построению: декали-маркеры открытых точек
 рисуются радиусом `DestinationTolerance` той же политики (материал — в
-`DA_TacticalHUDStyle`).
+`DA_Tutorial_Style.DestinationMarkerMaterial`).
 
 Правила интеграции:
 
@@ -1810,7 +1815,8 @@ Description, выводится DenialReason политики. Description це�
 появлении оверлей отключить в контроллере.
 
 Позиция, размеры шрифтов и ширина переноса настраиваются в
-`DA_TacticalHUDStyle` → категория «07. Обучение | Подсказки» (без пересборки).
+`/Game/XRU1Game/Data/Core/DA_Tutorial_Style` (`UTutorialStyleData`, категория
+«Подсказки») — без пересборки. До 2026-08-03 это была секция UI-темы.
 
 **Правило текста подсказок (2026-08-03).** Обучение — единственное место, где
 игрок узнаёт интерфейс, поэтому подсказка не имеет права предполагать, что он
@@ -1830,11 +1836,12 @@ Description, выводится DenialReason политики. Description це�
 gate) — правятся ассетом, без пересборки; свод всех текущих строк снимается
 скриптом-дампом (см. [AGENT_UNREAL_TOOLING.md](agents/AGENT_UNREAL_TOOLING.md)).
 
-Там же — `TutorialDestinationMarkerMaterial`: контроллер при каждой смене
-политики шага (и при смене выбранного бойца) рисует декали-маркеры открытых
+Там же — `DestinationMarkerMaterial`: контроллер при каждой смене политики шага
+(и при смене выбранного бойца) рисует декали-маркеры открытых
 `AllowedDestinationAnchors` — выбранный боец видит только свои личные и общие
 точки (радиус = `DestinationTolerance` политики), перестраивает зону хода и
-пересчитывает серость кнопок. Дефолтный материал — `M_SelectionRing`.
+пересчитывает серость кнопок. Дефолт класса — `M_SelectionRing`, в ассете
+проставлен `M_DefuseRing`.
 
 Панель отряда HUD пересобирается в C++ при смене состава боя
 (`RebuildSquadPanel` в [TacticalHUDWidget.cpp](../Source/XRU1/UI/TacticalHUDWidget.cpp)):
@@ -1957,7 +1964,7 @@ Level Blueprint и не дублировать в actor names.
 
 ### Новый запуск из Hub
 
-1. POI проверяет `RequiredCompletedMission`.
+1. POI проверяет требования сценария (`DA_Scenario_*.RequiredMissions`).
 2. `StartCombatScenario` устанавливает `ActiveScenario` до travel.
 3. Новый World создаёт новые WorldSubsystem/fog/runtime state.
 4. Director загружает sublevel, сбрасывает run, запускает бой и quest.
@@ -1994,7 +2001,7 @@ Level Blueprint и не дублировать в actor names.
 | Runner теряет `Source`/payload | нельзя отличить Медика от Танка и Holo A от B | payload-aware StateTree task + gate; не полагаться только на generic tag |
 | `Amount` реализован повторной отправкой StateTree event | ошибочный Amount быстро завершит счётчик | обычная операция всегда Amount=1; aggregation только осознанно |
 | Objective Group может инкрементировать несколько specs одним иерархическим событием | parent tags пересекаются | уникальные leaf channels и тесты negative-path |
-| Quest registry строится при initialize GameInstance | asset вне scan folder или созданный после старта неизвестен | хранить DA только в `/Game/XRU1Game/Quests`, перезапустить PIE/Editor |
+| Quest registry строится при initialize GameInstance | asset вне scan folder или созданный после старта неизвестен | хранить DA только в дереве `/Game/XRU1Game/Data`, перезапустить PIE/Editor |
 | `Completed/Failed` не перезапускается Director | retry после финала не проходит `Available` | явный reset API до travel |
 | Streamed actors появляются после `GameMode::BeginPlay` | пустые стороны, не найденная бомба/evac | deferred explicit scenario start после `OnLevelShown` |
 | Только mesh hidden у staged actor | collision/perception/AI всё ещё активны | единый `SetScenarioActorActive` для presentation + gameplay |

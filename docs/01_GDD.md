@@ -44,8 +44,9 @@
 2. стрелок «флангировал» наклоном, не сходя с места, — щит цели прыгал между
    синим и жёлтым без единого её движения.
 
-Старый режим сохранён под флагом `bLegacyGeometricFlanking` в
-`DA_CoverTuning` — для сравнения и отката.
+Старый геометрический режим удалён вместе с флагом отката: обе редакции
+одновременно в игре не нужны, а мёртвая ручка в `DA_CoverTuning` только
+путала бы дизайнера (сверено с кодом 2026-08-03).
 
 ### Связь с видимостью
 
@@ -92,9 +93,10 @@
 Хаб (голографическая 3D-карта, вращение камерой)
  ├─ POI «Полигон “Купол”» → Scenario Tutorial
  └─ POI «Станция “Узел-7”» → Scenario Mission01
-     └─ ЗАБЛОКИРОВАНА, пока не пройдено обучение (RequiredCompletedMission =
-        "Tutorial"): маркер серый, клик → «Сначала пройдите обучение»
-Одна карта Showreel_Scene, запуск Tutorial: поэтапное обучение
+     └─ ЗАБЛОКИРОВАНА, пока не пройдено обучение: требование живёт в самом
+        сценарии (`DA_Scenario_Mission01.RequiredMissions` → Tutorial), маркер
+        серый, клик → «Сначала пройдите обучение»
+Одна карта Main_Map_Showreel, запуск Tutorial: поэтапное обучение
             (медик → танк+снайпер → штурмовик → overwatch)
             → зона эвакуации → результат → хаб
 Та же карта, запуск Mission01: брифинг → бой → обезвредить бомбу до
@@ -394,9 +396,9 @@ objective. Подробная архитектура —
   исчерпания его AP; **ЛКМ в пустоту выбор не снимает** (как в XCOM).
   Отключаемо и скрытие карточек: `bShowOnlySelectedCard` HUD.
 - **Единая UI-тема** — DataAsset `UTacticalHUDStyleData`
-  (`DA_TacticalHUDStyle`): action/status/class icons, пять портретов, экранный
-  арт и интро, CommonUI style classes, палитры, размеры и независимые padding
-  блоков. Крупный арт хранится soft-reference; PNG-кнопки используют отдельные
+  (`/Game/XRU1Game/Data/Core/DA_TacticalHUDStyle`): action/status/class icons,
+  пять портретов, экранный арт и интро, палитры, размеры и независимые padding
+  блоков. Презентация обучения живёт отдельно (`DA_Tutorial_Style`). Крупный арт хранится soft-reference; PNG-кнопки используют отдельные
   foreground/background состояния. Приоритет статуса карточки централизован:
   Downed → Evacuated → Taunt → HunkerDown → Overwatch → Moving.
   Такой состав соответствует официальному XCOM 2 `Unit Flag`, где одновременно
@@ -416,7 +418,7 @@ objective. Подробная архитектура —
 - **Счётчик живых врагов** (верх справа): PNG-glyph и число лежат на общей
   тёмной полупрозрачной подложке. Texture/color/internal padding подложки и
   размер glyph берутся только из `DA_TacticalHUDStyle`; внешний layout блока
-  остаётся отдельным `EnemyCounterLayout`.
+  задаётся вёрсткой самого WBP.
 - Над юнитами: HP (у бойцов отряда также AP; у врагов без AP) через
   `UUnitHUDWidget` + **две независимые иконки** — локальное укрытие Half/Full и
   главный gameplay-статус с тем же приоритетом, что в карточке. Это намеренная
@@ -506,7 +508,7 @@ C/V/Home) читаются контроллером напрямую.
 |---|---|---|
 | **L_MainMenu** | Фон (статичная сцена/размытый арт) + стек меню | минимум |
 | **L_Hub** | «Голографическая» 3D-карта: ландшафт-миниатюра (MWLandscapeAutoMaterial, пример MountainRange), голо-материал поверх, орбитальная камера, 2 POI-маркера | ландшафт уже в репо |
-| **Showreel_Scene (persistent)** | Единственная общая боевая карта: арт, освещение, NavMesh, camera bounds, `ATacticalScenarioDirector` и общие anchors. Путь: `/Game/US_Military/Levels/Showreel_Scene` | US Military kit + Megascans |
+| **Main_Map_Showreel (persistent)** | Единственная общая боевая карта: арт, освещение, NavMesh, camera bounds, `ATacticalScenarioDirector` и общие anchors. Путь: `/Game/XRU1Game/Maps/Main_Map_Showreel` | US Military kit + Megascans |
 | **SL_Showreel_Tutorial** | Streaming sublevel той же карты: секции A–D, 4 голограммы, tutorial zones/markers и staged actors | тот же кит |
 | **SL_Showreel_Mission01** | Streaming sublevel той же карты: 4–6 врагов, бомба, таймер, эвакуация и mission-specific spawners | тот же кит |
 

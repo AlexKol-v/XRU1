@@ -1,6 +1,6 @@
 # UI и боевой HUD
 
-Актуально на 2026-08-01. Документ хранит архитектуру и открытый остаток, а не
+Актуально на 2026-08-03. Документ хранит архитектуру и открытый остаток, а не
 старые инструкции по сборке отдельных WBP.
 
 ## 1. Источник темы
@@ -90,7 +90,9 @@ AP, не вычисляет шанс и не завершает ability само
 - [ ] Отдельный feedback зарядов/кулдауна классовой ability.
 - [ ] Цель миссии, таймер и evacuation state на tutorial/mission maps.
 - [ ] Проверка layout в 1920×1080, 2560×1440 и 16:10; safe margins.
-- [ ] Единые transition/hover/pressed states из CommonUI styles.
+- [ ] Единые hover/pressed состояния кнопок из палитры темы
+      (`FXRU1UIButtonPalette`); CommonUI style classes из темы удалены —
+      экраны красит C++, отдельные `CBS_`/`CTS_` ассеты в проекте не заведены.
 - [ ] Проверка контраста overhead icons на светлом/тёмном окружении.
 
 ## 5. Меню и экраны
@@ -114,8 +116,8 @@ Main Menu → New Game/Difficulty → Intro → Hub
 
 - [x] Main Menu, difficulty (вёрстка пользователя), settings, about — вёрстка и
       логика; ссылки Class Defaults проставлены.
-- [x] `WBP_IntroPlayer` со skip-переходом (полноэкранная прозрачная кнопка).
-      Открыто: MediaPlayer-видео вместо статичного фона.
+- [x] `WBP_IntroPlayer` со skip-переходом (полноэкранная прозрачная кнопка);
+      реальный ролик `TU_Intro.mp4` подключён — см. ниже и §5.6.
 - [x] `WBP_MissionResult`: victory/defeat/timeout и DemoComplete-вариант
       (победа в Kind=Mission), арт из темы; назначен в
       `GM_Tactics.MissionResultWidgetClass`.

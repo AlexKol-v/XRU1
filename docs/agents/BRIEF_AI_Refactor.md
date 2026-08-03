@@ -68,7 +68,10 @@ FAIContact { AActor* Target; FVector LastKnownLocation; float LastSeenTurn;
 ## 3. Как должна ощущаться разница уровней сложности
 
 Заполняется через `FAIStyleTuning` в трёх ассетах
-`/Game/XRU1Game/AI/DA_AI_Easy | DA_AI_Medium | DA_AI_Hard`.
+`/Game/XRU1Game/Data/AI/DA_AI_Easy | DA_AI_Medium | DA_AI_Hard`
+(единое дерево Data Assets — [../06_CONVENTIONS.md](../06_CONVENTIONS.md) §3).
+Их ещё нет; `BP_TacticsGameInstance.AIProfilesByDifficulty` пуст, поэтому
+сложность пока меняет только HP/Aim врагов.
 Ориентир — XCOM 2, где Rookie/Commander/Legend отличаются не меткостью, а
 поведением и числом одновременно вступающих в бой врагов.
 
@@ -78,7 +81,7 @@ FAIContact { AActor* Target; FVector LastKnownLocation; float LastSeenTurn;
 | `FocusFireBonus` | 0 | 8 | 25 |
 | `FlankWillingness` | 0.3 | 1.0 | 1.6 |
 | `FinishWoundedWillingness` | 0.5 | 1.0 | 1.5 |
-| `Perception.SightRadius` | 1200 | 1400 | 1700 |
+| `Perception.SightRadius` | 2500 | 2500 | 2800 |
 | `EvaluatorWeightMultipliers[UAIEval_HunkerDown]` | 1.5 | 1.0 | 0.6 |
 | `EvaluatorWeightMultipliers[UAIEval_AdvanceToCover]` | 0.7 | 1.0 | 1.4 |
 | `EvaluatorWeightMultipliers[UAIEval_Overwatch]` | 0.6 | 1.0 | 1.3 |
@@ -90,6 +93,11 @@ FAIContact { AActor* Target; FVector LastKnownLocation; float LastSeenTurn;
 
 Цифры — стартовая точка, а не догма: после прогона матрицы их правят и
 фиксируют в `08_AI.md`.
+
+⚠️ `SightRadius` ниже 2500 не ставить ни на одной сложности: обзор врага не
+должен быть меньше дистанции, с которой по нему стреляют, — это в точности
+дефект «Причина 1» из [../08_AI.md](../08_AI.md) §3.9 (враг не видел стрелка и
+выглядел сломанным). Сложность задаётся стилем, а не слепотой.
 
 ## 4. Обязательный порядок работы
 

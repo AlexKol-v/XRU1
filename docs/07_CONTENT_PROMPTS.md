@@ -40,7 +40,7 @@
 (2) каждый кадр оживить image-to-video 5–8 сек (промты ниже) →
 (3) склейка + закадровый голос (§6) + музыка (§7) в **DaVinci Resolve
 (бесплатный)** → (4) экспорт MP4 1080p → `Content/Movies/TU_Intro.mp4`
-(проигрывание — 05_EDITOR_GUIDE §3.5). Опционально тем же способом:
+(проигрывание и типовые поломки — [09_UI_HUD §5.6](09_UI_HUD.md)). Опционально тем же способом:
 6-сек victory-шот для эпилога и 10-сек луп для фона главного меню.
 
 ### 2.2 Сценарий интро — 6 шотов (~45 сек)
@@ -118,11 +118,11 @@
 |---|---|---|
 | Фон главного меню | "Tactical command bunker interior, large holographic map table glowing teal in the dark, rain on a small window, empty chair — calm before the operation" | `UI/Art/Menu/T_MainMenu_BG` |
 | Фон экрана сложности | "Three worn military dossier folders on a steel desk, green/yellow/red wax seals, holographic projector beside" | `UI/Art/Menu/T_Difficulty_BG` |
-| Брифинг туториала | "Military training ground 'Dome': indoor polygon with concrete barriers and holographic target dummies, cyan hologram shimmer" | `UI/Art/Briefing/T_Brief_Tutorial` |
-| Брифинг миссии | "Aerial recon photo style: radio relay station courtyard with containers and sandbags, marked enemy positions as red holographic diamonds, bomb icon at north building" | `UI/Art/Briefing/T_Brief_Mission01` |
-| Экран победы | "The same relay station at sunrise, beacon light green, drop-ship leaving, hopeful warm light breaking the palette" | `UI/Art/Result/T_Result_Victory` |
-| Экран поражения | "Distant explosion flash over the relay station seen from a ridge, silhouettes lowering their heads, cold palette" | `UI/Art/Result/T_Result_Defeat` |
-| Финальный экран демо | "Squad of four walking away from camera into morning fog toward a drop-ship, mission patch 'XRU-1' floating as hologram" | `UI/Art/Result/T_DemoComplete` |
+| Брифинг туториала | "Military training ground 'Dome': indoor polygon with concrete barriers and holographic target dummies, cyan hologram shimmer" | `UI/Art/Menu/T_Brief_Tutorial` |
+| Брифинг миссии | "Aerial recon photo style: radio relay station courtyard with containers and sandbags, marked enemy positions as red holographic diamonds, bomb icon at north building" | `UI/Art/Menu/T_Brief_Mission01` |
+| Экран победы | "The same relay station at sunrise, beacon light green, drop-ship leaving, hopeful warm light breaking the palette" | `UI/Art/Menu/T_Result_Victory` |
+| Экран поражения | "Distant explosion flash over the relay station seen from a ridge, silhouettes lowering their heads, cold palette" | `UI/Art/Menu/T_Result_Defeat` |
+| Финальный экран демо | "Squad of four walking away from camera into morning fog toward a drop-ship, mission patch 'XRU-1' floating as hologram" | `UI/Art/Menu/T_DemoComplete` |
 
 ## 4. Портреты отряда (512×512, по пояс, единый ракурс ¾)
 
@@ -191,7 +191,8 @@ thin cyan outer glow, XCOM-style minimalism, no text: …"
 **Набор:** закадр интро (6 реплик, §2.2) · туториал A1–D3 (Купол + вставки
 бойцов: A4 Шприц, A9 Клин, B2/B5-закрытие Оса, B4 Молот, C2 Клин, D2 Оса) ·
 миссия (9 реплик таблицы 02 §6) · эпилог + 2 поражения.
-Куда: `Content/XRU1Game/Audio/VO/VO_<Кто>_<Метка>` (пример: `VO_Kupol_A5`).
+Куда: `Content/XRU1Game/Audio/VO/<Hub|Tutorial|Mission01>/VO_<Метка>_<Кто>`
+(фактические имена: `VO_Tut_A1_Kupol`, `VO_M01_Brief_Kupol`, `VO_Hub_Arrival_Kupol`).
 
 ## 7. Музыка и звуки (если генерить: Suno/Stable Audio)
 
@@ -207,7 +208,8 @@ thin cyan outer glow, XCOM-style minimalism, no text: …"
 НЕ генерировать (качество/тайлинг хуже готовых) — брать Megascans/Fab
 (этап 2 роадмапа). Исключение — **голограмма карты хаба**: эмиссив-текстура
 "topographic contour lines pattern, thin cyan lines on black, seamless" →
-`Content/XRU1Game/FX/T_HoloGrid` (в материал M_Hologram).
+`Content/XRU1Game/Hub/Materials/Textures/` (в материал `M_Hologram`; текстуры
+голограммы перенесены из донора 2026-08-02).
 
 ## 9. Порядок работы
 
