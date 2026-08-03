@@ -42,7 +42,8 @@
 | `UTacticalScenarioSubsystem` | реестр акторов сценария по `AnchorId` и единое включение staged-акторов |
 | `UTutorialActionGateSubsystem` | политика текущего шага обучения: что игрок вправе сделать прямо сейчас |
 | `UTutorialPresentationSubsystem` | активный такт обучения: спикер, субтитр, фокус камеры, подсветки |
-| `STutorialHintOverlay` | Slate-трекер целей обучения поверх viewport (без WBP), настройки — в `DA_TacticalHUDStyle` |
+| `STutorialHintOverlay` | Slate-трекер целей обучения поверх viewport (без WBP), настройки — в `DA_Tutorial_Style` |
+| `UTutorialStyleData` | презентация обучения: подсказки-цели и мировые декали шага (маркер точки, рамка зоны); резолвится `Get()` → GameInstance → CDO |
 | StateTree-задачи «XRU1 Tutorial» (`TacticalQuestTasks`) | Tactical Objective с payload, Apply Action Gate, Set Scenario Actor Active, Scripted Shot, Tutorial Beat |
 | `TacticsDebug` | общий реестр debug-cvar (`xru1.AI.LogCombat`, `xru1.Tutorial.LogGate`, …) и команда `xru1.LOS.Explain` |
 | `UTacticsAudioSubsystem` | единственная точка воспроизведения звука и применения громкостей |
@@ -356,6 +357,16 @@ quest-событий, поэтому отменённое действие не 
 `UTacticalHUDWidget`, unit/attribute widgets и `UTacticalHUDStyleData` дают
 функциональный боевой HUD и единую тему. Остаток относится к presentation и
 полноте экранов, а не к переделке боевого ядра. См. [09_UI_HUD.md](09_UI_HUD.md).
+
+## 10.1. Data Assets — где они лежат
+
+Все дизайнерские Data Assets сведены в одно дерево `/Game/XRU1Game/Data`
+(`Core` — глобальные, ссылка в `BP_TacticsGameInstance`; `Units` — профили
+юнита; `AI` — профили поведения; `Missions` — сценарии и квесты). Правило
+размещения, именования и заведения нового ассета — [06_CONVENTIONS §3](06_CONVENTIONS.md).
+Из этого же рефакторинга (2026-08-03): презентация обучения выделена из UI-темы
+в `UTutorialStyleData`, а editor-библиотека вёрстки больше не грузит тему по
+зашитому пути — ищет её по классу через AssetRegistry.
 
 ## 11. Blueprint API, который считается контрактом
 

@@ -24,6 +24,7 @@
 #include "TutorialActionGate.h"
 #include "TutorialHintOverlay.h"
 #include "TutorialPresentation.h"
+#include "TutorialStyleData.h" // маркеры разрешённых точек шага обучения
 #include "QuestDefinition.h"
 #include "QuestInstance.h"
 #include "QuestSubsystem.h"
@@ -1012,7 +1013,7 @@ void ATacticalPlayerController::RefreshDownedReviveRings()
 	const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>();
 	const UTacticalHUDStyleData* Theme = GameInstance ? GameInstance->GetUITheme() : nullptr;
 	UMaterialInterface* RingMaterial = Theme
-		? Theme->TutorialDestinationMarkerMaterial.LoadSynchronous() : nullptr;
+		? Theme->RangeRingMaterial.LoadSynchronous() : nullptr;
 	const UTurnManagerSubsystem* TurnManager =
 		GetWorld() ? GetWorld()->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
 	if (!RingMaterial || !TurnManager)
@@ -1076,10 +1077,8 @@ void ATacticalPlayerController::RefreshTutorialDestinationMarkers()
 		return;
 	}
 
-	const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>();
-	const UTacticalHUDStyleData* Theme = GameInstance ? GameInstance->GetUITheme() : nullptr;
-	UMaterialInterface* MarkerMaterial = Theme
-		? Theme->TutorialDestinationMarkerMaterial.LoadSynchronous() : nullptr;
+	UMaterialInterface* MarkerMaterial =
+		UTutorialStyleData::Get(this)->DestinationMarkerMaterial.LoadSynchronous();
 	UTacticalScenarioSubsystem* Registry =
 		GetWorld() ? GetWorld()->GetSubsystem<UTacticalScenarioSubsystem>() : nullptr;
 	if (!MarkerMaterial || !Registry)
@@ -1887,7 +1886,7 @@ void ATacticalPlayerController::BeginAbilityTargetingVisuals()
 	const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>();
 	const UTacticalHUDStyleData* Theme = GameInstance ? GameInstance->GetUITheme() : nullptr;
 	UMaterialInterface* RingMaterial = Theme
-		? Theme->TutorialDestinationMarkerMaterial.LoadSynchronous() : nullptr;
+		? Theme->RangeRingMaterial.LoadSynchronous() : nullptr;
 	if (Range > 0.f && RingMaterial)
 	{
 		AbilityRangeDecal = UGameplayStatics::SpawnDecalAtLocation(

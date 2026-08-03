@@ -2,10 +2,9 @@
 
 #include "Components/BoxComponent.h"
 #include "Components/DecalComponent.h"
-#include "TacticalHUDStyleData.h"
 #include "TacticalQuestEvents.h"
 #include "TacticsCombatStatics.h"
-#include "TacticsGameInstance.h"
+#include "TutorialStyleData.h"
 #include "TurnManagerSubsystem.h"
 #include "UnitBase.h"
 
@@ -56,13 +55,11 @@ void ATacticalQuestZone::SetHighlighted(bool bNewHighlighted)
 
 	if (!HighlightDecal)
 	{
-		const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>();
-		const UTacticalHUDStyleData* Theme = GameInstance ? GameInstance->GetUITheme() : nullptr;
-		UMaterialInterface* Material = Theme
-			? Theme->TutorialZoneMarkerMaterial.LoadSynchronous() : nullptr;
+		UMaterialInterface* Material =
+			UTutorialStyleData::Get(this)->ZoneMarkerMaterial.LoadSynchronous();
 		if (!Material)
 		{
-			return; // тема не задана — подсветка опциональна
+			return; // материал не задан — подсветка опциональна
 		}
 		HighlightDecal = NewObject<UDecalComponent>(this, TEXT("ZoneHighlight"));
 		HighlightDecal->SetupAttachment(TriggerBox);

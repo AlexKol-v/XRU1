@@ -1,8 +1,7 @@
 #include "TutorialHintOverlay.h"
 
 #include "TacticalPlayerController.h"
-#include "TacticalHUDStyleData.h"
-#include "TacticsGameInstance.h"
+#include "TutorialStyleData.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
@@ -14,24 +13,15 @@ void STutorialHintOverlay::Construct(const FArguments& InArgs)
 	// Оверлей никогда не перехватывает мышь: это чисто информационный слой.
 	SetVisibility(EVisibility::HitTestInvisible);
 
-	// Позиция и размеры — из общей UI-темы (DA_TacticalHUDStyle), чтобы дизайнер
-	// двигал подсказки без пересборки. Нет темы — дефолты из C++.
-	FVector2D Offset(28.f, 110.f);
-	int32 TitleSize = 12, TextSize = 17, DenialSize = 14;
-	float WrapWidth = 560.f;
-	if (const ATacticalPlayerController* Controller = Owner.Get())
-	{
-		const UTacticsGameInstance* GameInstance =
-			Controller->GetGameInstance<UTacticsGameInstance>();
-		if (const UTacticalHUDStyleData* Theme = GameInstance ? GameInstance->GetUITheme() : nullptr)
-		{
-			Offset = Theme->TutorialHintOffset;
-			TitleSize = Theme->TutorialHintTitleFontSize;
-			TextSize = Theme->TutorialHintTextFontSize;
-			DenialSize = Theme->TutorialHintDenialFontSize;
-			WrapWidth = Theme->TutorialHintWrapWidth;
-		}
-	}
+	// Позиция и размеры — из презентации обучения (DA_Tutorial_Style), чтобы
+	// дизайнер двигал подсказки без пересборки. Get() никогда не вернёт nullptr:
+	// без назначенного ассета берётся CDO с теми же дефолтами.
+	const UTutorialStyleData* Style = UTutorialStyleData::Get(Owner.Get());
+	const FVector2D Offset = Style->HintOffset;
+	const int32 TitleSize = Style->HintTitleFontSize;
+	const int32 TextSize = Style->HintTextFontSize;
+	const int32 DenialSize = Style->HintDenialFontSize;
+	const float WrapWidth = Style->HintWrapWidth;
 
 	const FSlateFontInfo TitleFont = FCoreStyle::GetDefaultFontStyle("Bold", TitleSize);
 	const FSlateFontInfo ObjectiveFont = FCoreStyle::GetDefaultFontStyle("Bold", TextSize);

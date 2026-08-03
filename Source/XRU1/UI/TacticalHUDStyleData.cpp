@@ -326,23 +326,7 @@ EDataValidationResult UTacticalHUDStyleData::IsDataValid(FDataValidationContext&
 			"прозрачные status-glyph могут снова теряться на фоне уровня"));
 	}
 
-	ValidateBlock(ActionsPanelLayout, TEXT("ActionsPanelLayout"));
-	ValidateBlock(EndTurnLayout, TEXT("EndTurnLayout"));
-	ValidateBlock(SquadPanelLayout, TEXT("SquadPanelLayout"));
 	ValidateBlock(PortraitCardLayout, TEXT("PortraitCardLayout"));
-	ValidateBlock(TargetPanelLayout, TEXT("TargetPanelLayout"));
-	ValidateBlock(TurnPhaseLayout, TEXT("TurnPhaseLayout"));
-	ValidateBlock(EnemyCounterLayout, TEXT("EnemyCounterLayout"));
-	ValidateBlock(TargetingBannerLayout, TEXT("TargetingBannerLayout"));
-	ValidateBlock(UnitOverheadLayout, TEXT("UnitOverheadLayout"));
-	ValidateBlock(MainMenuContentLayout, TEXT("MainMenuContentLayout"));
-	ValidateBlock(DifficultyContentLayout, TEXT("DifficultyContentLayout"));
-	ValidateBlock(SettingsContentLayout, TEXT("SettingsContentLayout"));
-	ValidateBlock(AboutContentLayout, TEXT("AboutContentLayout"));
-	ValidateBlock(PauseContentLayout, TEXT("PauseContentLayout"));
-	ValidateBlock(BriefingContentLayout, TEXT("BriefingContentLayout"));
-	ValidateBlock(ResultContentLayout, TEXT("ResultContentLayout"));
-	ValidateBlock(IntroOverlayLayout, TEXT("IntroOverlayLayout"));
 	ValidateArtwork(MainMenuArt, TEXT("MainMenuArt"));
 	ValidateArtwork(DifficultyArt, TEXT("DifficultyArt"));
 	ValidateArtwork(SettingsArt, TEXT("SettingsArt"));
@@ -387,12 +371,6 @@ EDataValidationResult UTacticalHUDStyleData::IsDataValid(FDataValidationContext&
 	WarnMissing(SniperAbilityIcon.Get(), TEXT("SniperAbilityIcon"));
 	WarnMissing(MedicAbilityIcon.Get(), TEXT("MedicAbilityIcon"));
 	WarnMissing(TankAbilityIcon.Get(), TEXT("TankAbilityIcon"));
-	WarnMissing(PrimaryMenuButtonStyle.Get(), TEXT("PrimaryMenuButtonStyle"));
-	WarnMissing(SecondaryMenuButtonStyle.Get(), TEXT("SecondaryMenuButtonStyle"));
-	WarnMissing(DangerMenuButtonStyle.Get(), TEXT("DangerMenuButtonStyle"));
-	WarnMissing(TitleTextStyle.Get(), TEXT("TitleTextStyle"));
-	WarnMissing(BodyTextStyle.Get(), TEXT("BodyTextStyle"));
-	WarnMissing(CaptionTextStyle.Get(), TEXT("CaptionTextStyle"));
 
 	WarnMissingSoft(MainMenuArt.Texture.IsNull(), TEXT("MainMenuArt.Texture"));
 	WarnMissingSoft(DifficultyArt.Texture.IsNull(), TEXT("DifficultyArt.Texture"));

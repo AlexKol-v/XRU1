@@ -14,8 +14,8 @@
 | Persistent World | `/Game/XRU1Game/Maps/Main_Map_Showreel` |
 | Sublevel обучения | `/Game/XRU1Game/Maps/SubLavel/SL_Showreel_Tutorial` |
 | Sublevel миссии | `/Game/XRU1Game/Maps/SubLavel/SL_Showreel_Mission01` |
-| Scenario Data Assets | `/Game/XRU1Game/Data/DA_Scenario_Tutorial`, `DA_Scenario_Mission01` |
-| Quest Definitions | `/Game/XRU1Game/Data/DA_Quest_Tutorial`, `DA_Quest_Mission01` |
+| Scenario Data Assets | `/Game/XRU1Game/Data/Missions/DA_Scenario_Tutorial`, `DA_Scenario_Mission01` |
+| Quest Definitions | `/Game/XRU1Game/Data/Missions/DA_Quest_Tutorial`, `DA_Quest_Mission01` |
 | StateTree-графы | `/Game/XRU1Game/Quests/ST_Quest_Tutorial`, `ST_Quest_Mission01` |
 | Scenario Director | `/Game/XRU1Game/Core/BP_TacticalScenarioDirector` |
 

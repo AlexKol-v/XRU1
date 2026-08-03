@@ -9,6 +9,7 @@ class UTacticsSaveGame;
 class UTacticalHUDStyleData;
 class UCoverTuningDataAsset;
 class UTacticalScenarioDataAsset;
+class UTutorialStyleData;
 
 /**
  * GameInstance проекта: владеет текущим слотом кампании (UTacticsSaveGame) и
@@ -38,6 +39,14 @@ public:
 	/** Общая UI-тема для HUD и всех WBP-экранов. */
 	UFUNCTION(BlueprintPure, Category = "Tactics|UI")
 	UTacticalHUDStyleData* GetUITheme() const { return UITheme; }
+
+	/**
+	 * Презентация обучения (DA_Tutorial_Style): подсказки-цели и мировые декали
+	 * шага. Отдельно от UITheme — это другой слой с другими читателями
+	 * (`UTutorialStyleData::Get`). Не назначен — используется CDO.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|UI")
+	TObjectPtr<UTutorialStyleData> TutorialStyle;
 
 	/**
 	 * Единый тюнинг укрытий/LOS/выглядывания/высоты (DA_CoverTuning). Назначается

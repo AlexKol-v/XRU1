@@ -6,8 +6,8 @@
 ## 1. Источник темы
 
 Единый источник визуальных параметров —
-`/Game/XRU1Game/Data/DA_TacticalHUDStyle` (`UTacticalHUDStyleData`). Глобальная
-ссылка находится в `BP_TacticsGameInstance.UITheme`.
+`/Game/XRU1Game/Data/Core/DA_TacticalHUDStyle` (`UTacticalHUDStyleData`).
+Глобальная ссылка находится в `BP_TacticsGameInstance.UITheme`.
 
 В Data Asset хранятся:
 
@@ -16,7 +16,18 @@
 - фоны, briefing/result art и intro media;
 - палитры состояний кнопок и текста;
 - размеры, padding и подложки HUD-блоков;
-- CommonUI style classes.
+- материал кольца дальности способности (`RangeRingMaterial`).
+
+Чего в теме БОЛЬШЕ НЕТ (рефакторинг 2026-08-03):
+
+- презентация обучения (подсказки-цели и мировые декали шага) переехала в
+  `/Game/XRU1Game/Data/Core/DA_Tutorial_Style` (`UTutorialStyleData`,
+  ссылка — `BP_TacticsGameInstance.TutorialStyle`): у неё другие читатели и
+  часть параметров рисует мир, а не интерфейс;
+- 16 блоков `FXRU1UIBlockLayout` (панели HUD и `*ContentLayout` экранов),
+  6 CommonUI style classes и цвета `Friendly/Enemy/Success` удалены — их не
+  читал ни C++, ни один Blueprint. Осталась только карточка портрета
+  (`PortraitCardLayout`), которую действительно применяет `WBP_UnitPortrait`.
 
 WBP не должен дублировать эти значения, кроме чистого layout конкретного
 экрана. Новый визуальный параметр сначала добавляется в тему/структуру C++.

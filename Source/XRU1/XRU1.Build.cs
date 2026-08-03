@@ -59,7 +59,10 @@ public class XRU1 : ModuleRules
 			PrivateDependencyModuleNames.AddRange(new string[] {
 				"UnrealEd",
 				"UMGEditor",
-				"StateTreeEditorModule"
+				"StateTreeEditorModule",
+				// Тема проекта ищется по КЛАССУ, а не по зашитому пути ассета:
+				// раскладка /Game/XRU1Game/Data меняется, строка ломается молча.
+				"AssetRegistry"
 			});
 		}
 

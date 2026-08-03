@@ -26,7 +26,7 @@ public:
 	/**
 	 * Подсветка зоны на время шага, который её ждёт (декаль по размеру бокса).
 	 * Включает/выключает `Tactical Objective` c RequiredTargetAnchor этой зоны;
-	 * материал — `DA_TacticalHUDStyle.TutorialZoneMarkerMaterial`.
+	 * материал — `DA_Tutorial_Style.ZoneMarkerMaterial`.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Quest")
 	void SetHighlighted(bool bNewHighlighted);

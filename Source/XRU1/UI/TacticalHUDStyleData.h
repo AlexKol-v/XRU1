@@ -1,8 +1,6 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "CommonButtonBase.h"
-#include "CommonTextBlock.h"
 #include "CoverTypes.h"
 #include "Engine/DataAsset.h"
 #include "TacticalHUDStyleData.generated.h"
@@ -137,47 +135,21 @@ class XRU1_API UTacticalHUDStyleData : public UDataAsset
 	GENERATED_BODY()
 
 public:
-	// --- Оверлей подсказок обучения (STutorialHintOverlay) --------------------
-
-	/** Отступ блока подсказок от левого верхнего угла экрана, px. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "07. Обучение|Подсказки")
-	FVector2D TutorialHintOffset = FVector2D(28.f, 110.f);
-
-	/** Размер шрифта названия квеста. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "07. Обучение|Подсказки", meta = (ClampMin = "6"))
-	int32 TutorialHintTitleFontSize = 12;
-
-	/** Размер шрифта строк целей. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "07. Обучение|Подсказки", meta = (ClampMin = "6"))
-	int32 TutorialHintTextFontSize = 17;
-
-	/** Размер шрифта причины отказа. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "07. Обучение|Подсказки", meta = (ClampMin = "6"))
-	int32 TutorialHintDenialFontSize = 14;
-
-	/** Ширина переноса строк, px. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "07. Обучение|Подсказки", meta = (ClampMin = "200"))
-	float TutorialHintWrapWidth = 560.f;
+	// --- Индикаторы в мире ----------------------------------------------------
 
 	/**
-	 * Декаль-маркер разрешённых точек перемещения шага (AllowedDestinationAnchors
-	 * активной политики). Радиус кольца ВСЕГДА равен DestinationTolerance
-	 * политики: картинка и проверка клика — один источник правды. Размер кольца
-	 * меняется через DestinationTolerance в задаче Apply Action Gate шага.
+	 * Декаль кольца дальности способности вокруг выбранного бойца
+	 * (`ATacticalPlayerController`): игрок видит радиус аптечки/дэша ДО клика,
+	 * как в XCOM. Пусто — кольцо не рисуется.
+	 *
+	 * ⚠️ Не путать с маркером разрешённой точки шага обучения: он живёт в
+	 * `UTutorialStyleData` и может быть другим материалом. Раньше оба брались из
+	 * одного поля темы, из-за чего боевая подсказка и обучение были склеены.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "07. Обучение|Подсказки")
-	TSoftObjectPtr<UMaterialInterface> TutorialDestinationMarkerMaterial =
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "09. Мир|Индикаторы")
+	TSoftObjectPtr<UMaterialInterface> RangeRingMaterial =
 		TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(
 			TEXT("/Game/XRU1Game/Materials/M_SelectionRing.M_SelectionRing")));
-
-	/**
-	 * Декаль подсветки прямоугольной зоны шага (ATacticalQuestZone.SetHighlighted):
-	 * синяя рамка со скруглёнными углами по габаритам бокса зоны.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "07. Обучение|Подсказки")
-	TSoftObjectPtr<UMaterialInterface> TutorialZoneMarkerMaterial =
-		TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(
-			TEXT("/Game/XRU1Game/Materials/M_TutorialZoneFrame.M_TutorialZoneFrame")));
 
 	// --- Кнопки действий (ActionsPanel + EndTurn) ----------------------------
 
@@ -476,58 +448,16 @@ public:
 		FLinearColor(0.01f, 0.025f, 0.04f, 0.88f);
 
 	// --- Независимые размеры/отступы блоков ---------------------------------
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "05. Разметка|Блоки")
-	FXRU1UIBlockLayout ActionsPanelLayout;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "05. Разметка|Блоки")
-	FXRU1UIBlockLayout EndTurnLayout;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "05. Разметка|Блоки")
-	FXRU1UIBlockLayout SquadPanelLayout;
+	//
+	// ⚠️ Здесь осталась ОДНА карточка портрета. Ещё 16 блоков (панели HUD и
+	// `*ContentLayout` всех экранов) удалены 2026-08-03: их не читал ни C++, ни
+	// один Blueprint — экраны меню верстает `UXRU1WidgetAuthoringLibrary`, а
+	// панели HUD собраны в Designer. Настройка, которую никто не применяет,
+	// хуже её отсутствия: дизайнер крутит значение и не понимает, почему тихо.
 
 	/** Для карточки оба компонента DesiredSize обязательны и должны быть > 0. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "05. Разметка|Блоки")
 	FXRU1UIBlockLayout PortraitCardLayout;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "05. Разметка|Блоки")
-	FXRU1UIBlockLayout TargetPanelLayout;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "05. Разметка|Блоки")
-	FXRU1UIBlockLayout TurnPhaseLayout;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "05. Разметка|Блоки")
-	FXRU1UIBlockLayout EnemyCounterLayout;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "05. Разметка|Блоки")
-	FXRU1UIBlockLayout TargetingBannerLayout;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "05. Разметка|Блоки")
-	FXRU1UIBlockLayout UnitOverheadLayout;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "05. Разметка|Экраны")
-	FXRU1UIBlockLayout MainMenuContentLayout;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "05. Разметка|Экраны")
-	FXRU1UIBlockLayout DifficultyContentLayout;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "05. Разметка|Экраны")
-	FXRU1UIBlockLayout SettingsContentLayout;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "05. Разметка|Экраны")
-	FXRU1UIBlockLayout AboutContentLayout;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "05. Разметка|Экраны")
-	FXRU1UIBlockLayout PauseContentLayout;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "05. Разметка|Экраны")
-	FXRU1UIBlockLayout BriefingContentLayout;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "05. Разметка|Экраны")
-	FXRU1UIBlockLayout ResultContentLayout;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "05. Разметка|Экраны")
-	FXRU1UIBlockLayout IntroOverlayLayout;
 
 	// --- Палитра -------------------------------------------------------------
 
@@ -537,18 +467,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "06. Палитра|Кнопки")
 	FXRU1UIButtonPalette EndTurnButtonPalette;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "06. Палитра|Смысловые цвета")
-	FLinearColor FriendlyColor = FLinearColor(0.02f, 0.8f, 0.9f, 1.f);
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "06. Палитра|Смысловые цвета")
-	FLinearColor EnemyColor = FLinearColor(0.85f, 0.035f, 0.025f, 1.f);
+	// Смысловых цветов осталось два: остальные (Friendly/Enemy/Success) никто не
+	// читал — принадлежность рисуется иконкой и подсветкой самих виджетов.
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "06. Палитра|Смысловые цвета")
 	FLinearColor WarningColor = FLinearColor(1.f, 0.72f, 0.08f, 1.f);
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "06. Палитра|Смысловые цвета")
-	FLinearColor SuccessColor = FLinearColor(0.08f, 0.72f, 0.36f, 1.f);
-
+	/** Рамка выбранного бойца в карточке отряда (WBP_UnitPortrait). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "06. Палитра|Смысловые цвета")
 	FLinearColor SelectionColor = FLinearColor(0.12f, 0.95f, 1.f, 1.f);
 
@@ -599,25 +524,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "08. Боевой фидбек")
 	FLinearColor FloatingStatusColor = FLinearColor(0.72f, 0.94f, 1.f, 1.f);
 
-	// --- CommonUI style assets для меню -------------------------------------
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "07. CommonUI|Кнопки")
-	TSubclassOf<UCommonButtonStyle> PrimaryMenuButtonStyle;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "07. CommonUI|Кнопки")
-	TSubclassOf<UCommonButtonStyle> SecondaryMenuButtonStyle;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "07. CommonUI|Кнопки")
-	TSubclassOf<UCommonButtonStyle> DangerMenuButtonStyle;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "07. CommonUI|Текст")
-	TSubclassOf<UCommonTextStyle> TitleTextStyle;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "07. CommonUI|Текст")
-	TSubclassOf<UCommonTextStyle> BodyTextStyle;
-
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "07. CommonUI|Текст")
-	TSubclassOf<UCommonTextStyle> CaptionTextStyle;
+	// CommonUI-стили (Primary/Secondary/Danger кнопки, Title/Body/Caption текст)
+	// удалены 2026-08-03: в ассете они были None, а применить их было некому —
+	// экраны меню собирает C++ (`UXRU1WidgetAuthoringLibrary` + `MenuWidgets`) и
+	// красит напрямую из палитры ниже. Валидатор годами ругался на незаполненные
+	// поля, которые ни на что не влияли.
 
 	/** Портрет с учётом конкретного C++-класса юнита. */
 	UFUNCTION(BlueprintPure, Category = "UI|Theme")

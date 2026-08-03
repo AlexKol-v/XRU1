@@ -11,9 +11,9 @@
 | Юниты и оружие | `/Game/XRU1Game/Units` |
 | Анимации | `/Game/XRU1Game/Units/Anim` |
 | Abilities | `/Game/XRU1Game/Tactics/Abilities` |
-| UI и Data Assets | `/Game/XRU1Game/UI`, `/Game/XRU1Game/Data` |
-| AI profiles | `/Game/XRU1Game/AI/Profiles` |
-| Quests/StateTrees/scenarios | `/Game/XRU1Game/Quests`, `/Game/XRU1Game/Data` |
+| UI (виджеты, арт, иконки) | `/Game/XRU1Game/UI` |
+| **Все Data Assets** | `/Game/XRU1Game/Data/<Core\|Units\|AI\|Missions>` (правило — 06_CONVENTIONS §3) |
+| StateTree-графы квестов | `/Game/XRU1Game/Quests` |
 | Проектные карты | `/Game/XRU1Game/Maps` |
 | Общая карта Tutorial/Mission01 | `/Game/XRU1Game/Maps/Main_Map_Showreel` |
 
@@ -134,10 +134,11 @@ fire action.
 
 ## 6. HUD и UI-тема
 
-Глобальная тема: `/Game/XRU1Game/Data/DA_TacticalHUDStyle`, ссылка —
-`BP_TacticsGameInstance.UITheme`. Новый UI-арт и размеры сначала добавлять в
-Data Asset/C++ style structure, затем использовать в WBP. Не дублировать
-texture/color/padding в каждом виджете. Текущий backlog — [09_UI_HUD.md](09_UI_HUD.md).
+Глобальная тема: `/Game/XRU1Game/Data/Core/DA_TacticalHUDStyle`, ссылка —
+`BP_TacticsGameInstance.UITheme`; презентация обучения — отдельный
+`/Game/XRU1Game/Data/Core/DA_Tutorial_Style` (`BP_TacticsGameInstance.TutorialStyle`).
+Новый UI-арт и размеры сначала добавлять в Data Asset/C++ style structure, затем
+использовать в WBP. Не дублировать texture/color/padding в каждом виджете. Текущий backlog — [09_UI_HUD.md](09_UI_HUD.md).
 
 ## 7. AI, scenario, quest и fog
 

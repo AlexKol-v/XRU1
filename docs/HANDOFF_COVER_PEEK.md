@@ -17,7 +17,7 @@
 
 | Параметр | Где реально живёт | Что было |
 |---|---|---|
-| `PeekEdgeMaxDistance` | `/Game/XRU1Game/Data/DA_CoverTuning` | 60 (и это ВЕРНО, см. §3) |
+| `PeekEdgeMaxDistance` | `/Game/XRU1Game/Data/Core/DA_CoverTuning` | 60 (и это ВЕРНО, см. §3) |
 | `SightRadius` | `BP_AIController_Marauder` | 1400 при `AttackRange` 3000 |
 
 **Правило: прежде чем менять число в C++, проверить ассет/BP через MCP.**

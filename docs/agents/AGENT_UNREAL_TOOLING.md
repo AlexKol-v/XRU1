@@ -484,6 +484,47 @@ eas.destroy_actor(a)
   `SystemLibrary.break_hit_result` не существует: брать `hit.to_tuple()`,
   где `[4]` = Location, `[5]` = ImpactPoint, `[9]` = актор, `[10]` = компонент.
 
+### 5.2.8 ⚠️ Перенос ассетов: две ловушки, стоившие сессии (2026-08-03)
+
+**1. `delete_asset` по package_name УДАЛЯЕТ ЦЕЛЬ РЕДИРЕКТОРА, а не редиректор.**
+После `rename_asset` в старом пакете остаётся `ObjectRedirector`. Кажется
+логичным подчистить его так:
+
+```python
+for a in ar.get_assets(redirector_filter):
+    eal.delete_asset(str(a.package_name))       # ❌ путь резолвится ПО редиректору
+```
+
+Путь `/Game/.../DA_X` в этот момент ведёт уже на **новый** ассет — и удаляется
+он, а редиректор остаётся. Симптом: ассет исчезает из целевой папки, карты
+грузятся с `LoadErrors: зависимый пакет ... был недоступен`, ссылки на акторах
+молча становятся `None`. Правильно — адресовать объект и проверять класс:
+
+```python
+obj = unreal.load_object(None, "%s.%s" % (a.package_name, a.asset_name))
+if isinstance(obj, unreal.ObjectRedirector) and not ar.get_referencers(...):
+    eal.delete_loaded_asset(obj)
+```
+
+Лечение, если уже случилось: закрыть редактор **без сохранения** (в памяти
+ссылки уже занулены, сохранение запишет порчу в `.umap`), вернуть ассет
+`git checkout HEAD -- <файл>`, перенести заново, починить внутренние ссылки.
+
+**2. Компиляция BP GameInstance рядом с PIE = краш редактора.**
+`BlueprintEditorLibrary.compile_blueprint` на `BP_TacticsGameInstance` в одном
+скрипте с `editor_request_end_play()` даёт
+`EXCEPTION_ACCESS_VIOLATION` в `FSubsystemCollectionBase::Deinitialize`.
+Правило: остановка PIE — **отдельный скрипт, в котором больше ничего нет**;
+компиляция GameInstance — только при выключенном PIE. Для записи свойства в CDO
+компиляция и не нужна: `set_editor_property` + `save_asset` достаточно (значение
+переживает перезапуск редактора — проверено).
+
+Ещё из того же захода: `AssetTools.fixup_referencers` **в Python не
+существует**. Fix Up делается иначе — открыть каждую ссылающуюся карту
+(`open_level`) и сохранить её: `rename_asset` пересохраняет только те пакеты,
+что уже загружены, а карты обычно не загружены. `unreal.AssetManager.get()`
+из Python тоже недоступен — проверять discovery квестов приходится живым PIE.
+
 ### 5.3 Уровни при живом пользователе
 
 Редактор общий: пользователь может переключать уровни параллельно.

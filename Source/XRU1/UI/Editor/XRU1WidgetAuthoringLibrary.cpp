@@ -10,6 +10,7 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "TacticalHUDStyleData.h"
 
 #include "Components/Border.h"
@@ -48,13 +49,35 @@ struct FMenuPalette
 	FLinearColor ButtonForeground = FLinearColor(0.72f, 0.94f, 1.f, 1.f);
 };
 
+/**
+ * Тема проекта для editor-сборки экранов. Ищется ПО КЛАССУ через AssetRegistry,
+ * а не по зашитому пути: путь ассета — это раскладка контента, которая меняется
+ * (2026-08-03 тема переехала в `/Data/Core`), и жёсткая строка ломается молча —
+ * экраны просто собираются дефолтной палитрой, без единой ошибки в логе.
+ */
+const UTacticalHUDStyleData* FindProjectTheme()
+{
+	const FAssetRegistryModule& Registry =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	TArray<FAssetData> Found;
+	Registry.Get().GetAssetsByClass(
+		UTacticalHUDStyleData::StaticClass()->GetClassPathName(), Found);
+	for (const FAssetData& Data : Found)
+	{
+		if (const UTacticalHUDStyleData* Theme = Cast<UTacticalHUDStyleData>(Data.GetAsset()))
+		{
+			return Theme;
+		}
+	}
+	return nullptr;
+}
+
 FMenuPalette LoadPalette()
 {
 	FMenuPalette Palette;
-	// Цвета не хардкодятся мимо темы: сборка читает DA_TacticalHUDStyle
-	// (09_UI_HUD §1); дефолты структуры совпадают с дефолтами C++-темы.
-	if (const UTacticalHUDStyleData* Theme = LoadObject<UTacticalHUDStyleData>(nullptr,
-		TEXT("/Game/XRU1Game/Data/DA_TacticalHUDStyle.DA_TacticalHUDStyle")))
+	// Цвета не хардкодятся мимо темы (09_UI_HUD §1); дефолты структуры совпадают
+	// с дефолтами C++-темы, поэтому отсутствие ассета не ломает сборку экрана.
+	if (const UTacticalHUDStyleData* Theme = FindProjectTheme())
 	{
 		Palette.PanelBackground = Theme->PanelBackgroundColor;
 		Palette.PrimaryText = Theme->PrimaryTextColor;
