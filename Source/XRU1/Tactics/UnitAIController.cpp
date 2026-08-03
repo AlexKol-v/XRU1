@@ -1483,7 +1483,11 @@ bool AUnitAIController::StepInvestigate(AUnitBase* Unit)
 			const uint32 Seed = BuildDecisionSeed(Unit, FName(TEXT("InvestigateOverwatch")));
 			if (FRandomStream(static_cast<int32>(Seed)).GetFraction() < InvestigateOverwatchChance)
 			{
-				UTacticsCombatStatics::FaceActorTowards(Unit, LastKnownThreatLocation);
+				// Разворот к точке угрозы — ПЛАВНЫЙ и идёт параллельно вставанию
+				// в наблюдение (montage входа длится секунды). Мгновенный поворот
+				// здесь читался тем же щелчком, что и убранный доворот выстрела.
+				Unit->FaceTowardsSmooth(LastKnownThreatLocation,
+					/*bPlayTurnAnimation=*/false);
 				if (TryActivateSelfAbility(Unit, Unit->OverwatchAbilityClass))
 				{
 					if (TacticsDebug::IsAILogEnabled())

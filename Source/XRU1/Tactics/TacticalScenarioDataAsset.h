@@ -103,13 +103,26 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Scenario")
 	FName InitialCameraAnchorId;
 
-	/** Профиль начального reveal для будущей системы тумана войны. */
+	/**
+	 * Карта стартует РАЗВЕДАННОЙ: состояние `Unknown` (почти чёрная местность,
+	 * GDD §5.9) не включается, туман только приглушает то, что сейчас никто не
+	 * видит. У XCOM это штатный режим, а не отказ от механики —
+	 * `XComWorldData.bShowNeverSeenAsHaveSeen` («Setting for certain maps to make
+	 * it so that never seen fog is shown as have seen») и kismet-функция
+	 * `InitializeAllViewersToHaveSeenFog(bool)`.
+	 *
+	 * Дефолт false — обе миссии демо идут с чёрной картой (решение 2026-08-03).
+	 * Включать имеет смысл сценарию, чья режиссура ведёт камеру по секторам,
+	 * которых отряд ещё не разведал: показывать игроку чёрный кадр хуже, чем
+	 * потерять «неизвестное». Точечная альтернатива — сценарное раскрытие
+	 * области (`UFogGridSubsystem::AddScriptedReveal`), она и используется
+	 * тактами обучения.
+	 *
+	 * ⚠️ На ПРАВИЛА не влияет вовсе: живые враги скрыты в любом случае, это
+	 * решает `UFogOfWarSubsystem`.
+	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Scenario|Fog")
-	FName FogProfileId;
-
-	/** Новый запуск всегда начинает с чистого runtime-состояния тумана. */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Scenario|Fog")
-	bool bResetFogOnStart = true;
+	bool bStartFullyExplored = false;
 
 	/**
 	 * Завершать ход автоматически, когда у отряда кончились очки действия.

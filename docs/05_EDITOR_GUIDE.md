@@ -43,7 +43,12 @@ Fix Up Redirectors и сохранением ссылающихся карт (п
    это и есть «дырки» на ровной земле.
 6. `SL_Showreel_Tutorial` и `SL_Showreel_Mission01` не загружены одновременно.
 7. Четыре player BP и нужные enemy BP стоят капсулами на NavMesh.
-8. У врагов заполнены `PatrolPoints`, если они начинают в Patrol.
+8. У врагов заполнены `PodId` (группа) и `PatrolPoints` (маршрут). Оба поля —
+   `EditInstanceOnly`, то есть ставятся на экземпляре в World Outliner, а не в
+   BP-классе. Пустой `PodId` = боец сам себе группа (групповая активация не
+   работает), пустой `PatrolPoints` = пост: боец встаёт в наблюдение. Правила
+   расстановки подов и точек, с числами, —
+   [16_MISSION01_ASSEMBLY.md §5 шаг 2](16_MISSION01_ASSEMBLY.md).
 9. Укрытия имеют collision для shot geometry; ориентиры дизайна — около 60 см
    для Half и 150 см для Full, высота считается от пола.
 10. Mission actors (`ABombObjective`, `AEvacZone`) находятся только в mission

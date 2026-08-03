@@ -178,6 +178,7 @@ void UGA_Overwatch::EndAbility(
 		StopReactionMontage(FinishedAction);
 		ResumeReactionMover();
 		EndReactionPresentation();
+		ReleasePresentationStanding(); // боец садится вместе с уходом камеры
 		OnReactionActionTerminated(ActionId, bShotCommitted, /*bAborted=*/true);
 	}
 	else
@@ -611,6 +612,9 @@ bool UGA_Overwatch::FireCommit(const FGuid& ActionId, bool& bOutHit)
 	const float Damage = ReactionAction.Damage;
 	const TSubclassOf<UGameplayEffect> EffectClass = ReactionAction.DamageEffectClass;
 
+	// Та же страховка, что у обычной атаки (см. EnsureFacingAtCommit).
+	EnsureFacingAtCommit(ActionId);
+
 	ReactionAction.MarkCommitStarted();
 	bConsumedScriptedShotValid = false; // форс исполнен — возврат больше не нужен
 	++ReactionShotsUsed;
@@ -687,6 +691,7 @@ bool UGA_Overwatch::CompleteReactionAction(const FGuid& ActionId)
 	ReleaseReactionSlot(this);
 	ResumeReactionMover();
 	EndReactionPresentation();
+	ReleasePresentationStanding(); // боец садится вместе с уходом камеры
 	OnReactionActionTerminated(ActionId, /*bShotCommitted=*/true, /*bAborted=*/false);
 
 	if (ReactionShotsUsed >= MaxReactionShots)
@@ -733,6 +738,7 @@ bool UGA_Overwatch::AbortReactionAction(const FGuid& ActionId)
 	StopReactionMontage(FinishedAction);
 	ResumeReactionMover();
 	EndReactionPresentation();
+	ReleasePresentationStanding(); // боец садится вместе с уходом камеры
 	OnReactionActionTerminated(ActionId, bShotCommitted, /*bAborted=*/true);
 
 	// После commit квота уже потрачена; parent снимается только после cleanup.

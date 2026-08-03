@@ -460,4 +460,9 @@ void UFogOfWarSubsystem::RecomputeNow(const TCHAR* Reason, bool bRoutine)
 	{
 		OnActorVisibilityChanged.Broadcast(Change.Key, Change.Value);
 	}
+
+	// Пересчёт состоялся — даже если ни один актор не сменил видимость. Наблюдатели
+	// могли сдвинуться, а это меняет картину МЕСТНОСТИ, и визуальный слой обязан
+	// узнать об этом здесь, а не заводить собственное расписание.
+	OnVisibilityRecomputed.Broadcast();
 }

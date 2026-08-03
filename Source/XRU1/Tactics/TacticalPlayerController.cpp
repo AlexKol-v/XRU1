@@ -82,6 +82,10 @@ void ATacticalPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
 
+	// Новый запуск — новые знакомства: акцент первого обнаружения обязан
+	// сработать заново, иначе после retry сценария враги «уже представлены».
+	FirstSightedEnemies.Reset();
+
 	if (!IsLocalPlayerController())
 	{
 		return;
@@ -595,7 +599,6 @@ void ATacticalPlayerController::UpdatePathPreviewUnderCursor()
 	if (!bCanPreview)
 	{
 		MoveRangeVisualizer->HidePathPreview();
-		LastPathPreviewGoal = FVector(TNumericLimits<float>::Max());
 		return;
 	}
 
@@ -604,16 +607,13 @@ void ATacticalPlayerController::UpdatePathPreviewUnderCursor()
 		Cast<AUnitBase>(Hit.GetActor())) // над юнитом — контекст выбора/атаки, не движения
 	{
 		MoveRangeVisualizer->HidePathPreview();
-		LastPathPreviewGoal = FVector(TNumericLimits<float>::Max());
 		return;
 	}
 
-	// Перезапрашиваем путь только при заметном сдвиге курсора (25 см).
-	if (FVector::DistSquared2D(Hit.Location, LastPathPreviewGoal) < 625.f)
-	{
-		return;
-	}
-	LastPathPreviewGoal = Hit.Location;
+	// Отсев повторов — у визуализатора: он владеет лентой и один знает, жива ли
+	// она сейчас. Пока точку помнил контроллер, состояние было в двух местах, и
+	// любое гашение секций меша (перестройка зоны после пропуска реплики, смена
+	// юнита) оставляло контроллер в уверенности, что лента нарисована.
 	MoveRangeVisualizer->UpdatePathPreview(Hit.Location);
 }
 
@@ -2891,6 +2891,22 @@ void ATacticalPlayerController::HandleFogVisibilityChanged(AActor* Actor, bool b
 
 	if (bVisible)
 	{
+		// ПЕРВОЕ ЗНАКОМСТВО. Момент, когда отряд впервые видит конкретного врага,
+		// в XCOM подан отдельно: камера коротко задерживается на нём
+		// (`XComCamera.ini: FirstSightedDelay = 0.75`), и обнаружение читается как
+		// событие, а не проскакивает между шагами. Один раз на врага за бой —
+		// повторные появления того же противника акцента не заслуживают.
+		if (FirstSightedDelay > 0.f && UTacticsCombatStatics::IsUnitAlive(Actor) &&
+			!UFogOfWarSubsystem::IsPlayerSideActor(Actor) &&
+			!FirstSightedEnemies.Contains(Actor) &&
+			!Camera->IsFramingShot() && !Camera->IsDirectorHolding())
+		{
+			FirstSightedEnemies.Add(Actor);
+			Camera->FocusOnLocationDirected(Actor->GetActorLocation(), FirstSightedDelay);
+			UE_LOG(LogXRU1Fog, Log, TEXT("[Fog] первое обнаружение %s: камера держит кадр %.2f с"),
+				*GetNameSafe(Actor), FirstSightedDelay);
+		}
+
 		// Вышел из-за угла посреди своего хода — подхватываем прямо на бегу
 		// (XCOM показывает вражеский ход с момента ОБНАРУЖЕНИЯ, а не с начала).
 		if (PendingEnemyCameraUnit.Get() == Actor && IsEnemyPhaseNow() &&

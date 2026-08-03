@@ -299,6 +299,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Visual")
 	void PreviewAimAtTarget(const AActor* Target);
 
+	/** Держит ли презентация бойца на ногах (см. SetPresentationStanding). */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Visual")
+	bool IsPresentationStanding() const { return bPresentationStanding; }
+
 	/** Идёт ли сейчас плавный доворот на месте (для BP-логики и отладки). */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Visual")
 	bool IsTurningInPlace() const { return bTurningInPlace; }
@@ -310,6 +314,22 @@ public:
 	 */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Visual")
 	bool IsPhysicallyMoving() const;
+
+	/**
+	 * ПРЕЗЕНТАЦИЯ ДЕРЖИТ БОЙЦА НА НОГАХ (стрельба поверх укрытия).
+	 *
+	 * ⚠️ Зачем. Подъём из-за укрытия — это blend-in стрелкового montage, а не
+	 * отдельный клип. Как только montage дошёл до конца, поза возвращалась в
+	 * присед — то есть боец садился через долю секунды ПОСЛЕ выстрела, пока
+	 * камера ещё держала кадр («садится мгновенно после выстрела», фидбэк
+	 * 2026-08-03). Флаг оставляет позу стоя до конца удержания кадра, и посадка
+	 * совпадает с уходом камеры.
+	 *
+	 * Действует только поверх поз укрытия; смерть, ранение, движение и
+	 * наблюдение он не перебивает.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Visual")
+	void SetPresentationStanding(bool bStanding);
 
 	/**
 	 * PathFollowing уже завершился, но финальная поза после движения ещё нет:
@@ -673,6 +693,9 @@ protected:
 
 	/** Идёт плавный доворот на месте. */
 	bool bTurningInPlace = false;
+
+	/** Презентация выстрела держит позу стоя (см. SetPresentationStanding). */
+	bool bPresentationStanding = false;
 
 	/** Целевой yaw доворота (мировой, градусы). */
 	float TurnTargetYaw = 0.f;

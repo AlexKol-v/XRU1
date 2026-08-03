@@ -1,6 +1,7 @@
 #include "TacticsGameMode.h"
 #include "XRU1Log.h"
 #include "UnitBase.h"
+#include "FogGridSubsystem.h"   // визуальный слой тумана: запекание сетки на старте боя
 #include "FogOfWarSubsystem.h" // новая fog-сессия на каждый запуск сценария
 #include "MissionObjectives.h"
 #include "ObjectivePointerSubsystem.h" // указатель «куда идти» на цели миссии
@@ -278,10 +279,21 @@ void ATacticsGameMode::StartMissionCombat()
 	// `ScenarioId + RunId`, а не имя загруженной карты. Первый полный пересчёт
 	// проходит здесь же, чтобы бой не начинался с кадра, где видна вся
 	// расстановка врагов.
+	const FName FogScenarioId = Scenario ? Scenario->ScenarioId : NAME_None;
+	const int32 FogRunId = GameInstance ? GameInstance->GetActiveScenarioRunId() : 0;
 	if (UFogOfWarSubsystem* Fog = GetWorld()->GetSubsystem<UFogOfWarSubsystem>())
 	{
-		Fog->ResetForScenario(Scenario ? Scenario->ScenarioId : NAME_None,
-			GameInstance ? GameInstance->GetActiveScenarioRunId() : 0);
+		Fog->ResetForScenario(FogScenarioId, FogRunId);
+	}
+
+	// Визуальный слой сбрасывается тем же событием и той же парой ключей: сетка —
+	// отражение правил, и пережить `ScenarioRunId` её `Explored` не имеет права.
+	// Запекание блокеров идёт здесь, потому что scenario sublevel (а с ним и
+	// объёмы навигации, задающие границы) к этому моменту уже загружен.
+	if (UFogGridSubsystem* FogGrid = GetWorld()->GetSubsystem<UFogGridSubsystem>())
+	{
+		FogGrid->ResetForScenario(FogScenarioId, FogRunId,
+			Scenario ? Scenario->bStartFullyExplored : false);
 	}
 
 	bCombatStarted = true;

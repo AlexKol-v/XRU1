@@ -2,6 +2,7 @@
 #include "XRU1Log.h"
 
 #include "ActionPointsComponent.h"
+#include "FogGridSubsystem.h"       // постановка раскрывает и МЕСТНОСТЬ вокруг бойца
 #include "FogRevealableComponent.h" // постановка показывает бойца поверх правил тумана
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
@@ -38,31 +39,55 @@ namespace TacticalQuestTasks_Internal
 	}
 
 	/** Снять удержание ровно с того компонента, у которого оно было взято. */
-	void ReleaseFogReveal(TWeakObjectPtr<UFogRevealableComponent>& InOutHold)
+	void ReleaseFogReveal(UWorld* World, TWeakObjectPtr<UFogRevealableComponent>& InOutHold,
+		int32& InOutAreaHandle)
 	{
 		if (UFogRevealableComponent* Reveal = InOutHold.Get())
 		{
 			Reveal->RemoveScriptedRevealHold();
 		}
 		InOutHold = nullptr;
+
+		if (UFogGridSubsystem* FogGrid = World ? World->GetSubsystem<UFogGridSubsystem>() : nullptr)
+		{
+			FogGrid->RemoveScriptedReveal(InOutAreaHandle);
+		}
+		InOutAreaHandle = 0;
 	}
 
 	/**
-	 * Взять у тумана войны удержание «показывать этого актора» на время такта.
+	 * Взять у тумана войны удержание «показывать этого актора» на время такта — и
+	 * заодно раскрыть вокруг него местность.
 	 *
 	 * Постановка главнее LOS: шаг ведёт камеру за бойцом, и пустой кадр вместо
 	 * него — это не «правильно сработавший туман», а сломанное обучение. Ровно
 	 * такое исключение есть у Firaxis: `XComGameState_Unit::ForceModelVisible`
 	 * возвращает `eForceVisible`, пока юнит в matinee или в скампере.
+	 *
+	 * ⚠️ Показать самого бойца мало. Карта стартует чёрной, поэтому кадр вокруг
+	 * него был бы «фигура в пустоте»: у XCOM ровно на этот случай раскрытие
+	 * ОБЛАСТИ — `X2Action_RevealAIBegin.RevealFOWRadius`. Оба удержания парные и
+	 * снимаются вместе, чтобы не разъехались.
 	 */
-	void HoldFogReveal(AActor* Actor, TWeakObjectPtr<UFogRevealableComponent>& OutHold)
+	void HoldFogReveal(UWorld* World, AActor* Actor,
+		TWeakObjectPtr<UFogRevealableComponent>& OutHold, int32& OutAreaHandle)
 	{
-		ReleaseFogReveal(OutHold); // такт не может держать два удержания сразу
+		// Такт не может держать два удержания сразу.
+		ReleaseFogReveal(World, OutHold, OutAreaHandle);
 		if (UFogRevealableComponent* Reveal = Actor
 			? Actor->FindComponentByClass<UFogRevealableComponent>() : nullptr)
 		{
 			Reveal->AddScriptedRevealHold();
 			OutHold = Reveal;
+		}
+		// Раскрытие берётся только под РЕАЛЬНОГО актора: без него точка была бы
+		// нулевой, и такт осветил бы центр карты вместо места действия.
+		if (UFogGridSubsystem* FogGrid = (World && Actor) ? World->GetSubsystem<UFogGridSubsystem>() : nullptr)
+		{
+			// Раскрытие едет ЗА актором: сценарная перебежка проходит по секторам,
+			// которых отряд не разведал, и застывшая на старте область показала бы
+			// бойца, убегающего в темноту.
+			OutAreaHandle = FogGrid->AddScriptedReveal(Actor, FVector::ZeroVector);
 		}
 	}
 
@@ -795,7 +820,8 @@ EStateTreeRunStatus FTacticalTask_ScriptedMove::EnterState(
 		// Раз камера летит за бойцом — туман обязан его показать. Удержание берём
 		// на ВЕСЬ такт, а не на время привязки камеры: она может временно уступить
 		// кадру реакции, а исчезать при этом боец не должен.
-		TacticalQuestTasks_Internal::HoldFogReveal(Unit, Inst.FogRevealHold);
+		TacticalQuestTasks_Internal::HoldFogReveal(TacticalQuestTasks_Internal::GetWorld(Context),
+			Unit, Inst.FogRevealHold, Inst.FogAreaRevealHandle);
 
 		if (const UWorld* World = TacticalQuestTasks_Internal::GetWorld(Context))
 		{
@@ -917,7 +943,8 @@ void FTacticalTask_ScriptedMove::ExitState(
 
 	// Удержание тумана снимается ВСЕГДА и строго по своей ссылке: дальше видимость
 	// решает фактический LOS.
-	TacticalQuestTasks_Internal::ReleaseFogReveal(Inst.FogRevealHold);
+	TacticalQuestTasks_Internal::ReleaseFogReveal(TacticalQuestTasks_Internal::GetWorld(Context),
+		Inst.FogRevealHold, Inst.FogAreaRevealHandle);
 
 	// Камеру отпускаем строго парно к своему SetFollowTarget: следующий шаг
 	// (второй Scripted Move или Beat) сразу поставит свой фокус поверх.
@@ -1011,7 +1038,8 @@ EStateTreeRunStatus FTacticalTask_ScriptedEnemyTurn::EnterState(
 	// C0/C1 обучения игралась бы за кадром.
 	if (Inst.bCameraFollowUnit)
 	{
-		TacticalQuestTasks_Internal::HoldFogReveal(Unit, Inst.FogRevealHold);
+		TacticalQuestTasks_Internal::HoldFogReveal(TacticalQuestTasks_Internal::GetWorld(Context),
+			Unit, Inst.FogRevealHold, Inst.FogAreaRevealHandle);
 	}
 
 	// Контроллер мог ещё не заспавниться после активации — Tick повторит.
@@ -1119,7 +1147,8 @@ void FTacticalTask_ScriptedEnemyTurn::ExitState(
 	}
 
 	// Такт кончился — туман снова решает сам.
-	TacticalQuestTasks_Internal::ReleaseFogReveal(Inst.FogRevealHold);
+	TacticalQuestTasks_Internal::ReleaseFogReveal(TacticalQuestTasks_Internal::GetWorld(Context),
+		Inst.FogRevealHold, Inst.FogAreaRevealHandle);
 
 	if (Inst.bCameraAttached)
 	{

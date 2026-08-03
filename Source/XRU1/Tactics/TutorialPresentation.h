@@ -5,6 +5,8 @@
 #include "SubtitleTypes.h"
 #include "TutorialPresentation.generated.h"
 
+class UFogRevealableComponent;
+
 class UAudioComponent;
 class USoundBase;
 
@@ -125,6 +127,28 @@ public:
 private:
 	FTacticalTutorialBeat ActiveBeat;
 	bool bBeatActive = false;
+
+	/**
+	 * Раскрытие местности вокруг точки фокуса такта
+	 * (`UFogGridSubsystem::AddScriptedReveal`). Держится ровно столько же, сколько
+	 * режиссёрский фокус камеры: показывать точку на чёрной карте бессмысленно.
+	 * 0 — не взято.
+	 */
+	int32 BeatRevealHandle = 0;
+
+	/**
+	 * Удержание показа актора, на которого наведена камера такта. Парно
+	 * `BeatRevealHandle`: раскрыть местность мало — надо показать и того, ради
+	 * кого камеру навели, иначе кадр смотрит в пустоту.
+	 */
+	TWeakObjectPtr<UFogRevealableComponent> BeatFogRevealHold;
+
+	/**
+	 * Запас страховочного времени раскрытия сверх длительности такта (сек).
+	 * Штатно раскрытие снимает `FinishBeat`; таймер нужен только на случай
+	 * оборванного такта, и срабатывать раньше владельца он не должен.
+	 */
+	static constexpr float BeatRevealGraceSeconds = 1.f;
 
 	/**
 	 * Голос текущей реплики. Нужен, чтобы НОВАЯ реплика обрывала предыдущую:

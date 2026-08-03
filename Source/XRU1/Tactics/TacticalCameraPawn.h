@@ -8,6 +8,7 @@ class USpringArmComponent;
 class UCameraComponent;
 class UPostProcessComponent;
 class UMaterialInterface;
+class UMaterialInstanceDynamic;
 
 /**
  * Камера тактического боя (XCOM-стиль). Пешка игрока в боевых уровнях; ввод шлёт
@@ -187,6 +188,14 @@ public:
 	/** Снять режиссёрское удержание и исполнить накопленный фоновый интент. */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
 	void ReleaseDirectorHold();
+
+	/**
+	 * Камерой сейчас распоряжается режиссура такта. Спрашивают те, кто хочет
+	 * навести камеру «от себя» (акцент первого обнаружения): постановка обучения
+	 * главнее любого автоматического кадра.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Camera")
+	bool IsDirectorHolding() const { return bDirectorHold; }
 
 	/**
 	 * Игрок взял камеру сам (панорама/поворот/зум): удержание снимается, а
@@ -607,6 +616,18 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "Tactics|Camera")
 	TObjectPtr<UMaterialInterface> OutlineMaterial;
 
+	/**
+	 * Post-process материал тумана войны (M_PP_FogOfWar): затемнение местности по
+	 * сетке `UFogGridSubsystem`. Вешается тем же блендаблом, что и обводка, но
+	 * ПОСЛЕ неё.
+	 *
+	 * ⚠️ Порядок блендаблов — не защита. Скрытый враг не проступит обводкой сквозь
+	 * туман потому, что у него принудительно выключен Custom Depth
+	 * (`UFogRevealableComponent`), а не потому, что туман нарисован сверху.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Tactics|Camera")
+	TObjectPtr<UMaterialInterface> FogOfWarMaterial;
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaSeconds) override;
@@ -617,9 +638,17 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tactics|Camera")
 	TObjectPtr<UCameraComponent> Camera;
 
-	/** Глобальный (unbound) пост-процесс пешки: несёт обводку юнитов. */
+	/** Глобальный (unbound) пост-процесс пешки: несёт обводку юнитов и туман. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tactics|Camera")
 	TObjectPtr<UPostProcessComponent> PostProcess;
+
+	/**
+	 * Живой инстанс материала тумана: параметры (текстуру сетки, границы, цвета
+	 * состояний) пишет в него `UFogGridSubsystem`. Держим ссылкой, иначе GC заберёт
+	 * инстанс, на который смотрит блендабл.
+	 */
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> FogMaterialInstance;
 
 	/**
 	 * Постоянный пользовательский ракурс тактической камеры. Он меняется только
@@ -722,6 +751,14 @@ protected:
 
 	/** Текущий кадр — монопольная презентация выстрела, а не прицеливание. */
 	bool bPresentationFrame = false;
+
+	/**
+	 * Раскрытие местности вокруг участников на время кадра
+	 * (`UFogGridSubsystem::AddScriptedReveal`). Кадр показывает бой с чужого
+	 * ракурса и крупно, поэтому неразведанной местности в нём куда больше
+	 * обычного — без раскрытия выстрел играется в темноте. 0 — не взято.
+	 */
+	int32 ShotFrameRevealHandle = 0;
 
 	// --- Живой кадр (аналог `TetherTPOV` в XCOM) ------------------------------
 	//

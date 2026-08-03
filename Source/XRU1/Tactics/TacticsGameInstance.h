@@ -8,6 +8,7 @@
 class UTacticsSaveGame;
 class UTacticalHUDStyleData;
 class UCoverTuningDataAsset;
+class UFogOfWarConfigDataAsset;
 class UTacticalScenarioDataAsset;
 class UTutorialStyleData;
 
@@ -56,6 +57,15 @@ public:
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Cover")
 	TObjectPtr<UCoverTuningDataAsset> CoverTuning;
+
+	/**
+	 * Тюнинг ВИЗУАЛЬНОГО слоя тумана — сетки затемнения местности (DA_Fog_Showreel).
+	 * Только вид и стоимость картинки: правила видимости общие с боевой LOS и
+	 * настройке отсюда не подлежат. Не назначен — `UFogOfWarConfigDataAsset::Get`
+	 * отдаёт CDO с рабочими дефолтами.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|FogOfWar")
+	TObjectPtr<UFogOfWarConfigDataAsset> FogConfig;
 
 	/**
 	 * Микшер проекта (DA_TacticsAudio): SoundMix пользовательских громкостей,

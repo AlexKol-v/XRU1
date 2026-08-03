@@ -513,6 +513,16 @@ void AUnitBase::RebuildVisualState()
 	else if (State.Cover == ECoverType::Half)                 { State.Pose = EUnitPose::CrouchCover; }
 	else                                                      { State.Pose = EUnitPose::Stand; }
 
+	// Презентация выстрела держит бойца на ногах ПОВЕРХ поз укрытия: montage
+	// поднял его из-за стены, и садиться он должен вместе с уходом камеры, а не
+	// сразу после выстрела. Смерть, ранение, движение и наблюдение приоритетнее
+	// и сюда не попадают — они разобраны ветками выше.
+	if (bPresentationStanding &&
+		(State.Pose == EUnitPose::CrouchCover || State.Pose == EUnitPose::HighCover))
+	{
+		State.Pose = EUnitPose::Stand;
+	}
+
 	// СМЕНА ПОЗЫ — единственный наблюдаемый след «встал/сел» в записи PIE.
 	// Montage играет поверх позы и в логе не виден, поэтому без этой строки
 	// жалобы вида «встал, сел и выстрелил сидя» неотличимы друг от друга:
@@ -793,6 +803,16 @@ void AUnitBase::FaceTowardsSmooth(const FVector& TargetLocation, bool bPlayTurnA
 	// сторона. Покадровой дельты для этого мало: она не говорит, сколько ещё
 	// осталось повернуть.
 	PendingTurnAmount = bPlayTurnAnimation ? Delta : 0.f;
+	NotifyUnitStateChanged();
+}
+
+void AUnitBase::SetPresentationStanding(bool bStanding)
+{
+	if (bPresentationStanding == bStanding)
+	{
+		return;
+	}
+	bPresentationStanding = bStanding;
 	NotifyUnitStateChanged();
 }
 

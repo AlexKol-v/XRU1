@@ -153,6 +153,24 @@ public:
 	float AimTurnRateMax = 900.f;
 
 	/**
+	 * СТРАХОВКА НА САМОМ ВЫСТРЕЛЕ: если к моменту `FireCommit` корпус всё ещё
+	 * отвёрнут от цели больше чем на этот угол (град), он доворачивается
+	 * мгновенно. Инвариант «никто не стреляет в спину» обязан держаться, даже
+	 * когда плавный доворот перебили или цель успела сместиться.
+	 *
+	 * ⚠️ Раньше эту роль играл узел `Face Actor Towards` в BP — но он стоял
+	 * ПЕРЕД montage и потому ломал единственную стойку, где доворот идёт уже
+	 * во время анимации (OverCover): корпус щёлкал до подъёма, и «встал →
+	 * довернулся → выстрелил» превращалось в «щёлкнул → встал → выстрелил».
+	 * Страховка должна срабатывать на выстреле, а не до него.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Tactics|Presentation", meta = (ClampMin = "0"))
+	float AimSnapMaxError = 8.f;
+
+	/** Довернуть мгновенно, если к моменту выстрела корпус отвёрнут от цели. */
+	void EnsureFacingAtCommit(const FGuid& ActionId);
+
+	/**
 	 * Транзакция презентации `ActionId` всё ещё текущая. Единый guard для latent
 	 * фаз: наследник отвечает своим контекстом (атака — FireAction, овервотч —
 	 * ReactionAction), базовый класс контекста не имеет.
@@ -189,6 +207,13 @@ public:
 	 * кадр, боец успевал довернуться сидя.
 	 */
 	void NotifyPresentationMontageStarting(const FGuid& ActionId);
+
+	/**
+	 * Отпустить бойца в укрытие. Зовётся терминалом презентации — то есть когда
+	 * кадр уже отдержан: посадка совпадает с уходом камеры, а не следует сразу
+	 * за выстрелом (см. AUnitBase::SetPresentationStanding).
+	 */
+	void ReleasePresentationStanding();
 
 	/**
 	 * ФАЗА УДЕРЖАНИЯ КАДРА (latent). Ждёт `GetPresentationHoldDelay` и только
@@ -245,6 +270,9 @@ public:
 protected:
 	/** Отложенный доворот во время подъёма из укрытия (см. AimTurnRiseDelay). */
 	FTimerHandle AimTurnRiseTimer;
+
+	/** Боец, которого презентация держит на ногах (снимаем ровно у него). */
+	TWeakObjectPtr<AUnitBase> StandingUnit;
 
 	/** Колбэк отложенного доворота: проверяет актуальность транзакции сам. */
 	void StartDelayedAimTurn(FGuid ActionId, float RateOverride);

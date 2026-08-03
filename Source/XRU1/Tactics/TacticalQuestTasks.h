@@ -441,6 +441,14 @@ struct FTacticalTask_ScriptedMoveInstanceData
 	 */
 	UPROPERTY()
 	TWeakObjectPtr<UFogRevealableComponent> FogRevealHold;
+
+	/**
+	 * Парное к `FogRevealHold` раскрытие МЕСТНОСТИ вокруг актора
+	 * (`UFogGridSubsystem::AddScriptedReveal`). Показать бойца мало: карта
+	 * стартует чёрной, и постановка игралась бы в пустоте. 0 — не взято.
+	 */
+	UPROPERTY()
+	int32 FogAreaRevealHandle = 0;
 };
 
 /**
@@ -527,6 +535,14 @@ struct FTacticalTask_ScriptedEnemyTurnInstanceData
 	 */
 	UPROPERTY()
 	TWeakObjectPtr<UFogRevealableComponent> FogRevealHold;
+
+	/**
+	 * Парное к `FogRevealHold` раскрытие МЕСТНОСТИ вокруг актора
+	 * (`UFogGridSubsystem::AddScriptedReveal`). Показать бойца мало: карта
+	 * стартует чёрной, и постановка игралась бы в пустоте. 0 — не взято.
+	 */
+	UPROPERTY()
+	int32 FogAreaRevealHandle = 0;
 };
 
 /**

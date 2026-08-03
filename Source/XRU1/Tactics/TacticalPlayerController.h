@@ -834,11 +834,26 @@ protected:
 	 */
 	uint64 PendingAutoAdvanceFrame = 0;
 
-	/** Последняя точка превью пути (троттлинг перзапроса FindPath). */
-	FVector LastPathPreviewGoal = FVector(TNumericLimits<float>::Max());
-
 	/** Двигался ли выбранный юнит в прошлый тик (ловим остановку → перестроить зону). */
 	bool bSelectedUnitWasMoving = false;
+
+	/**
+	 * Пауза «первого знакомства» (сек): камера коротко держит кадр на враге,
+	 * которого отряд увидел ВПЕРВЫЕ за бой. Число XCOM —
+	 * `XComCamera.ini: FirstSightedDelay = 0.75`. 0 — акцент выключен.
+	 *
+	 * Постановка обучения главнее: пока камерой распоряжается такт или идёт кадр
+	 * выстрела, акцент не вмешивается.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Camera", meta = (ClampMin = "0"))
+	float FirstSightedDelay = 0.75f;
+
+	/**
+	 * Враги, которым акцент первого обнаружения уже показан. Ключи не удерживают
+	 * объекты: враг может погибнуть, и держать его ради одного флага незачем.
+	 * Чистится вместе с началом боя — новый запуск сценария знакомит заново.
+	 */
+	TSet<TObjectKey<AActor>> FirstSightedEnemies;
 
 	/**
 	 * Троттлинг непрерывной дебаг-отрисовки LOS (xru1.LOS.Debug): раз в

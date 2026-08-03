@@ -156,7 +156,12 @@ public:
 
 	/** Лента пути от текущего юнита к точке (зовётся контроллером на движение курсора). */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|MoveRange")
-	void UpdatePathPreview(const FVector& GoalLocation);
+	/**
+	 * Показать маршрут до точки; звать можно хоть каждый кадр — повторное
+	 * построение для той же точки визуализатор отсекает сам. Возвращает false,
+	 * если план не построился (лента при этом спрятана).
+	 */
+	bool UpdatePathPreview(const FVector& GoalLocation);
 
 	/** Прячет только превью пути (курсор ушёл с земли / чужая фаза). */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|MoveRange")
@@ -279,6 +284,14 @@ protected:
 
 	/** Показана ли сейчас лента пути (чтобы не чистить секции каждый тик). */
 	bool bPathPreviewVisible = false;
+
+	/**
+	 * Точка, для которой лента маршрута нарисована СЕЙЧАС. Живёт рядом с самой
+	 * лентой, а не у вызывающего: любое место, гасящее секции меша (`Hide`, смена
+	 * юнита, перестройка зоны), обнуляет `bPathPreviewVisible` — и повторное
+	 * построение случится само, без «отведи и верни мышь».
+	 */
+	FVector PathPreviewGoal = FVector(TNumericLimits<float>::Max());
 
 	// --- Поле дистанций (валидно после BuildDistanceField) --------------------
 	TArray<FZoneSample> Field;

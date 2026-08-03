@@ -6,6 +6,7 @@
 #include "FogOfWarSubsystem.h" // состав сторон и фаза меняют видимость отряда
 #include "TacticalAIDirectorSubsystem.h"
 #include "TacticsAudioSubsystem.h"
+#include "UnitVfxDataAsset.h" // прогрев эффектов боя до первого выстрела
 #include "TacticalQuestEvents.h"
 #include "UnitAIController.h"
 #include "UnitBase.h"
@@ -30,7 +31,34 @@ void UTurnManagerSubsystem::StartCombat(const TArray<AActor*>& PlayerUnits, cons
 
 	bInCombat = true;
 	TurnNumber = 1;
+	WarmUpCombatEffects();
 	BeginPhase(ETurnPhase::Player);
+}
+
+void UTurnManagerSubsystem::WarmUpCombatEffects()
+{
+	// Каждый профиль греем один раз, даже если он общий у всего отряда.
+	TSet<UUnitVfxDataAsset*> Profiles;
+	auto CollectFrom = [&Profiles](const TArray<TObjectPtr<AActor>>& Side)
+	{
+		for (const TObjectPtr<AActor>& SideActor : Side)
+		{
+			if (const AUnitBase* Unit = Cast<AUnitBase>(SideActor.Get()))
+			{
+				if (UUnitVfxDataAsset* Profile = Unit->GetVfxProfile())
+				{
+					Profiles.Add(Profile);
+				}
+			}
+		}
+	};
+	CollectFrom(PlayerSide);
+	CollectFrom(EnemySide);
+
+	for (UUnitVfxDataAsset* Profile : Profiles)
+	{
+		Profile->WarmUpEffects();
+	}
 }
 
 bool UTurnManagerSubsystem::RegisterUnitInCombat(AActor* Unit)

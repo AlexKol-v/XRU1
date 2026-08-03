@@ -13,6 +13,16 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnFogActorVisibilityChanged,
 	AActor*, Actor, bool, bVisible);
 
 /**
+ * Пересчёт видимости ЗАВЕРШЁН — независимо от того, изменилось ли что-нибудь.
+ *
+ * Отдельный канал от `OnActorVisibilityChanged`, потому что вопросы разные:
+ * «изменилась видимость актора» и «наблюдатели могли сдвинуться». Сетке
+ * затемнения местности нужен второй: боец, прошедший вдоль стены, меняет картину
+ * местности, не меняя видимости ни одного врага.
+ */
+DECLARE_MULTICAST_DELEGATE(FOnFogVisibilityRecomputed);
+
+/**
  * ЕДИНСТВЕННЫЙ player-facing источник правды «видит ли отряд этого актора».
  *
  * Это слой ПРАВИЛ, а не рендера: материал/RenderTarget обязаны только отображать
@@ -76,6 +86,16 @@ public:
 	/** Видимость актора изменилась. HUD и камера подписываются сюда, а не опрашивают. */
 	UPROPERTY(BlueprintAssignable, Category = "Tactics|FogOfWar")
 	FOnFogActorVisibilityChanged OnActorVisibilityChanged;
+
+	/**
+	 * Пересчёт прошёл (см. `FOnFogVisibilityRecomputed`). Сюда подписан визуальный
+	 * слой — `UFogGridSubsystem`.
+	 *
+	 * ⚠️ Направление зависимости одностороннее: сетка подписывается на правила,
+	 * правила о сетке не знают вовсе и никогда её не спрашивают. Обратная стрелка
+	 * немедленно сделала бы картинку источником правды.
+	 */
+	FOnFogVisibilityRecomputed OnVisibilityRecomputed;
 
 	// --- Жизненный цикл -------------------------------------------------------
 

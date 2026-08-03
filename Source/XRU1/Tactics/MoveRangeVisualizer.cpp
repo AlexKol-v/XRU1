@@ -1060,8 +1060,18 @@ void AMoveRangeVisualizer::BuildZoneBorder(int32 SectionIndex, const TArray<TPai
 
 // --- Превью пути ---------------------------------------------------------------
 
-void AMoveRangeVisualizer::UpdatePathPreview(const FVector& GoalLocation)
+bool AMoveRangeVisualizer::UpdatePathPreview(const FVector& GoalLocation)
 {
+	// ⚠️ Решение «перестраивать ли ленту» принимается ЗДЕСЬ, а не у вызывающего.
+	// Пока точку помнил контроллер, состояние было в двух местах: зона могла
+	// очистить секции меша (`Hide`, смена юнита, перестройка), лента исчезала, а
+	// контроллер продолжал считать её нарисованной — и не перерисовывал, пока
+	// игрок не отведёт мышь. Владелец ленты один, значит и память о ней одна.
+	if (bPathPreviewVisible && FVector::DistSquared2D(GoalLocation, PathPreviewGoal) < 625.f)
+	{
+		return true;
+	}
+
 	const AUnitBase* Unit = CurrentUnit.Get();
 	const UActionPointsComponent* ActionPoints = Unit ? Unit->GetActionPoints() : nullptr;
 
@@ -1073,7 +1083,7 @@ void AMoveRangeVisualizer::UpdatePathPreview(const FVector& GoalLocation)
 	if (!ActionPoints || !PlanMoveTo(GoalLocation, Plan))
 	{
 		HidePathPreview();
-		return;
+		return false;
 	}
 
 	// Цвет: тратит ПОСЛЕДНИЙ AP («рывок») — жёлтый, иначе синий.
@@ -1082,6 +1092,8 @@ void AMoveRangeVisualizer::UpdatePathPreview(const FVector& GoalLocation)
 		: (PathOneMaterial ? PathOneMaterial.Get() : ZoneOneMaterial.Get());
 
 	BuildPathRibbon(Plan.PathPoints, Material);
+	PathPreviewGoal = GoalLocation;
+	return true;
 }
 
 void AMoveRangeVisualizer::HidePathPreview()

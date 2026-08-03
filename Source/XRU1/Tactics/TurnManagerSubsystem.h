@@ -195,6 +195,12 @@ protected:
 	/** Открывает ход указанной стороны: сбрасывает её AP и шлёт OnTurnStarted. */
 	void BeginPhase(ETurnPhase Phase);
 
+	/**
+	 * Прогрев боевых эффектов на старте боя: иначе Niagara компилирует скрипты
+	 * лениво и первый выстрел встаёт фризом (см. UUnitVfxDataAsset::WarmUpEffects).
+	 */
+	void WarmUpCombatEffects();
+
 	/** Сбрасывает Action Points у всех юнитов стороны (через UActionPointsComponent). */
 	void ResetActionPointsForSide(const TArray<TObjectPtr<AActor>>& Units);
 

@@ -1,7 +1,9 @@
 #include "TacticalCameraPawn.h"
 #include "XRU1Log.h"
+#include "FogGridSubsystem.h" // визуальный слой тумана живёт на блендабле этой пешки
 #include "TacticalQuestEvents.h"
 #include "TacticsCombatStatics.h" // GetShotGeometryObjects — единая геометрия мира
+#include "Materials/MaterialInstanceDynamic.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "Camera/CameraComponent.h"
 #include "Components/PostProcessComponent.h"
@@ -70,6 +72,24 @@ void ATacticalCameraPawn::BeginPlay()
 	{
 		UE_LOG(LogXRU1Combat, Warning, TEXT("[Highlight] OutlineMaterial не назначен в пешке-камере — ")
 			TEXT("обводки юнитов не будет (проверь Default Pawn Class в GameMode = BP_TacticalCameraPawn)"));
+	}
+
+	// Туман войны — ПОСЛЕ обводки: затемнение местности накладывается на уже
+	// обведённую сцену. Инстанс динамический, потому что параметры сетки (границы,
+	// текстура) известны только в рантайме и меняются со сменой сценария.
+	if (FogOfWarMaterial && PostProcess)
+	{
+		FogMaterialInstance = UMaterialInstanceDynamic::Create(FogOfWarMaterial, this);
+		PostProcess->Settings.AddBlendable(FogMaterialInstance, 1.f);
+		if (UFogGridSubsystem* FogGrid = UFogGridSubsystem::Get(this))
+		{
+			FogGrid->RegisterFogMaterial(FogMaterialInstance);
+		}
+	}
+	else if (!FogOfWarMaterial)
+	{
+		UE_LOG(LogXRU1Fog, Log, TEXT("[FogGrid] FogOfWarMaterial не назначен в пешке-камере — ")
+			TEXT("затемнения местности не будет (правила тумана при этом работают)"));
 	}
 }
 
@@ -723,6 +743,23 @@ void ATacticalCameraPawn::EnterShotFraming(const AActor* Shooter, const AActor* 
 	bPresentationFrame = bPresentation;
 	ShotFrameTimeLeft = Duration;
 
+	// ⚠️ Кадр выстрела показывает участников КРУПНО и с чужого ракурса — куска
+	// местности, который отряду не виден, в нём оказывается больше, чем обычно, и
+	// сцена уходит в туман: выстрел играется «в темноте». Поэтому на время кадра
+	// местность вокруг участников раскрывается — тем же механизмом, каким это
+	// делает режиссура тактов. Снимается в `ClearShotFraming`, но и время жизни
+	// задано: кадр может быть прерван чем угодно, а забытое раскрытие разведало бы
+	// сектор навсегда.
+	// Раскрытие живёт ровно столько же, сколько кадр, и снимается в ОБЕИХ точках
+	// выхода из него (`ClearShotFraming` и `AbandonShotFraming`). Времени жизни
+	// намеренно нет: кадр прицеливания бессрочен, и таймер погасил бы местность
+	// прямо посреди выбора цели.
+	if (UFogGridSubsystem* FogGrid = UFogGridSubsystem::Get(this))
+	{
+		FogGrid->RemoveScriptedReveal(ShotFrameRevealHandle);
+		ShotFrameRevealHandle = FogGrid->AddScriptedReveal(Target, FVector::ZeroVector);
+	}
+
 	UE_LOG(LogXRU1Camera, Display,
 		TEXT("[Camera] Кадр выстрела: %s → %s, duration=%.2f (−1 = до терминала), dist2D=%.0f"),
 		*GetNameSafe(Shooter), *GetNameSafe(Target), Duration,
@@ -1270,6 +1307,14 @@ void ATacticalCameraPawn::AbandonShotFraming()
 	ShotFrameShooter = nullptr;
 	ShotFrameTarget = nullptr;
 
+	// Раскрытие снимается и здесь: у кадра ДВЕ точки выхода, и пропуск любой из
+	// них означал бы навсегда разведанный сектор.
+	if (UFogGridSubsystem* FogGrid = UFogGridSubsystem::Get(this))
+	{
+		FogGrid->RemoveScriptedReveal(ShotFrameRevealHandle);
+	}
+	ShotFrameRevealHandle = 0;
+
 	// Новый focus/follow/pan может перечеркнуть ПОЗИЦИЮ старого кадра, но не имеет
 	// права превращать временный yaw/zoom/обзор action-camera в глобальный ракурс.
 	// Возвращаем постоянные пользовательские значения и наклон по правилам зума.
@@ -1297,6 +1342,13 @@ void ATacticalCameraPawn::ClearShotFraming()
 	ShotFrameTimeLeft = -1.f;
 	ShotFrameShooter = nullptr;
 	ShotFrameTarget = nullptr;
+
+	// Раскрытие местности под кадр снимается парно его установке.
+	if (UFogGridSubsystem* FogGrid = UFogGridSubsystem::Get(this))
+	{
+		FogGrid->RemoveScriptedReveal(ShotFrameRevealHandle);
+	}
+	ShotFrameRevealHandle = 0;
 
 	// Полный возврат ракурса (XCOM): поворот, наклон, зум, обзор, высота и
 	// позиция — как до кадра. Плавно, тем же glide-механизмом, что и фокус.

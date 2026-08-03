@@ -373,10 +373,46 @@ float UTacticalAbility::FindFireCommitTime(const UAnimMontage* Montage)
 	{
 		if (Event.Notify && Event.Notify->IsA<UAnimNotify_FireCommit>())
 		{
-			return Event.GetTriggerTime();
+			// ⚠️ Время notify живёт в пространстве montage, а планировщик доворота
+			// и ожидание кадра считают РЕАЛЬНЫЕ секунды. Замедленный темп
+			// (`RateScale` < 1 у стрельбы поверх укрытия — там растянут подъём)
+			// иначе давал бы заниженное окно, и доворот вставал бы раньше срока.
+			return Event.GetTriggerTime() / FMath::Max(0.01f, Montage->RateScale);
 		}
 	}
 	return 0.f;
+}
+
+void UTacticalAbility::EnsureFacingAtCommit(const FGuid& ActionId)
+{
+	const FTacticalFireActionContext* Action = GetPresentationAction(ActionId);
+	AUnitBase* Shooter = Action ? Cast<AUnitBase>(Action->Shooter.Get()) : nullptr;
+	const AActor* Target = Action ? Action->Target.Get() : nullptr;
+	if (!Shooter || !Target)
+	{
+		return;
+	}
+
+	const float FacingError = UTacticsCombatStatics::GetFacingErrorDegrees(
+		Shooter, Target->GetActorLocation());
+	if (FacingError <= FMath::Max(0.f, AimSnapMaxError))
+	{
+		return;
+	}
+
+	// Сюда попадают только сбои плавного доворота (его перебили, цель успела
+	// уехать, montage оказался короче расчёта) — потому и Warning: в штатном
+	// выстреле этой строки быть не должно.
+	UE_LOG(LogTacticsPresentation, Warning,
+		TEXT("[AimTurn] %s: на выстреле корпус отвёрнут на %.1f° (порог %.1f°) — мгновенный доворот-страховка, стойка %s id=%s"),
+		*GetNameSafe(Shooter), FacingError, AimSnapMaxError,
+		FiringStanceToString(Action->FiringStance), *ActionId.ToString(EGuidFormats::Digits));
+
+	// MinAngleOverride заведомо больше любой дельты — доворот выполняется этим
+	// же кадром И корректно гасит незавершённый плавный поворот (иначе Tick
+	// продолжил бы крутить актора уже после выстрела).
+	Shooter->FaceTowardsSmooth(Target->GetActorLocation(),
+		/*bPlayTurnAnimation=*/false, /*TurnRateOverride=*/0.f, /*MinAngleOverride=*/181.f);
 }
 
 void UTacticalAbility::NotifyPresentationMontageStarting(const FGuid& ActionId)
@@ -388,7 +424,21 @@ void UTacticalAbility::NotifyPresentationMontageStarting(const FGuid& ActionId)
 		// Отсчёт пошёл от реального старта анимации подъёма — теперь «встал,
 		// довернулся, выстрелил» складывается в одно непрерывное движение.
 		ScheduleAimTurnAfterRise(ActionId, *Action, Shooter, GetNameSafe(Shooter));
+
+		// И держим бойца на ногах до конца удержания кадра: montage кончается
+		// вскоре после выстрела, а садиться он должен вместе с уходом камеры.
+		Shooter->SetPresentationStanding(true);
+		StandingUnit = Shooter;
 	}
+}
+
+void UTacticalAbility::ReleasePresentationStanding()
+{
+	if (AUnitBase* Unit = StandingUnit.Get())
+	{
+		Unit->SetPresentationStanding(false);
+	}
+	StandingUnit.Reset();
 }
 
 void UTacticalAbility::ScheduleAimTurnAfterRise(const FGuid& ActionId,
@@ -405,12 +455,13 @@ void UTacticalAbility::ScheduleAimTurnAfterRise(const FGuid& ActionId,
 		return;
 	}
 
-	// Окно = момент выстрела внутри montage. Доворот обязан уложиться в него,
-	// иначе боец стреляет, ещё поворачиваясь: сначала пробуем отложить старт,
-	// а если угол велик — стартуем раньше и/или крутим быстрее.
+	// Окно = момент выстрела внутри montage МИНУС микропауза: доворот обязан не
+	// просто уложиться до выстрела, а закончиться заметно раньше него. Без этого
+	// зазора поворот и выстрел склеивались в одно движение — «нет паузы между
+	// доворотом и выстрелом» (фидбэк 2026-08-03). Зазор тот же, что у остальных
+	// стоек (`AimTurnSettleDelay`), поэтому ритм выстрела одинаковый везде.
 	const float CommitTime = FindFireCommitTime(Action.FireMontage.Get());
-	const float Margin = 0.05f;
-	const float Window = FMath::Max(0.f, CommitTime - Margin);
+	const float Window = FMath::Max(0.f, CommitTime - FMath::Max(0.f, AimTurnSettleDelay));
 	float Rate = FMath::Max(10.f, AimTurnRate);
 	float Duration = FacingError / Rate;
 	if (Duration > Window && Window > 0.f)
@@ -421,8 +472,9 @@ void UTacticalAbility::ScheduleAimTurnAfterRise(const FGuid& ActionId,
 	const float Delay = FMath::Clamp(Window - Duration, 0.f, FMath::Max(0.f, AimTurnRiseDelay));
 
 	UE_LOG(LogTacticsPresentation, Display,
-		TEXT("[AimTurn] %s: поверх укрытия — сначала подъём, доворот через %.2f с (отклонение %.1f°, скорость %.0f °/с, длится %.2f с, выстрел на %.2f с) id=%s"),
+		TEXT("[AimTurn] %s: поверх укрытия — подъём, доворот через %.2f с (отклонение %.1f°, скорость %.0f °/с, длится %.2f с), выстрел на %.2f с, пауза перед выстрелом %.2f с id=%s"),
 		*ShooterName, Delay, FacingError, Rate, Duration, CommitTime,
+		FMath::Max(0.f, CommitTime - (Delay + Duration)),
 		*ActionId.ToString(EGuidFormats::Digits));
 
 	if (Delay <= 0.f)
@@ -566,11 +618,12 @@ void UTacticalAbility::EndAbility(
 	// Это единый lifecycle-путь и для мгновенных, и для длительных тактических GA:
 	// кнопки не остаются серыми после Attack/Heal/RunAndGun и разблокируются после
 	// завершения Overwatch/Hunker/Taunt.
-	// Отложенный доворот не должен пережить транзакцию.
+	// Отложенный доворот не должен пережить транзакцию, как и удержание позы.
 	if (UWorld* World = GetWorld())
 	{
 		World->GetTimerManager().ClearTimer(AimTurnRiseTimer);
 	}
+	ReleasePresentationStanding();
 
 	TWeakObjectPtr<AUnitBase> Unit = Cast<AUnitBase>(
 		ActorInfo ? ActorInfo->AvatarActor.Get() : nullptr);

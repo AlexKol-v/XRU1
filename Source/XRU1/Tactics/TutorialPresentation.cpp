@@ -1,6 +1,8 @@
 #include "TutorialPresentation.h"
 
 #include "Engine/World.h"
+#include "FogGridSubsystem.h"       // беат раскрывает местность вокруг точки фокуса
+#include "FogRevealableComponent.h" // и показывает самого актора, на которого смотрит камера
 #include "Misc/Paths.h" // имя файла озвучки в логе такта
 #include "GameFramework/PlayerController.h"
 #include "ScenarioActorRegistry.h"
@@ -77,6 +79,34 @@ void UTutorialPresentationSubsystem::StartBeat(const FTacticalTutorialBeat& Beat
 				// Длительность такта — она же страховка от «камера залипла».
 				Camera->FocusOnLocationDirected(FocusActor->GetActorLocation(),
 					FMath::Max(0.1f, Beat.Duration));
+			}
+
+			// Раз камера показывает точку — местность вокруг неё обязана быть
+			// видна. Карта стартует чёрной, и беат, наводящий на ещё не
+			// разведанный сектор (зона эвакуации в D1, соседняя секция в B),
+			// показал бы игроку пустоту. Это тот же приём, что у XCOM для
+			// скриптовых показов — `XComWorldData::CreateFOWViewer`.
+			//
+			// Длительность здесь — СТРАХОВКА, как и у камеры: штатно раскрытие
+			// снимается в `FinishBeat`, но такт может оборваться (пропуск реплики,
+			// смена сценария), и повисшее раскрытие разведало бы сектор навсегда.
+			if (UFogGridSubsystem* FogGrid = UFogGridSubsystem::Get(this))
+			{
+				FogGrid->RemoveScriptedReveal(BeatRevealHandle);
+				BeatRevealHandle = FogGrid->AddScriptedReveal(FocusActor, FVector::ZeroVector,
+					-1.f, FMath::Max(0.1f, Beat.Duration) + BeatRevealGraceSeconds);
+			}
+
+			// ⚠️ Раскрыть местность мало — надо показать и САМОГО актора, иначе
+			// камера наводится на пустое место: местность вокруг врага открыта,
+			// а он сам скрыт туманом (поймано прогоном 2026-08-03, беат
+			// `A8_ReturnFire` с фокусом на мародёре). Такты `Scripted Move` берут
+			// оба удержания парно — беат обязан вести себя так же.
+			if (UFogRevealableComponent* Reveal =
+				const_cast<AActor*>(FocusActor)->FindComponentByClass<UFogRevealableComponent>())
+			{
+				Reveal->AddScriptedRevealHold();
+				BeatFogRevealHold = Reveal;
 			}
 		}
 	}
@@ -162,6 +192,23 @@ void UTutorialPresentationSubsystem::FinishBeat()
 			Camera->ReleaseDirectorHold();
 		}
 	}
+
+	// Раскрытие местности снимается парно фокусу камеры: разведанным сектор
+	// остаётся ровно в той мере, в какой отряд его действительно увидел.
+	if (UFogGridSubsystem* FogGrid = UFogGridSubsystem::Get(this))
+	{
+		FogGrid->RemoveScriptedReveal(BeatRevealHandle);
+	}
+	BeatRevealHandle = 0;
+
+	// Удержание показа снимается СТРОГО по своей ссылке: к концу такта поиск по
+	// AnchorId может уже не найти актора (голограмма выключена следующим шагом),
+	// и удержание утекло бы, оставив врага видимым навсегда.
+	if (UFogRevealableComponent* Reveal = BeatFogRevealHold.Get())
+	{
+		Reveal->RemoveScriptedRevealHold();
+	}
+	BeatFogRevealHold = nullptr;
 
 	OnBeatFinished.Broadcast(FinishedBeat);
 }

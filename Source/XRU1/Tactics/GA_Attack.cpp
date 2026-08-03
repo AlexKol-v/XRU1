@@ -372,8 +372,12 @@ float UGA_Attack::GetCameraSettleRemaining(const FGuid& ActionId) const
 	// «что-то делает, потом встаёт и стреляет» (запись PIE 2026-08-03).
 	const double Elapsed = World->GetTimeSeconds() - PresentationStartTime;
 	const float MontageLeadIn = FindFireCommitTime(FireAction.FireMontage.Get());
-	return FMath::Max(0.f,
-		PreShotCameraSettleDelay - MontageLeadIn - static_cast<float>(Elapsed));
+	// Нижняя граница ритма: даже когда анимация сама даёт кадру достаточно
+	// времени до выстрела, презентация не начинается в тот же миг, что и
+	// команда — иначе выстрел с места вдвое короче выхода из-за угла.
+	const float RequiredLeadIn = FMath::Max(
+		PreShotCameraSettleDelay - MontageLeadIn, MinMontageLeadIn);
+	return FMath::Max(0.f, RequiredLeadIn - static_cast<float>(Elapsed));
 }
 
 float UGA_Attack::GetPresentationHoldDelay(const FGuid& ActionId) const
@@ -434,6 +438,7 @@ void UGA_Attack::EndAbility(
 			RefundPreCommitActionPoints(FinishedAction);
 		}
 		EndShotPresentation();
+		ReleasePresentationStanding(); // боец садится вместе с уходом камеры
 		OnFireActionTerminated(ActionId, bShotCommitted, /*bAborted=*/true);
 	}
 
@@ -539,6 +544,11 @@ bool UGA_Attack::FireCommit(const FGuid& ActionId, bool& bOutHit)
 	const float Damage = FireAction.Damage;
 	const TSubclassOf<UGameplayEffect> EffectClass = FireAction.DamageEffectClass;
 
+	// Последняя проверка читаемости кадра: если плавный доворот не довёл угол,
+	// корпус доворачивается здесь — стрелять «в спину» нельзя ни при каких
+	// сбоях презентации. В штатном выстреле это no-op (отклонение ~0°).
+	EnsureFacingAtCommit(ActionId);
+
 	// Guard ставится ДО callbacks/GE: смерть последней цели не должна позволить
 	// reentrant notify повторно применить урон или вернуть AP.
 	FireAction.MarkCommitStarted();
@@ -639,6 +649,7 @@ bool UGA_Attack::CompleteFireAction(const FGuid& ActionId)
 	ClearFireActionWatchdog();
 	FireAction.Reset();
 	EndShotPresentation();
+	ReleasePresentationStanding(); // боец садится вместе с уходом камеры
 	UE_LOG(LogTacticsAttackAction, Display,
 		TEXT("[FireAction] Терминал: выстрел завершён штатно id=%s → камера возвращается"),
 		*ActionId.ToString(EGuidFormats::Digits));
@@ -669,6 +680,7 @@ bool UGA_Attack::AbortFireAction(const FGuid& ActionId)
 		RefundPreCommitActionPoints(FinishedAction);
 	}
 	EndShotPresentation();
+	ReleasePresentationStanding(); // боец садится вместе с уходом камеры
 	OnFireActionTerminated(ActionId, bShotCommitted, /*bAborted=*/true);
 	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
 	if (bShotCommitted)
