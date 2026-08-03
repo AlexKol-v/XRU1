@@ -74,10 +74,12 @@ AP, не вычисляет шанс и не завершает ability само
 
 ## 4. Открытый боевой HUD
 
-- [ ] Перевести player-facing enemy counter на `GetVisibleEnemyCount`; полный
-      `GetAliveEnemyCount` оставить только внутренним условием конца боя.
-- [ ] Пропускать enemy hover, target panel, overhead widgets, outline/custom
-      depth, attack target list и camera focus через `UFogOfWarSubsystem`.
+- [x] Player-facing enemy counter читает `GetVisibleEnemyCount` (кэш подсистемы,
+      не пересчёт по запросу); `GetAliveEnemyCount` остался внутренним условием
+      конца боя.
+- [x] Enemy hover, target panel, overhead widgets, outline/custom depth, attack
+      target list и camera focus проходят через туман — скрытый враг не
+      подсвечивается, не наводится и не ведёт камеру ([10 §5.1](10_FOG_OF_WAR.md)).
 - [x] Floating feedback: урон/лечение, `ПРОМАХ`, `НАБЛЮДЕНИЕ` (2026-08-01,
       `UCombatFeedbackSubsystem`). Открыто: floating «недоступность» по отказу
       команды.
@@ -87,8 +89,15 @@ AP, не вычисляет шанс и не завершает ability само
 - [ ] Секционный HP в карточке отряда: `WBP_UnitPortrait` рисует HP своим
       ProgressBar в BP — заменить на child `WBP_UnitHealthBar` (секции придут
       сами из C++).
-- [ ] Отдельный feedback зарядов/кулдауна классовой ability.
-- [ ] Цель миссии, таймер и evacuation state на tutorial/mission maps.
+- [ ] **Кнопки способностей безымянны.** На всех классах подпись одна и та же —
+      «классовая способность», хотя за ней стоят разные вещи (Полевая медицина,
+      Taunt, Run & Gun, Overwatch) с разными лимитами. Нужно: название на кнопке
+      и остаток зарядов/кулдаун (`MaxUsesPerMission` уже есть в
+      `TacticalClassAbilities.h` — данные на месте, показать их некому).
+      Проверено с игроком 2026-08-03.
+- [x] Цель миссии, таймер ходов и состояние эвакуации на боевых картах: строка
+      статуса в HUD («Обезвреживание: N/2», номер хода) плюс указатель цели
+      `UObjectivePointerSubsystem` со стрелкой к заряду и зоне эвакуации.
 - [ ] Проверка layout в 1920×1080, 2560×1440 и 16:10; safe margins.
 - [ ] Единые hover/pressed состояния кнопок из палитры темы
       (`FXRU1UIButtonPalette`); CommonUI style classes из темы удалены —
