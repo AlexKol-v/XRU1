@@ -41,6 +41,28 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Cost", meta = (ClampMin = "0"))
 	int32 MaxUsesPerMission = 0;
 
+	/**
+	 * Имя способности для игрока («Полевая медицина», «Провокация», «Рывок»).
+	 *
+	 * ⚠️ Пусто быть не должно: на кнопке у ВСЕХ классов иначе стоит родовое
+	 * «классовая способность», и игрок не знает, что нажимает — при том что
+	 * лимиты и стоимость у способностей разные (найдено на прогоне 2026-08-03).
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Витрина")
+	FText DisplayName;
+
+	/** Короткое описание для подсказки: что делает и чем ограничено. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Витрина", meta = (MultiLine = true))
+	FText Description;
+
+	/**
+	 * Строка для подсказки на кнопке: имя, остаток применений и стоимость.
+	 * Собирается здесь, потому что все три числа — свойства самой способности;
+	 * HUD не должен знать, как из них складывается текст.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Витрина")
+	FText GetTooltipText() const;
+
 	/** Нужна ли способности цель-актор (медик выбирает союзника кликом). Подсказка для контроллера. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Targeting")
 	bool bRequiresTargetActor = false;

@@ -68,6 +68,10 @@ namespace
 
 UGA_Overwatch::UGA_Overwatch()
 {
+	DisplayName = NSLOCTEXT("XRU1", "AbilityOverwatchName", "Наблюдение");
+	Description = NSLOCTEXT("XRU1", "AbilityOverwatchDesc",
+		"Боец берёт сектор под прицел и стреляет по первому, кто войдёт в его линию огня.");
+
 	// Пока способность активна, юнит несёт тег State.Overwatch;
 	// он же блокирует повторную активацию (двойной Overwatch невозможен).
 	ActivationOwnedTags.AddTag(TacticsGameplayTags::State_Overwatch);

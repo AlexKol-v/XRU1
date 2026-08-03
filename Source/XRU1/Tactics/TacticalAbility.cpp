@@ -198,6 +198,38 @@ const AActor* UTacticalAbility::GetPresentationTarget(const FGuid& ActionId) con
 	return Action ? Action->Target.Get() : nullptr;
 }
 
+FText UTacticalAbility::GetTooltipText() const
+{
+	// Имя обязано быть заполнено дизайнером; пустое — видимая ошибка данных, а не
+	// повод молча показать пустую подсказку.
+	const FText Name = DisplayName.IsEmpty()
+		? FText::FromString(GetClass()->GetName())
+		: DisplayName;
+
+	TArray<FText> Lines;
+	Lines.Add(Name);
+	if (!Description.IsEmpty())
+	{
+		Lines.Add(Description);
+	}
+
+	// Стоимость и лимит — то, ради чего подсказку и открывают: «сколько осталось»
+	// нигде больше на экране не видно.
+	if (MaxUsesPerMission > 0)
+	{
+		Lines.Add(FText::Format(
+			NSLOCTEXT("XRU1", "AbilityUses", "Осталось применений: {0} из {1}"),
+			FText::AsNumber(UsesRemaining), FText::AsNumber(MaxUsesPerMission)));
+	}
+	Lines.Add(bConsumesAllRemainingAP
+		? FText::Format(NSLOCTEXT("XRU1", "AbilityCostEnds", "Стоимость: {0} ОД, завершает ход бойца"),
+			FText::AsNumber(ActionPointCost))
+		: FText::Format(NSLOCTEXT("XRU1", "AbilityCost", "Стоимость: {0} ОД"),
+			FText::AsNumber(ActionPointCost)));
+
+	return FText::Join(FText::FromString(TEXT("\n")), Lines);
+}
+
 void UTacticalAbility::FaceShotTargetLatent(FGuid ActionId, FLatentActionInfo LatentInfo)
 {
 	UWorld* World = GetWorld();

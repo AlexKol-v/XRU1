@@ -11,6 +11,8 @@
 #include "CoverDetectionComponent.h"
 #include "TacticsCombatStatics.h"
 #include "GA_Attack.h"
+#include "TacticalAbility.h"        // имя, заряды и стоимость для подсказки кнопки
+#include "AbilitySystemComponent.h" // живой экземпляр способности знает остаток применений
 #include "Engine/World.h"
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
@@ -387,6 +389,30 @@ void UTacticalHUDWidget::RefreshActionButtons()
 		}
 	};
 
+	// Живой экземпляр классовой способности: у него, в отличие от CDO, актуален
+	// остаток применений — а именно его игроку и надо показать.
+	auto GetSelectedClassAbility = [](AUnitBase* Unit) -> const UTacticalAbility*
+	{
+		if (!Unit || !Unit->ClassAbilityClass)
+		{
+			return nullptr;
+		}
+		UAbilitySystemComponent* ASC = Unit->GetAbilitySystemComponent();
+		const FGameplayAbilitySpec* Spec = ASC
+			? ASC->FindAbilitySpecFromClass(Unit->ClassAbilityClass) : nullptr;
+		if (!Spec)
+		{
+			return nullptr;
+		}
+		if (const UTacticalAbility* Instance = Cast<UTacticalAbility>(Spec->GetPrimaryInstance()))
+		{
+			return Instance;
+		}
+		// Способность ещё ни разу не активировалась — экземпляра нет, но CDO уже
+		// знает имя, стоимость и лимит.
+		return Unit->ClassAbilityClass->GetDefaultObject<UTacticalAbility>();
+	};
+
 	// Кнопка «Огонь» гасится и без единой доступной цели (как в XCOM) — иначе
 	// игрок вооружает прицеливание вслепую и узнаёт об этом только по ховеру.
 	SetEnabled(AttackBtn, Controller &&
@@ -430,6 +456,44 @@ void UTacticalHUDWidget::RefreshActionButtons()
 		}
 	}
 	SetEnabled(AbilityBtn, bAbilityEnabled);
+
+	// ⚠️ ПОДСКАЗКА, а не подпись. Переименовать кнопку в вёрстке нельзя из кода,
+	// поэтому имя способности, остаток применений и стоимость уходят в tooltip —
+	// он живёт на самой кнопке и не требует нового виджета. До этого у всех
+	// классов на кнопке стояло родовое «классовая способность», а сколько
+	// осталось зарядов, не было видно нигде (найдено на прогоне 2026-08-03).
+	if (AbilityBtn)
+	{
+		FText AbilityTip;
+		if (const UTacticalAbility* Ability = GetSelectedClassAbility(Selected))
+		{
+			AbilityTip = Ability->GetTooltipText();
+		}
+		else if (Selected && !Selected->ClassAbilityClass)
+		{
+			// Пассивка Осы: у неё нет ability-объекта, но объяснить кнопку надо.
+			AbilityTip = NSLOCTEXT("XRU1", "AbilitySquadsight",
+				"Прицел отряда\nСнайпер стреляет по цели, которую видит союзник.\n"
+				"Индикатор загорается, когда такая цель есть.");
+		}
+		AbilityBtn->SetToolTipText(AbilityTip);
+	}
+
+	// Те же подсказки для остальных действий — из их же способностей, чтобы
+	// стоимость и правило «завершает ход» не пришлось дублировать текстом в BP.
+	auto SetAbilityTip = [](UButton* Button, const TSubclassOf<UTacticalAbility>& AbilityClass)
+	{
+		if (Button && AbilityClass)
+		{
+			Button->SetToolTipText(AbilityClass->GetDefaultObject<UTacticalAbility>()->GetTooltipText());
+		}
+	};
+	if (Selected)
+	{
+		SetAbilityTip(AttackBtn, Selected->AttackAbilityClass);
+		SetAbilityTip(OverwatchBtn, Selected->OverwatchAbilityClass);
+		SetAbilityTip(HunkerBtn, Selected->HunkerAbilityClass);
+	}
 
 	// Контекстное F: вид интеракции определяет и доступность, и иконку.
 	const EInteractionKind Interaction = Controller

@@ -114,6 +114,12 @@ void UGA_SelfBuffUntilNextTurn::HandleTurnStarted(ETurnPhase /*Phase*/)
 
 UGA_HunkerDown::UGA_HunkerDown()
 {
+	// Имя и описание — то, что игрок читает на кнопке: у всех классов там
+	// стояло родовое «классовая способность».
+	DisplayName = NSLOCTEXT("XRU1", "AbilityHunkerName", "Глухая оборона");
+	Description = NSLOCTEXT("XRU1", "AbilityHunkerDesc",
+		"Боец вжимается в укрытие: защита укрытия удваивается до начала его следующего хода.");
+
 	ActionPointCost = 1;
 	bConsumesAllRemainingAP = true; // завершает активацию юнита
 	BuffEffect = UGE_HunkerDown::StaticClass();
@@ -158,6 +164,10 @@ void UGA_HunkerDown::OnBuffActivated()
 
 UGA_Taunt::UGA_Taunt()
 {
+	DisplayName = NSLOCTEXT("XRU1", "AbilityTauntName", "Провокация");
+	Description = NSLOCTEXT("XRU1", "AbilityTauntDesc",
+		"Штурмовик вызывает огонь на себя и получает щит: враги предпочтут его остальным.");
+
 	ActionPointCost = 1;
 	bConsumesAllRemainingAP = true;
 	MaxUsesPerMission = 1;
@@ -184,6 +194,10 @@ void UGA_Taunt::OnBuffActivated()
 
 UGA_Heal::UGA_Heal()
 {
+	DisplayName = NSLOCTEXT("XRU1", "AbilityHealName", "Полевая медицина");
+	Description = NSLOCTEXT("XRU1", "AbilityHealDesc",
+		"Лечит союзника вплотную или поднимает тяжело раненого. Ход бойца не завершает.");
+
 	// Активация приходит событием Event.Heal с целью в payload.
 	FAbilityTriggerData Trigger;
 	Trigger.TriggerTag = TacticsGameplayTags::Event_Heal;
@@ -327,6 +341,10 @@ void UGA_Heal::ActivateAbility(
 
 UGA_RunAndGun::UGA_RunAndGun()
 {
+	DisplayName = NSLOCTEXT("XRU1", "AbilityRunGunName", "Рывок");
+	Description = NSLOCTEXT("XRU1", "AbilityRunGunDesc",
+		"Бесплатное действие: боец получает дополнительное очко действия.");
+
 	ActionPointCost = 0; // способность бесплатная, лимит — 1 раз за миссию
 	MaxUsesPerMission = 1;
 }
