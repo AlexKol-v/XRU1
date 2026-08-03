@@ -495,12 +495,31 @@ void UTacticalHUDWidget::RefreshActionButtons()
 		SetAbilityTip(HunkerBtn, Selected->HunkerAbilityClass);
 	}
 
+	// Кнопки без способности за спиной объясняются сами: молчащая кнопка в ряду
+	// говорящих читается как недоделанная.
+	if (SkipBtn)
+	{
+		SkipBtn->SetToolTipText(NSLOCTEXT("XRU1", "TipSkip",
+			"Пропустить бойца\nХод переходит следующему, очки действия сгорают."));
+	}
+
 	// Контекстное F: вид интеракции определяет и доступность, и иконку.
 	const EInteractionKind Interaction = Controller
 		? Controller->GetAvailableInteraction()
 		: EInteractionKind::None;
 	SetEnabled(InteractBtn, Controller &&
 		Controller->CanIssueCommand(ETacticalPlayerCommand::Interact));
+
+	// Подсказка контекстного действия зависит от того, что рядом с бойцом.
+	if (InteractBtn)
+	{
+		InteractBtn->SetToolTipText(Interaction == EInteractionKind::Evacuate
+			? NSLOCTEXT("XRU1", "TipEvac", "Эвакуация\nБоец покидает поле боя из зоны эвакуации.")
+			: Interaction == EInteractionKind::DefuseBomb
+				? NSLOCTEXT("XRU1", "TipDefuse", "Обезвредить заряд\nТребуется несколько ходов рядом с зарядом.")
+				: NSLOCTEXT("XRU1", "TipInteractNone", "Взаимодействие\nПодойдите к цели миссии."));
+	}
+
 	if (InteractIcon && Theme)
 	{
 		UTexture2D* KindIcon = (Interaction == EInteractionKind::Evacuate)
