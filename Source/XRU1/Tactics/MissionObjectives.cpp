@@ -108,6 +108,28 @@ bool ABombObjective::TryDefuse(AUnitBase* Unit)
 	if (bComplete)
 	{
 		OnDisarmed.Broadcast();
+
+		// СНЯТЫЙ ЗАРЯД ИСЧЕЗАЕТ С КАРТЫ. Оставаться ему незачем: цель выполнена,
+		// а на месте продолжали гореть его визуальные маркеры (жалоба по прогону
+		// 2026-08-04 — «круг разминирования так и остаётся гореть»).
+		//
+		// ⚠️ Прячем, а не Destroy: на актор смотрят уже выданные ссылки —
+		// правило указателя цели (`EObjectivePointerRule::WhileBombActive`
+		// спрашивает `IsDisarmed()` каждый кадр), `ATacticsGameMode` по
+		// `OnDisarmed` снимает таймер и включает эвакуацию, задача квеста держит
+		// его как source события. Уничтожение посреди этой цепочки превратило бы
+		// безобидную полировку в гонку за висячими указателями.
+		//
+		// Скрытие рекурсивное (`bIncludeAllDescendants`): маркеры заряда —
+		// декали и Niagara — висят дочерними компонентами и на самом акторе, и
+		// на его child actor'ах.
+		SetActorHiddenInGame(true);
+		SetActorEnableCollision(false);
+		ForEachComponent<USceneComponent>(/*bIncludeFromChildActors=*/true,
+			[](USceneComponent* Component)
+			{
+				Component->SetVisibility(false, /*bPropagateToChildren=*/true);
+			});
 	}
 	return true;
 }
