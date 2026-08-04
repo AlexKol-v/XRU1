@@ -31,6 +31,10 @@ void UTurnManagerSubsystem::StartCombat(const TArray<AActor*>& PlayerUnits, cons
 
 	bInCombat = true;
 	TurnNumber = 1;
+	// Пороги таймера — состояние ОДНОГО боя: retry того же сценария обязан
+	// проговорить реплики заново.
+	bHalfTimeAnnounced = false;
+	bFinalTurnsAnnounced = false;
 	WarmUpCombatEffects();
 	BeginPhase(ETurnPhase::Player);
 }
@@ -156,7 +160,39 @@ void UTurnManagerSubsystem::SetTurnLimit(int32 NewLimit)
 		return;
 	}
 	TurnLimit = Clamped;
+	// Исходный лимит запоминаем один раз за бой: «половина времени» считается от
+	// него, а не от текущего значения — иначе снятие заряда (лимит → 0) сделало
+	// бы порог бессмысленным.
+	if (InitialTurnLimit <= 0)
+	{
+		InitialTurnLimit = TurnLimit;
+	}
 	OnTurnLimitChanged.Broadcast();
+}
+
+void UTurnManagerSubsystem::BroadcastBombTimerMilestones()
+{
+	const int32 Remaining = GetTurnsRemaining();
+	if (Remaining <= 0 || InitialTurnLimit <= 0)
+	{
+		return; // таймера нет либо заряд уже снят
+	}
+
+	// «Половина времени вышла»: первый ход игрока, на котором остаток опустился
+	// до половины исходного лимита.
+	if (!bHalfTimeAnnounced && Remaining <= FMath::CeilToInt(InitialTurnLimit / 2.f))
+	{
+		bHalfTimeAnnounced = true;
+		UTacticalQuestEvents::BroadcastQuestEvent(
+			this, TacticalQuestTags::Event_Tactical_Objective_Bomb_HalfTime, this);
+	}
+
+	if (!bFinalTurnsAnnounced && Remaining <= BombTickWarningTurns)
+	{
+		bFinalTurnsAnnounced = true;
+		UTacticalQuestEvents::BroadcastQuestEvent(
+			this, TacticalQuestTags::Event_Tactical_Objective_Bomb_FinalTurns, this);
+	}
 }
 
 void UTurnManagerSubsystem::EndTurn()
@@ -299,6 +335,16 @@ void UTurnManagerSubsystem::BeginPhase(ETurnPhase Phase)
 		}
 	}
 
+	// Пороги таймера заряда — доменные факты, а не украшение звука: на них висят
+	// реплики Купола (02 §6). Считает их ЗДЕСЬ, потому что только TurnManager
+	// знает и лимит (он зависит от сложности), и номер текущего хода. Оба
+	// события one-shot на бой: повторная публикация на следующем ходу
+	// превратила бы реплику в назойливый цикл.
+	if (Phase == ETurnPhase::Player)
+	{
+		BroadcastBombTimerMilestones();
+	}
+
 	if (Phase == ETurnPhase::Player)
 	{
 		UTacticalQuestEvents::BroadcastQuestEvent(
@@ -410,11 +456,23 @@ void UTurnManagerSubsystem::ProcessNextEnemyUnit()
 
 		if (Unit && AI && UTacticsCombatStatics::IsUnitAlive(Unit))
 		{
-			OnEnemyUnitActivated.Broadcast(Unit);
+			// Ход бойца, которого игрок НЕ ВИДИТ, не показывают — его нечего
+			// показывать. В XCOM 2 у AI-перемещений невидимые игроку куски пути
+			// вырезаются целиком (`X2Action_Move`: «portions that are not visible
+			// to the player are removed»), поэтому ход десятка скрытых врагов
+			// проходит мгновенно. Здесь то же правило в нашей форме: ни полёта
+			// камеры, ни пауз на чтение — только короткий тик, чтобы очередь
+			// оставалась асинхронной.
+			bLastEnemyWasHidden = !IsUnitVisibleToSquad(Unit);
+			if (!bLastEnemyWasHidden)
+			{
+				OnEnemyUnitActivated.Broadcast(Unit);
+			}
 
 			// Пауза перед действиями — камера игрока долетает до юнита (XCOM-темп).
 			GetWorld()->GetTimerManager().SetTimer(EnemyStepTimerHandle, this,
-				&UTurnManagerSubsystem::ActivateCurrentEnemyUnit, EnemyActivationDelay, false);
+				&UTurnManagerSubsystem::ActivateCurrentEnemyUnit,
+				bLastEnemyWasHidden ? HiddenEnemyStepInterval : EnemyActivationDelay, false);
 			return;
 		}
 
@@ -463,8 +521,27 @@ void UTurnManagerSubsystem::HandleEnemyUnitFinished()
 		return;
 	}
 
+	// Пауза «чтобы игрок успел прочитать ход» нужна только после хода, который
+	// игрок видел. После скрытого читать нечего.
+	const float NextDelay = bLastEnemyWasHidden ? HiddenEnemyStepInterval : EnemyStepInterval;
 	GetWorld()->GetTimerManager().SetTimer(EnemyStepTimerHandle, this,
-		&UTurnManagerSubsystem::ProcessNextEnemyUnit, EnemyStepInterval, false);
+		&UTurnManagerSubsystem::ProcessNextEnemyUnit, NextDelay, false);
+}
+
+bool UTurnManagerSubsystem::IsUnitVisibleToSquad(const AActor* Unit) const
+{
+	if (!Unit)
+	{
+		return false;
+	}
+	// Единственный источник правды о видимости — подсистема тумана: HUD, камера
+	// и правила уже читают её же, и темп хода не имеет права расходиться с
+	// картинкой (иначе игрок увидит «прыжок» бойца, которого он всё-таки видел).
+	if (const UFogOfWarSubsystem* Fog = UFogOfWarSubsystem::Get(this))
+	{
+		return Fog->IsActorCurrentlyVisible(Unit);
+	}
+	return true; // без тумана считаем, что видно всё — прежнее поведение
 }
 
 void UTurnManagerSubsystem::StopEnemyTurnProcessing()

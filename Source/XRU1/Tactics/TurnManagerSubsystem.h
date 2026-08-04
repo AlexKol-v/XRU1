@@ -151,6 +151,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Tactics|Turns")
 	int32 GetTurnsRemaining() const { return TurnLimit > 0 ? FMath::Max(0, TurnLimit - TurnNumber + 1) : -1; }
 
+	/** Исходный лимит боя (до снятия заряда). 0 — таймера в этом бою не было. */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Turns")
+	int32 GetInitialTurnLimit() const { return InitialTurnLimit; }
+
 	/**
 	 * «Победа при уничтожении всех врагов». Для миссий с целью (бомба/эвакуация)
 	 * GameMode выключает флаг и объявляет победу сам.
@@ -161,6 +165,10 @@ public:
 	/** С какого остатка ходов начинает тикать заряд (02 §6: «ТРИ хода»). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Tactics|Turns", meta = (ClampMin = "0"))
 	int32 BombTickWarningTurns = 3;
+
+	/** Видит ли отряд игрока этого юнита прямо сейчас (через туман войны). */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Turns")
+	bool IsUnitVisibleToSquad(const AActor* Unit) const;
 
 	UPROPERTY(BlueprintAssignable, Category = "Tactics|Turns")
 	FOnTurnStarted OnTurnStarted;
@@ -224,6 +232,9 @@ protected:
 	/** Останавливает проход по вражеским юнитам (конец боя / принудительный EndTurn). */
 	void StopEnemyTurnProcessing();
 
+	/** One-shot пороги таймера заряда для реплик (половина времени, последние ходы). */
+	void BroadcastBombTimerMilestones();
+
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<AActor>> PlayerSide;
 
@@ -237,6 +248,12 @@ protected:
 	/** Лимит ходов игрока (0 = нет). */
 	int32 TurnLimit = 0;
 
+	/** Лимит на старте боя: база для порога «половина времени». */
+	int32 InitialTurnLimit = 0;
+
+	bool bHalfTimeAnnounced = false;
+	bool bFinalTurnsAnnounced = false;
+
 	/** Индекс обрабатываемого вражеского юнита в EnemySide. */
 	int32 EnemyTurnIndex = 0;
 
@@ -245,6 +262,17 @@ protected:
 
 	/** Пауза между «камера полетела к юниту» и его действиями (полёт камеры). */
 	float EnemyActivationDelay = 0.35f;
+
+	/**
+	 * Пауза для юнита, которого игрок НЕ ВИДИТ. Показывать нечего, читать нечего,
+	 * поэтому она минимальна: только чтобы очередь оставалась асинхронной.
+	 * Именно это делает ход десятка врагов быстрым — как в XCOM, где невидимая
+	 * часть хода AI не визуализируется вовсе.
+	 */
+	float HiddenEnemyStepInterval = 0.05f;
+
+	/** Был ли скрыт юнит, отходивший последним (определяет паузу перед следующим). */
+	bool bLastEnemyWasHidden = false;
 
 	FTimerHandle EnemyStepTimerHandle;
 
