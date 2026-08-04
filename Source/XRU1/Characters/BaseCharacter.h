@@ -28,6 +28,16 @@ public:
     virtual void SetGenericTeamId(const FGenericTeamId& NewTeamID) override;
     virtual FGenericTeamId GetGenericTeamId() const override;
 
+    /**
+     * Команда, которая будет назначена в BeginPlay.
+     *
+     * Нужна editor-инструментам: до старта игры `GetGenericTeamId()` возвращает
+     * NoTeam, и проверка расстановки в редакторе не могла отличить отряд от
+     * врагов вообще никак.
+     */
+    UFUNCTION(BlueprintPure, Category = "Team")
+    uint8 GetDefaultTeamId() const { return DefaultTeamId; }
+
 protected:
     virtual void BeginPlay() override;
 

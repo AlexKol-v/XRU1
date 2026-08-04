@@ -30,6 +30,35 @@ namespace TacticalQuestTags
 	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Combat_Attack_Overwatch);
 	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Combat_Enemy_Eliminated);
 
+	/**
+	 * Отряд ВПЕРВЫЕ увидел этого врага (переход в видимость по правилам тумана).
+	 *
+	 * Реплика «Нас увидели. Работаем.» обязана звучать по факту обнаружения, а
+	 * не по первому выстрелу: между контактом и стрельбой проходит ход, и
+	 * привязка к атаке ставила бы её задним числом. Канал публикует
+	 * `UFogOfWarSubsystem` — единственный источник правды о видимости; Source —
+	 * увиденный враг.
+	 */
+	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Combat_Enemy_Spotted);
+
+	/**
+	 * Боец отряда получил подтверждённый урон и остался жив.
+	 *
+	 * Публикуется из точки применения урона (правило 11 §7: событие только из
+	 * подтверждённого результата механики), Source — раненый боец. Смерть и
+	 * тяжёлое ранение — другие факты и другие каналы.
+	 */
+	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Combat_Squad_Wounded);
+
+	/**
+	 * Боец отряда УПАЛ (тяжёлое ранение).
+	 *
+	 * Отдельный факт от `Squad.Wounded`: реплика медика «Держись! Иду» уместна
+	 * над лежащим бойцом и нелепа на царапине. Публикуется из подтверждённой
+	 * смены состояния в `AUnitBase::SetDowned`.
+	 */
+	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Combat_Squad_Downed);
+
 	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Ability_Heal_Normal);
 	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Ability_Heal_Revive);
 	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Ability_Taunt_Activated);
@@ -61,6 +90,26 @@ namespace TacticalQuestTags
 	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Objective_Defuse_Completed);
 	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Objective_Evac_Unit);
 	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Objective_Evac_Squad);
+
+	/**
+	 * Пройдена половина исходного лимита ходов (02 §6: «Половина времени вышла»).
+	 * One-shot на запуск: канал публикует `UTurnManagerSubsystem` в начале хода
+	 * игрока, потому что только он знает и лимит, и номер хода. Реплика не может
+	 * висеть на StateTree-счётчике: лимит зависит от сложности.
+	 */
+	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Objective_Bomb_HalfTime);
+
+	/**
+	 * Остались последние ходы до подрыва (`BombTickWarningTurns`, по умолчанию 3).
+	 * One-shot; публикуется вместе с тикающим звуком заряда.
+	 */
+	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Objective_Bomb_FinalTurns);
+
+	/** Подкрепление запрошено: маяк виден, юниты придут через Countdown ходов врага. */
+	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Reinforcements_Signaled);
+
+	/** Подкрепление высадилось и введено в бой. */
+	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Reinforcements_Arrived);
 
 	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Scenario_Ready);
 	XRU1_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Tactical_Scenario_Succeeded);

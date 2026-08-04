@@ -16,12 +16,15 @@
 #include "TacticsSaveGame.h"
 #include "TacticsCombatStatics.h"
 #include "AIBehaviorProfileDataAsset.h"
+#include "MissionVoiceDirector.h" // реплики боя ведёт директор, а не StateTree
+#include "TacticalEncounter.h" // стартовые группы врагов, описанные данными
 #include "UnitAIController.h"
 #include "TDAttributeSet.h"
 #include "GameUIManagerSubsystem.h"
 #include "PrimaryGameLayout.h"
 #include "MissionResultWidget.h"
 #include "AbilitySystemComponent.h"
+#include "NavigationSystem.h" // старт боя ждёт готовности навмеша (NavigationReadyTimeout)
 #include "EngineUtils.h"
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
@@ -32,9 +35,14 @@ ATacticsGameMode::ATacticsGameMode()
 	// Дефолтные пресеты сложности по GDD §10 (правятся в BP).
 	// Последнее поле — лимит одновременно атакующих врагов (A8), verbatim XCOM 2
 	// `MaxEngagedEnemies`: Rookie 4 / Veteran 6 / Legend −1 (без лимита).
-	DifficultyParams.Add(EDifficultyLevel::Easy,   {80.f,  55.f, 12,  4});
-	DifficultyParams.Add(EDifficultyLevel::Medium, {100.f, 65.f, 10,  6});
-	DifficultyParams.Add(EDifficultyLevel::Hard,   {120.f, 70.f,  8, -1});
+	//
+	// Лимит ходов пересчитан 2026-08-03 под реальный масштаб двора: дорога до
+	// заряда занимает порядка десяти ходов, поэтому прежние 12/10/8 делали
+	// миссию непроходимой ещё до первого выстрела. Числа держат ту же разницу
+	// между уровнями (запас ~25 % / ~12 % / 0 к «чистому» проходу).
+	DifficultyParams.Add(EDifficultyLevel::Easy,   {80.f,  55.f, 31,  4});
+	DifficultyParams.Add(EDifficultyLevel::Medium, {100.f, 65.f, 28,  6});
+	DifficultyParams.Add(EDifficultyLevel::Hard,   {120.f, 70.f, 25, -1});
 }
 
 void ATacticsGameMode::BeginPlay()
@@ -61,6 +69,32 @@ void ATacticsGameMode::BeginPlay()
 		&ATacticsGameMode::StartMissionCombat, FMath::Max(0.05f, CombatStartDelay), false);
 }
 
+bool ATacticsGameMode::IsNavigationReadyForCombat()
+{
+	UWorld* World = GetWorld();
+	UNavigationSystemV1* NavSys = World
+		? FNavigationSystem::GetCurrent<UNavigationSystemV1>(World) : nullptr;
+	if (!NavSys)
+	{
+		// Навигации на карте нет вовсе — ждать нечего. Отсутствие навмеша это
+		// отдельный дефект уровня, и превращать его в вечную загрузку нельзя.
+		return true;
+	}
+	if (NavSys->IsNavigationBuildInProgress())
+	{
+		return false;
+	}
+	// Тайлы достроены, но инстанс NavData мог ещё не зарегистрироваться — именно
+	// на этом спотыкается и Detour Crowd («Unable to find RecastNavMesh instance
+	// while trying to create UCrowdManager instance»).
+	return NavSys->GetDefaultNavDataInstance() != nullptr;
+}
+
+bool ATacticsGameMode::IsCombatStartPending() const
+{
+	return !bCombatStarted && GetWorldTimerManager().IsTimerActive(StartCombatTimerHandle);
+}
+
 bool ATacticsGameMode::StartScenarioCombat()
 {
 	if (bCombatStarted)
@@ -70,7 +104,15 @@ bool ATacticsGameMode::StartScenarioCombat()
 
 	GetWorldTimerManager().ClearTimer(StartCombatTimerHandle);
 	StartMissionCombat();
-	return bCombatStarted;
+
+	// ⚠️ ОЖИДАНИЕ НАВИГАЦИИ — НЕ ОТКАЗ, и вернуть здесь false нельзя.
+	//
+	// `ATacticalScenarioDirector` трактует false как «GameMode не смог стартовать
+	// бой», пишет Error и отменяет запуск сценария целиком. То есть попытка
+	// честно сказать «ещё не готов» убила бы миссию вместо того, чтобы её
+	// подождать. Отложенный старт — это принятое обязательство: таймер взведён,
+	// бой начнётся сам.
+	return bCombatStarted || IsCombatStartPending();
 }
 
 EDifficultyLevel ATacticsGameMode::ResolveDifficulty() const
@@ -82,7 +124,9 @@ EDifficultyLevel ATacticsGameMode::ResolveDifficulty() const
 			return GI->CurrentSave->Difficulty;
 		}
 	}
-	return EDifficultyLevel::Medium; // прямой запуск карты в PIE без кампании
+	// Прямой запуск карты без кампании: сложность берётся из настройки боевого
+	// стенда, чтобы PIE воспроизводил тот режим, на котором миссия собрана.
+	return DifficultyWithoutCampaign;
 }
 
 void ATacticsGameMode::ApplyDifficultyToEnemy(AUnitBase* Enemy, const FTacticsDifficultyParams& Params)
@@ -107,6 +151,69 @@ void ATacticsGameMode::ApplyDifficultyToEnemy(AUnitBase* Enemy, const FTacticsDi
 	}
 }
 
+void ATacticsGameMode::ApplyBehaviorProfileToEnemy(AUnitBase* Enemy, EDifficultyLevel Difficulty) const
+{
+	const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>();
+	if (!Enemy || !GameInstance)
+	{
+		return;
+	}
+	const TObjectPtr<UAIBehaviorProfileDataAsset>* Profile =
+		GameInstance->AIProfilesByDifficulty.Find(Difficulty);
+	if (!Profile)
+	{
+		return; // профили сложности ещё не заведены — остаётся baseline BP-контроллера
+	}
+
+	APawn* Pawn = Cast<APawn>(Enemy);
+	if (AUnitAIController* AI = Pawn ? Cast<AUnitAIController>(Pawn->GetController()) : nullptr)
+	{
+		AI->SetBehaviorProfile(*Profile);
+	}
+}
+
+void ATacticsGameMode::ApplySpawnedEnemyDefaults(AUnitBase* Enemy)
+{
+	if (!Enemy)
+	{
+		return;
+	}
+	const EDifficultyLevel Difficulty = ResolveDifficulty();
+	if (const FTacticsDifficultyParams* Params = DifficultyParams.Find(Difficulty))
+	{
+		ApplyDifficultyToEnemy(Enemy, *Params);
+	}
+	ApplyBehaviorProfileToEnemy(Enemy, Difficulty);
+}
+
+int32 ATacticsGameMode::SpawnConfiguredEncounters(EDifficultyLevel Difficulty)
+{
+	int32 Total = 0;
+	int32 Groups = 0;
+	for (TActorIterator<ATacticalEncounter> It(GetWorld()); It; ++It)
+	{
+		// Группа выключенного сценария не должна ожить вместе с чужим запуском:
+		// энкаунтеры лежат в scenario sublevel, но общий persistent виден всегда.
+		if (!UTacticalScenarioSubsystem::IsActorScenarioActive(*It))
+		{
+			continue;
+		}
+		const int32 Created = It->SpawnForDifficulty(Difficulty);
+		if (Created > 0)
+		{
+			++Groups;
+			Total += Created;
+		}
+	}
+	if (Groups > 0)
+	{
+		UE_LOG(LogXRU1Scenario, Log,
+			TEXT("[CombatStart] Энкаунтеры: групп %d, бойцов %d (сложность %d)"),
+			Groups, Total, static_cast<int32>(Difficulty));
+	}
+	return Total;
+}
+
 void ATacticsGameMode::StartMissionCombat()
 {
 	if (bCombatStarted)
@@ -114,10 +221,54 @@ void ATacticsGameMode::StartMissionCombat()
 		return;
 	}
 
-	UTurnManagerSubsystem* TurnManager = GetWorld()->GetSubsystem<UTurnManagerSubsystem>();
+	UWorld* World = GetWorld();
+	UTurnManagerSubsystem* TurnManager = World ? World->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
 	if (!TurnManager)
 	{
 		return;
+	}
+
+	// НАВИГАЦИЯ ДОЛЖНА БЫТЬ ГОТОВА ДО РАССТАНОВКИ ГРУПП (см. NavigationReadyTimeout).
+	// Проверка стоит здесь, а не в энкаунтере: ждать должен ОДИН распорядитель
+	// старта, иначе каждая группа заводила бы свой таймер и порядок расстановки
+	// поехал бы от прогона к прогону.
+	if (NavigationReadyTimeout > 0.f)
+	{
+		if (CombatStartRequestedTime < 0.f)
+		{
+			CombatStartRequestedTime = World->GetTimeSeconds();
+		}
+		const float Waited = World->GetTimeSeconds() - CombatStartRequestedTime;
+
+		if (!IsNavigationReadyForCombat())
+		{
+			if (Waited < NavigationReadyTimeout)
+			{
+				if (Waited <= 0.f)
+				{
+					UE_LOG(LogXRU1Scenario, Log,
+						TEXT("[GameMode] Ожидаю готовности навигации (не более %.0f с)"),
+						NavigationReadyTimeout);
+				}
+				World->GetTimerManager().SetTimer(StartCombatTimerHandle, this,
+					&ATacticsGameMode::StartMissionCombat, 0.1f, false);
+				return;
+			}
+
+			// Таймаут. Стартуем как есть — иначе миссия не начнётся вообще, — но
+			// говорим прямо, чем это грозит: группы встанут фолбэком со смещением
+			// по индексу вместо заданных точек.
+			UE_LOG(LogXRU1Scenario, Warning,
+				TEXT("[GameMode] Навигация не готова за %.1f с — стартую бой как есть. "
+					 "Ожидаемо: [Encounter] ... без подтверждения навмешем и группы "
+					 "не на своих точках. Проверь навмеш карты и bForceRebuildOnLoad"),
+				Waited);
+		}
+		else if (Waited > 0.05f)
+		{
+			UE_LOG(LogXRU1Scenario, Log,
+				TEXT("[GameMode] Навигация готова через %.2f с — стартую бой"), Waited);
+		}
 	}
 
 	// Эти actors могут жить в streamed sublevel, поэтому подписываемся только
@@ -176,6 +327,12 @@ void ATacticsGameMode::StartMissionCombat()
 			*GetNameSafe(this), static_cast<int32>(Difficulty));
 	}
 
+	// Группы-энкаунтеры создаются ДО сбора сторон: их бойцы должны попасть в бой
+	// обычным путём, наравне с расставленными руками. Отсев по сложности — это
+	// «не создать лишнего», а не «удалить актора посреди первого хода»
+	// (правило 11 §6.1).
+	SpawnConfiguredEncounters(Difficulty);
+
 	// Сбор сторон по каноническим TacticsTeamIds.
 	PlayerUnits.Reset();
 	TArray<AActor*> Players;
@@ -225,17 +382,9 @@ void ATacticsGameMode::StartMissionCombat()
 			// Стиль поведения — вторая половина сложности. Профиль назначается
 			// ЗДЕСЬ, а не в BP каждого врага: иначе один забытый экземпляр играет
 			// по чужим правилам, и разница уровней перестаёт быть honest.
-			if (AUnitAIController* MutableAI = const_cast<AUnitAIController*>(EnemyAI))
-			{
-				if (GameInstance)
-				{
-					if (const TObjectPtr<UAIBehaviorProfileDataAsset>* Profile =
-						GameInstance->AIProfilesByDifficulty.Find(Difficulty))
-					{
-						MutableAI->SetBehaviorProfile(*Profile);
-					}
-				}
-			}
+			// Та же функция зовётся для врагов, созданных энкаунтером и
+			// подкреплением, — правило ровно одно на всех.
+			ApplyBehaviorProfileToEnemy(Unit, Difficulty);
 			Enemies.Add(Unit);
 		}
 		else
@@ -294,6 +443,14 @@ void ATacticsGameMode::StartMissionCombat()
 	{
 		FogGrid->ResetForScenario(FogScenarioId, FogRunId,
 			Scenario ? Scenario->bStartFullyExplored : false);
+	}
+
+	// Реплики боя ведёт отдельный директор по таблице сценария: StateTree
+	// отвечает за ЦЕЛИ, а реакции на события — за ним (16 §6.2).
+	if (UMissionVoiceDirectorSubsystem* Voice =
+		GetWorld()->GetSubsystem<UMissionVoiceDirectorSubsystem>())
+	{
+		Voice->StartMission(Scenario ? Scenario->VoiceLines.LoadSynchronous() : nullptr);
 	}
 
 	bCombatStarted = true;

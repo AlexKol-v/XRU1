@@ -36,10 +36,18 @@ namespace TacticalQuestTags
 
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Tactical_Scripted_ShotFinished, "Quest.Event.Tactical.Scripted.ShotFinished", "Сценарный выстрел закончился: презентация и урон доведены.");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Tactical_Scripted_MoveFinished, "Quest.Event.Tactical.Scripted.MoveFinished", "Сценарная перебежка закончилась: боец добежал и осел.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Tactical_Combat_Enemy_Spotted, "Quest.Event.Tactical.Combat.Enemy.Spotted", "Отряд впервые увидел врага (переход в видимость).");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Tactical_Combat_Squad_Wounded, "Quest.Event.Tactical.Combat.Squad.Wounded", "Боец отряда получил подтверждённый урон и остался жив.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Tactical_Combat_Squad_Downed, "Quest.Event.Tactical.Combat.Squad.Downed", "Боец отряда упал (тяжёлое ранение).");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Tactical_Objective_Defuse_Progressed, "Quest.Event.Tactical.Objective.Defuse.Progressed", "Один промежуточный шаг обезвреживания подтверждён.");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Tactical_Objective_Defuse_Completed, "Quest.Event.Tactical.Objective.Defuse.Completed", "Обезвреживание полностью завершено.");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Tactical_Objective_Evac_Unit, "Quest.Event.Tactical.Objective.Evac.Unit", "Один боец успешно эвакуирован.");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Tactical_Objective_Evac_Squad, "Quest.Event.Tactical.Objective.Evac.Squad", "Все живые бойцы успешно эвакуированы.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Tactical_Objective_Bomb_HalfTime, "Quest.Event.Tactical.Objective.Bomb.HalfTime", "Пройдена половина лимита ходов до подрыва.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Tactical_Objective_Bomb_FinalTurns, "Quest.Event.Tactical.Objective.Bomb.FinalTurns", "Остались последние ходы до подрыва.");
+
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Tactical_Reinforcements_Signaled, "Quest.Event.Tactical.Reinforcements.Signaled", "Подкрепление запрошено: маяк виден, высадка через Countdown ходов врага.");
+	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Tactical_Reinforcements_Arrived, "Quest.Event.Tactical.Reinforcements.Arrived", "Подкрепление высадилось и введено в бой.");
 
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Tactical_Scenario_Ready, "Quest.Event.Tactical.Scenario.Ready", "Сценарный sublevel зарегистрирован и бой готов к управлению.");
 	UE_DEFINE_GAMEPLAY_TAG_COMMENT(Event_Tactical_Scenario_Succeeded, "Quest.Event.Tactical.Scenario.Succeeded", "Сценарий завершён подтверждённой победой.");

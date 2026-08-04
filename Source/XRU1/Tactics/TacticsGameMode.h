@@ -78,6 +78,14 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Mission")
 	TMap<EDifficultyLevel, FTacticsDifficultyParams> DifficultyParams;
 
+	/**
+	 * Какую сложность считать текущей, если кампании нет (прямой PIE карты).
+	 * Настройка боевого стенда: миссия собирается и балансируется на сложном
+	 * режиме, и запуск карты «как есть» должен воспроизводить именно его.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Mission")
+	EDifficultyLevel DifficultyWithoutCampaign = EDifficultyLevel::Hard;
+
 	/** Экран результата (WBP от UMissionResultWidget). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|UI")
 	TSubclassOf<UMissionResultWidget> MissionResultWidgetClass;
@@ -89,6 +97,33 @@ public:
 	/** Задержка перед StartCombat, чтобы BeginPlay юнитов/навмеша завершился. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Mission", meta = (ClampMin = "0"))
 	float CombatStartDelay = 0.3f;
+
+	/**
+	 * СКОЛЬКО ЖДАТЬ ГОТОВНОСТИ НАВИГАЦИИ перед стартом боя (с). 0 — не ждать.
+	 *
+	 * Навмеш стоит с `RuntimeGeneration = Dynamic` и `bForceRebuildOnLoad`, то
+	 * есть на загрузке карты строится заново и асинхронно (по логу редактора —
+	 * 12.3 с на полный проход тайлов). Бой же стартовал по фиксированной
+	 * задержке, и `ATacticalSpawnGroupBase::ResolveSpawnLocation` получал отказ
+	 * от ВСЕХ навигационных запросов подряд: `GetRandomReachablePointInRadius`,
+	 * затем две проекции. Оставался последний шаг — поставить бойца у базы со
+	 * смещением по индексу и написать `[Encounter] ... без подтверждения
+	 * навмешем`.
+	 *
+	 * То есть расстановка групп молча подменялась фолбэком не из-за плохих точек
+	 * (они все лежат на навмеше — проверено проекцией в редакторе), а из-за
+	 * гонки со стартом. Ждём.
+	 *
+	 * ⚠️ Таймаут обязателен: на карте без навмеша ожидание не должно превращаться
+	 * в вечную загрузку. По его истечении бой стартует как есть, с явным
+	 * предупреждением в лог.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Mission", meta = (ClampMin = "0"))
+	float NavigationReadyTimeout = 20.f;
+
+	/** Старт боя отложен и произойдёт сам (ждём навигацию). */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Mission")
+	bool IsCombatStartPending() const;
 
 	/** Активирует все зоны эвакуации уровня (зовёт и скрипт туториала). */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Mission")
@@ -106,14 +141,45 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Tactics|Mission")
 	bool WasDefeatByTimeout() const { return bDefeatByTimeout; }
 
+	/** Сложность текущего боя (из сейва; без кампании — `DifficultyWithoutCampaign`). */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Mission")
+	EDifficultyLevel GetActiveDifficulty() const { return ResolveDifficulty(); }
+
+	/**
+	 * Приводит созданного в рантайме врага к правилам текущего боя: статы
+	 * сложности и профиль поведения AI. Зовут `ATacticalEncounter` и
+	 * `ATacticalReinforcementBeacon` — иначе заспавненный боец играл бы по
+	 * дефолтам своего BP, а не по правилам уровня сложности.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Mission")
+	void ApplySpawnedEnemyDefaults(AUnitBase* Enemy);
+
 protected:
 	virtual void BeginPlay() override;
 
 	/** Сбор сторон, сложность, запуск боя. */
 	void StartMissionCombat();
 
+	/**
+	 * Навигация достроена и отвечает на запросы. Навигации на карте нет вовсе —
+	 * считаем готовой: ждать нечего, а бой без навмеша это отдельный дефект.
+	 */
+	bool IsNavigationReadyForCombat();
+
+	/** Время первого запроса на старт боя — отсчёт таймаута ожидания навигации. */
+	float CombatStartRequestedTime = -1.f;
+
 	/** Применяет параметры сложности к вражескому юниту. */
 	void ApplyDifficultyToEnemy(AUnitBase* Enemy, const FTacticsDifficultyParams& Params);
+
+	/** Назначает врагу профиль поведения текущей сложности (если он заведён). */
+	void ApplyBehaviorProfileToEnemy(AUnitBase* Enemy, EDifficultyLevel Difficulty) const;
+
+	/**
+	 * Создаёт стартовые группы (`ATacticalEncounter`) ДО сбора сторон, чтобы их
+	 * бойцы попали в бой обычным путём. Возвращает число созданных бойцов.
+	 */
+	int32 SpawnConfiguredEncounters(EDifficultyLevel Difficulty);
 
 	UFUNCTION()
 	void HandleBombDisarmed();
