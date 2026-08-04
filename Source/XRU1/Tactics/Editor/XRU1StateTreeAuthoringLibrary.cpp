@@ -351,3 +351,239 @@ TArray<FString> UXRU1StateTreeAuthoringLibrary::DescribeStates(const FString& St
 #endif
 	return Result;
 }
+
+bool UXRU1StateTreeAuthoringLibrary::AddChildState(const FString& StateTreeAssetPath,
+	const FName ParentStateName, const FName NewStateName)
+{
+#if WITH_EDITOR
+	using namespace XRU1StateTreeAuthoring;
+
+	UStateTree* Tree = nullptr;
+	UStateTreeEditorData* EditorData = LoadEditorData(StateTreeAssetPath, Tree);
+	if (!EditorData)
+	{
+		return false;
+	}
+
+	// Повторный прогон скрипта сборки не должен плодить дубли состояний.
+	if (FindStateByName(*EditorData, NewStateName))
+	{
+		UE_LOG(LogXRU1Quest, Log, TEXT("[StateTreeAuthoring] Состояние %s уже есть — пропуск"),
+			*NewStateName.ToString());
+		return true;
+	}
+
+	UStateTreeState* Parent = ParentStateName.IsNone()
+		? nullptr : FindStateByName(*EditorData, ParentStateName);
+	if (!ParentStateName.IsNone() && !Parent)
+	{
+		UE_LOG(LogXRU1Quest, Error, TEXT("[StateTreeAuthoring] Родитель %s не найден"),
+			*ParentStateName.ToString());
+		return false;
+	}
+
+	Tree->Modify();
+	EditorData->Modify();
+	if (Parent)
+	{
+		Parent->Modify();
+	}
+
+	UStateTreeState* NewState = Parent
+		? &Parent->AddChildState(NewStateName) : &EditorData->AddSubTree(NewStateName);
+	NewState->ID = FGuid::NewGuid();
+	// Дефолт движка `Any` закрывает состояние по первой завершившейся задаче —
+	// шаг с целью и репликой «пролетал» бы за кадр.
+	NewState->TasksCompletion = EStateTreeTaskCompletionType::All;
+
+	UE_LOG(LogXRU1Quest, Log, TEXT("[StateTreeAuthoring] Создано состояние %s (родитель %s)"),
+		*NewStateName.ToString(),
+		Parent ? *ParentStateName.ToString() : TEXT("<корень>"));
+	return true;
+#else
+	return false;
+#endif
+}
+
+bool UXRU1StateTreeAuthoringLibrary::AddTaskToState(const FString& StateTreeAssetPath,
+	const FName StateName, const FString& TaskStructPath, const FString& InstanceDataText,
+	const bool bConsideredForCompletion)
+{
+#if WITH_EDITOR
+	using namespace XRU1StateTreeAuthoring;
+
+	UStateTree* Tree = nullptr;
+	UStateTreeEditorData* EditorData = LoadEditorData(StateTreeAssetPath, Tree);
+	if (!EditorData)
+	{
+		return false;
+	}
+
+	UStateTreeState* State = FindStateByName(*EditorData, StateName);
+	if (!State)
+	{
+		UE_LOG(LogXRU1Quest, Error, TEXT("[StateTreeAuthoring] Состояние %s не найдено"),
+			*StateName.ToString());
+		return false;
+	}
+
+	UScriptStruct* TaskStruct = FindObject<UScriptStruct>(nullptr, *TaskStructPath);
+	if (!TaskStruct)
+	{
+		UE_LOG(LogXRU1Quest, Error, TEXT("[StateTreeAuthoring] Тип задачи %s не найден"),
+			*TaskStructPath);
+		return false;
+	}
+
+	Tree->Modify();
+	EditorData->Modify();
+	State->Modify();
+
+	FStateTreeEditorNode& TaskNode = State->Tasks.AddDefaulted_GetRef();
+	TaskNode.ID = FGuid::NewGuid();
+	TaskNode.Node.InitializeAs(TaskStruct);
+
+	FStateTreeNodeBase& NodeBase = TaskNode.Node.GetMutable<FStateTreeNodeBase>();
+	const UScriptStruct* InstanceStruct = Cast<const UScriptStruct>(NodeBase.GetInstanceDataType());
+	if (!InstanceStruct)
+	{
+		UE_LOG(LogXRU1Quest, Error, TEXT("[StateTreeAuthoring] У %s нет instance data"), *TaskStructPath);
+		State->Tasks.Pop();
+		return false;
+	}
+	TaskNode.Instance.InitializeAs(InstanceStruct);
+
+	// Значения задаются тем же текстом, каким ассет экспортируется: один формат
+	// на чтение и на запись, поэтому эталон всегда под рукой — экспорт готового
+	// дерева обучения.
+	if (!InstanceDataText.IsEmpty())
+	{
+		class FAuthoringErrorPipe : public FOutputDevice
+		{
+		public:
+			int32 NumErrors = 0;
+			virtual void Serialize(const TCHAR* V, ELogVerbosity::Type, const FName&) override
+			{
+				++NumErrors;
+				UE_LOG(LogXRU1Quest, Error, TEXT("[StateTreeAuthoring] ImportText: %s"), V);
+			}
+		} ErrorPipe;
+
+		const TCHAR* Buffer = *InstanceDataText;
+		InstanceStruct->ImportText(Buffer, TaskNode.Instance.GetMutableMemory(), nullptr,
+			PPF_None, &ErrorPipe, InstanceStruct->GetName());
+		if (ErrorPipe.NumErrors > 0)
+		{
+			State->Tasks.Pop();
+			return false;
+		}
+	}
+
+#if WITH_EDITORONLY_DATA
+	if (FStateTreeTaskBase* Task = TaskNode.Node.GetMutablePtr<FStateTreeTaskBase>())
+	{
+		// Фоновая реплика не решает, когда закончится шаг: она ждёт своё событие
+		// рядом с целью и молчит, если события не было.
+		Task->bConsideredForCompletion = bConsideredForCompletion;
+	}
+#endif
+
+	UE_LOG(LogXRU1Quest, Log, TEXT("[StateTreeAuthoring] %s: добавлена задача %s (completion=%d)"),
+		*StateName.ToString(), *TaskStruct->GetName(), bConsideredForCompletion ? 1 : 0);
+	return true;
+#else
+	return false;
+#endif
+}
+
+bool UXRU1StateTreeAuthoringLibrary::AddCompletionTransition(const FString& StateTreeAssetPath,
+	const FName FromStateName, const FName ToStateName, const bool bOnSuccessOnly)
+{
+#if WITH_EDITOR
+	using namespace XRU1StateTreeAuthoring;
+
+	UStateTree* Tree = nullptr;
+	UStateTreeEditorData* EditorData = LoadEditorData(StateTreeAssetPath, Tree);
+	if (!EditorData)
+	{
+		return false;
+	}
+
+	UStateTreeState* From = FindStateByName(*EditorData, FromStateName);
+	if (!From)
+	{
+		UE_LOG(LogXRU1Quest, Error, TEXT("[StateTreeAuthoring] Состояние %s не найдено"),
+			*FromStateName.ToString());
+		return false;
+	}
+
+	Tree->Modify();
+	EditorData->Modify();
+	From->Modify();
+
+	const EStateTreeTransitionTrigger Trigger = bOnSuccessOnly
+		? EStateTreeTransitionTrigger::OnStateSucceeded
+		: EStateTreeTransitionTrigger::OnStateCompleted;
+
+	if (ToStateName.IsNone())
+	{
+		// Терминал сценария: провал уводит квест в Failed на любом шаге.
+		From->AddTransition(EStateTreeTransitionTrigger::OnStateFailed,
+			EStateTreeTransitionType::Failed, nullptr);
+		UE_LOG(LogXRU1Quest, Log, TEXT("[StateTreeAuthoring] %s: переход по провалу → Failed"),
+			*FromStateName.ToString());
+		return true;
+	}
+
+	UStateTreeState* To = FindStateByName(*EditorData, ToStateName);
+	if (!To)
+	{
+		UE_LOG(LogXRU1Quest, Error, TEXT("[StateTreeAuthoring] Цель перехода %s не найдена"),
+			*ToStateName.ToString());
+		return false;
+	}
+
+	From->AddTransition(Trigger, EStateTreeTransitionType::GotoState, To);
+	UE_LOG(LogXRU1Quest, Log, TEXT("[StateTreeAuthoring] %s → %s (%s)"),
+		*FromStateName.ToString(), *ToStateName.ToString(),
+		bOnSuccessOnly ? TEXT("по успеху") : TEXT("по завершению"));
+	return true;
+#else
+	return false;
+#endif
+}
+
+bool UXRU1StateTreeAuthoringLibrary::ClearStateTasks(const FString& StateTreeAssetPath,
+	const FName StateName)
+{
+#if WITH_EDITOR
+	using namespace XRU1StateTreeAuthoring;
+
+	UStateTree* Tree = nullptr;
+	UStateTreeEditorData* EditorData = LoadEditorData(StateTreeAssetPath, Tree);
+	if (!EditorData)
+	{
+		return false;
+	}
+
+	UStateTreeState* State = FindStateByName(*EditorData, StateName);
+	if (!State)
+	{
+		UE_LOG(LogXRU1Quest, Error, TEXT("[StateTreeAuthoring] Состояние %s не найдено"),
+			*StateName.ToString());
+		return false;
+	}
+
+	Tree->Modify();
+	EditorData->Modify();
+	State->Modify();
+
+	const int32 Removed = State->Tasks.Num();
+	State->Tasks.Reset();
+	UE_LOG(LogXRU1Quest, Log, TEXT("[StateTreeAuthoring] %s: удалено задач %d"),
+		*StateName.ToString(), Removed);
+	return true;
+#else
+	return false;
+#endif
+}
