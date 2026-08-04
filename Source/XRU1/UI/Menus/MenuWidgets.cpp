@@ -1,5 +1,6 @@
 #include "MenuWidgets.h"
 #include "TacticsAudioSubsystem.h"
+#include "TacticsGameMode.h" // числа сложности берём из CDO, а не из текста подсказки
 #include "TacticsGameInstance.h"
 #include "TacticsSaveGame.h"
 #include "TacticsUserSettings.h"
@@ -735,6 +736,69 @@ void UIntroPlayerWidget::FinishIntro()
 
 // --- UDifficultySelectWidget ------------------------------------------------
 
+FText UDifficultySelectWidget::GetDifficultyTooltip(EDifficultyLevel Difficulty)
+{
+	// ⚠️ ЧИСЛА БЕРУТСЯ ИЗ CDO GameMode, А НЕ ПИШУТСЯ В ТЕКСТЕ.
+	//
+	// Пресеты живут в конструкторе `ATacticsGameMode` (GDD §10). Продублировать
+	// их строкой означало бы завести второй источник правды, который разойдётся
+	// с первой же правкой баланса, — а подсказка, которая врёт про числа, хуже
+	// её отсутствия. CDO читается без мира: экран выбора сложности показывается
+	// в меню, где боевого GameMode ещё нет.
+	const ATacticsGameMode* Defaults = ATacticsGameMode::StaticClass()
+		->GetDefaultObject<ATacticsGameMode>();
+	const FTacticsDifficultyParams* Params = Defaults
+		? Defaults->DifficultyParams.Find(Difficulty) : nullptr;
+
+	// СТИЛЬ описывается словами, а не числами: игроку важно «что они делают»,
+	// а веса оценщиков (`FAIStyleTuning` в DA_AI_Easy/Medium/Hard) для него
+	// пустой звук. Формулировки обязаны соответствовать профилям — см.
+	// docs/08_AI.md §5.7.
+	FText Style;
+	switch (Difficulty)
+	{
+	case EDifficultyLevel::Easy:
+		Style = NSLOCTEXT("XRU1.Menu", "DiffStyleEasy",
+			"Держатся укрытий и отсиживаются в них, идут в лоб, обходят с фланга редко.");
+		break;
+	case EDifficultyLevel::Hard:
+		Style = NSLOCTEXT("XRU1.Menu", "DiffStyleHard",
+			"Обходят с фланга, сводят огонь на одном бойце, добивают раненых "
+			"и держат подходы наблюдением.");
+		break;
+	default:
+		Style = NSLOCTEXT("XRU1.Menu", "DiffStyleMedium",
+			"Занимают укрытия, обходят, когда это выгодно, иногда держат "
+			"направление наблюдением.");
+		break;
+	}
+
+	if (!Params)
+	{
+		return Style; // пресет не заведён — по крайней мере объясним поведение
+	}
+
+	const FText Attackers = Params->MaxAttackersPerTurn < 0
+		? NSLOCTEXT("XRU1.Menu", "DiffNoAttackLimit", "без ограничения")
+		: FText::AsNumber(Params->MaxAttackersPerTurn);
+
+	// Пять аргументов — только через FFormatOrderedArguments: у FText::Format
+	// вариадические перегрузки заканчиваются на четырёх.
+	FFormatOrderedArguments Args;
+	Args.Add(FText::AsNumber(FMath::RoundToInt(Params->EnemyHealth)));
+	Args.Add(FText::AsNumber(FMath::RoundToInt(Params->EnemyAim)));
+	Args.Add(Attackers);
+	Args.Add(Style);
+	Args.Add(FText::AsNumber(Params->TurnLimit));
+
+	return FText::Format(NSLOCTEXT("XRU1.Menu", "DiffTooltip",
+		"Враг: {0} HP, меткость {1}.\n"
+		"Одновременно атакуют: {2}.\n"
+		"{3}\n"
+		"Ходов до взрыва заряда: {4}."),
+		Args);
+}
+
 void UDifficultySelectWidget::NativeOnInitialized()
 {
 	Super::NativeOnInitialized();
@@ -745,6 +809,19 @@ void UDifficultySelectWidget::NativeOnInitialized()
 	if (Btn_Medium) { Btn_Medium->OnClicked.AddUniqueDynamic(this, &UDifficultySelectWidget::HandleMediumClicked); RegisterButtonSounds(Btn_Medium); }
 	if (Btn_Hard)   { Btn_Hard->OnClicked.AddUniqueDynamic(this, &UDifficultySelectWidget::HandleHardClicked);     RegisterButtonSounds(Btn_Hard); }
 	if (Btn_Back)   { Btn_Back->OnClicked.AddUniqueDynamic(this, &UDifficultySelectWidget::HandleBackClicked);     RegisterButtonSounds(Btn_Back); }
+
+	// Выбор сложности — единственное решение кампании, которое нельзя отменить
+	// (уровень пишется в сейв в `StartNewCampaign`). Игрок обязан видеть, за что
+	// платит, ДО клика — тем же способом, что и кнопки действий в бою
+	// (`UTacticalHUDWidget::RefreshActionButtons`): наведение объясняет кнопку.
+	if (Btn_Easy)   { Btn_Easy->SetToolTipText(GetDifficultyTooltip(EDifficultyLevel::Easy)); }
+	if (Btn_Medium) { Btn_Medium->SetToolTipText(GetDifficultyTooltip(EDifficultyLevel::Medium)); }
+	if (Btn_Hard)   { Btn_Hard->SetToolTipText(GetDifficultyTooltip(EDifficultyLevel::Hard)); }
+	if (Btn_Back)
+	{
+		Btn_Back->SetToolTipText(NSLOCTEXT("XRU1.Menu", "DiffTipBack",
+			"Назад\nВернуться в главное меню, не начиная кампанию."));
+	}
 }
 
 void UDifficultySelectWidget::HandleEasyClicked()   { ChooseDifficulty(EDifficultyLevel::Easy); }

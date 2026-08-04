@@ -552,6 +552,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Menu")
 	void ChooseDifficulty(EDifficultyLevel Difficulty);
 
+	/**
+	 * Подсказка уровня сложности для наведения. Числа читаются из CDO
+	 * `ATacticsGameMode` (пресеты GDD §10), стиль поведения врага описан словами
+	 * и обязан соответствовать профилям `DA_AI_Easy/Medium/Hard`.
+	 *
+	 * BlueprintPure и static: тот же текст нужен и рукотворной вёрстке, если
+	 * дизайнер захочет показать его не тултипом, а панелью рядом с кнопками.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Menu")
+	static FText GetDifficultyTooltip(EDifficultyLevel Difficulty);
+
 protected:
 	virtual void NativeOnInitialized() override;
 
