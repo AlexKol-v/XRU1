@@ -16,6 +16,7 @@
 #include "StateTreeEvents.h"
 #include "StateTreeExecutionContext.h"
 #include "MoveRangeVisualizer.h"
+#include "TacticalEncounter.h" // маяк подкрепления для задачи Call Reinforcements
 #include "TacticalCameraPawn.h"
 #include "TacticalPlayerController.h"
 #include "TacticsCombatStatics.h"
@@ -91,6 +92,73 @@ namespace TacticalQuestTasks_Internal
 		}
 	}
 
+	/**
+	 * Печать входа в состояние, устойчивая к ПЕРЕЗАХОДАМ.
+	 *
+	 * `EnterState` обязан срабатывать один раз за вход, но неверно собранное
+	 * дерево может перезаходить каждый тик — и тогда полезный лог перестаёт
+	 * существовать: прогон 2026-08-04 дал 101 472 одинаковых блока подряд,
+	 * 99.4 % файла. Первый вход печатается как обычно, повторы в пределах
+	 * `RepeatWindow` копятся молча, а когда частота выдаёт цикл — ОДИН раз
+	 * печатается предупреждение с числом входов. Диагностика от этого не
+	 * теряется: наоборот, аномалия становится видна прямо в логе.
+	 */
+	bool ShouldLogStateEntry(const FString& Key, int32& OutSuppressed)
+	{
+		struct FEntryStat
+		{
+			double LastLogTime = 0.0;
+			double WindowStart = 0.0;
+			int32 CountInWindow = 0;
+			int32 SuppressedSinceLog = 0;
+			bool bLoopReported = false;
+		};
+		static TMap<FString, FEntryStat> Stats;
+
+		// Порог «это цикл, а не активная сцена»: 20 входов в одно состояние за
+		// секунду не бывает у корректного дерева даже на быстрых переходах.
+		constexpr double RepeatWindow = 1.0;
+		constexpr int32 LoopThreshold = 20;
+
+		const double Now = FPlatformTime::Seconds();
+		FEntryStat& Stat = Stats.FindOrAdd(Key);
+		OutSuppressed = 0;
+
+		if (Now - Stat.WindowStart > RepeatWindow)
+		{
+			Stat.WindowStart = Now;
+			Stat.CountInWindow = 0;
+			Stat.bLoopReported = false;
+		}
+		++Stat.CountInWindow;
+
+		if (Stat.CountInWindow >= LoopThreshold)
+		{
+			if (!Stat.bLoopReported)
+			{
+				Stat.bLoopReported = true;
+				UE_LOG(LogXRU1Quest, Error,
+					TEXT("[Quest] %s перезаходит %d раз в секунду — состояние закрывается сразу "
+						"после входа. Обычная причина: у состояния нет ни одной задачи, "
+						"учитываемой для завершения (все фоновые). Дальнейшие входы не логируются."),
+					*Key, Stat.CountInWindow);
+			}
+			++Stat.SuppressedSinceLog;
+			return false;
+		}
+
+		// Обычный режим: печатаем, но не чаще раза в окно — с числом пропущенных.
+		if (Stat.LastLogTime > 0.0 && Now - Stat.LastLogTime < RepeatWindow)
+		{
+			++Stat.SuppressedSinceLog;
+			return false;
+		}
+		Stat.LastLogTime = Now;
+		OutSuppressed = Stat.SuppressedSinceLog;
+		Stat.SuppressedSinceLog = 0;
+		return true;
+	}
+
 	/** Совпадает ли AnchorId объекта с требуемым. Пустой Anchor означает «любой». */
 	bool MatchesAnchor(FName RequiredAnchor, const UObject* Object)
 	{
@@ -157,11 +225,17 @@ EStateTreeRunStatus FTacticalTask_Objective::EnterState(
 
 	// Постоянный лог границ шага: без него «шаг не идёт дальше» неотличимо от
 	// «событие не пришло» и «шаг вообще не начинался».
-	UE_LOG(LogXRU1Quest, Display,
-		TEXT("[Objective] НАЧАТ %s: ждём %s x%d (source=%s target=%s run=%d)"),
-		*Inst.ObjectiveId.ToString(), *Inst.EventChannel.ToString(), Inst.RequiredCount,
-		*Inst.RequiredSourceAnchor.ToString(), *Inst.RequiredTargetAnchor.ToString(),
-		Inst.ScenarioRunId);
+	int32 Suppressed = 0;
+	if (TacticalQuestTasks_Internal::ShouldLogStateEntry(
+			FString::Printf(TEXT("Objective %s"), *Inst.ObjectiveId.ToString()), Suppressed))
+	{
+		UE_LOG(LogXRU1Quest, Display,
+			TEXT("[Objective] НАЧАТ %s: ждём %s x%d (source=%s target=%s run=%d)%s"),
+			*Inst.ObjectiveId.ToString(), *Inst.EventChannel.ToString(), Inst.RequiredCount,
+			*Inst.RequiredSourceAnchor.ToString(), *Inst.RequiredTargetAnchor.ToString(),
+			Inst.ScenarioRunId,
+			Suppressed > 0 ? *FString::Printf(TEXT(" [+%d повторных входов]"), Suppressed) : TEXT(""));
+	}
 
 	// Цель-зона подсвечивается на время шага: игрок видит, КУДА бежать,
 	// без отдельной задачи в дереве.
@@ -519,6 +593,13 @@ void FTacticalTask_ScriptedShot::ExitState(
 FTacticalTask_TutorialBeat::FTacticalTask_TutorialBeat()
 {
 	bShouldCallTick = true;
+#if WITH_EDITORONLY_DATA
+	// Реплика-реакция боя живёт ФОНОМ рядом с целью шага: она ждёт своё событие
+	// и не имеет права решать, когда состояние закончится. Разрешаем снимать
+	// «учитывать для завершения» прямо в редакторе — без этого несколько тактов
+	// в одном состоянии держали бы его до последней реплики.
+	bCanEditConsideredForCompletion = true;
+#endif
 }
 
 EStateTreeRunStatus FTacticalTask_TutorialBeat::EnterState(
@@ -534,8 +615,18 @@ EStateTreeRunStatus FTacticalTask_TutorialBeat::EnterState(
 	// наблюдения) — на входе в шаг она звучала бы до того, что комментирует.
 	if (Inst.TriggerEvent.IsValid())
 	{
-		UE_LOG(LogXRU1Quest, Display, TEXT("[Beat] %s ждёт события %s (не более %.0f с)"),
-			*Inst.Beat.BeatId.ToString(), *Inst.TriggerEvent.ToString(), Inst.TriggerTimeout);
+		int32 SuppressedEntries = 0;
+		if (TacticalQuestTasks_Internal::ShouldLogStateEntry(
+				FString::Printf(TEXT("Beat %s"), *Inst.Beat.BeatId.ToString()), SuppressedEntries))
+		{
+			UE_LOG(LogXRU1Quest, Display, TEXT("[Beat] %s ждёт события %s (%s)%s"),
+				*Inst.Beat.BeatId.ToString(), *Inst.TriggerEvent.ToString(),
+				Inst.bRequireTriggerEvent
+					? TEXT("без события не играет")
+					: *FString::Printf(TEXT("не более %.0f с"), Inst.TriggerTimeout),
+				SuppressedEntries > 0
+					? *FString::Printf(TEXT(" [+%d повторных входов]"), SuppressedEntries) : TEXT(""));
+		}
 		return EStateTreeRunStatus::Running;
 	}
 
@@ -594,7 +685,11 @@ EStateTreeRunStatus FTacticalTask_TutorialBeat::Tick(
 	// Такт уже отговорил — состояние ещё живёт (ждёт игрока), пересчитывать нечего.
 	if (Inst.bBeatFinished)
 	{
-		return EStateTreeRunStatus::Succeeded;
+		// Фоновая реакция боя ОСТАЁТСЯ Running: у состояния миссии нет других
+		// задач, учитываемых для завершения, и «Succeeded» отсюда закрывал бы
+		// его целиком — дерево перезапускалось по кругу.
+		return Inst.bKeepRunningAfterBeat
+			? EStateTreeRunStatus::Running : EStateTreeRunStatus::Succeeded;
 	}
 
 	// Фаза ожидания: события-триггера и/или свободной камеры.
@@ -624,7 +719,10 @@ EStateTreeRunStatus FTacticalTask_TutorialBeat::Tick(
 		// Камера — второе условие старта: такту с фокусом нечего показывать,
 		// пока кадр выстрела держит взгляд.
 		const bool bCameraBusy = IsCameraBusyForBeat(Context, Inst);
-		const bool bTimedOut = Inst.ElapsedTime >= Inst.TriggerTimeout;
+		// Фоновая реакция боя ждёт своё событие сколько угодно: «первого
+		// убийства» может не случиться вовсе, и реплика по таймауту соврала бы.
+		const bool bTimedOut = !Inst.bRequireTriggerEvent &&
+			Inst.ElapsedTime >= Inst.TriggerTimeout;
 		if ((!bTriggered || bCameraBusy) && !bTimedOut)
 		{
 			return EStateTreeRunStatus::Running;
@@ -698,7 +796,8 @@ EStateTreeRunStatus FTacticalTask_TutorialBeat::Tick(
 		Presentation->FinishBeat();
 	}
 	Inst.bBeatFinished = true; // ExitState уже нечего закрывать
-	return EStateTreeRunStatus::Succeeded;
+	return Inst.bKeepRunningAfterBeat
+		? EStateTreeRunStatus::Running : EStateTreeRunStatus::Succeeded;
 }
 
 void FTacticalTask_TutorialBeat::ExitState(
@@ -1207,4 +1306,38 @@ void FTacticalTask_ForceNextShot::ExitState(
 		// Непотраченный форс не должен утечь в следующий шаг.
 		Unit->ClearPendingScriptedShot();
 	}
+}
+
+// --- Вызов подкрепления ---------------------------------------------------------
+
+FTacticalTask_CallReinforcements::FTacticalTask_CallReinforcements()
+{
+	// Запрос мгновенный: маяк дальше живёт сам (отсчёт ходов врага и высадка),
+	// поэтому держать состояние StateTree незачем.
+	bShouldCallTick = false;
+	bShouldCallTickOnlyOnEvents = false;
+}
+
+EStateTreeRunStatus FTacticalTask_CallReinforcements::EnterState(
+	FStateTreeExecutionContext& Context, const FStateTreeTransitionResult& Transition) const
+{
+	const FInstanceDataType& Inst = Context.GetInstanceData(*this);
+	UWorld* World = TacticalQuestTasks_Internal::GetWorld(Context);
+	ATacticalReinforcementBeacon* Beacon = World
+		? ATacticalReinforcementBeacon::FindBeacon(World, Inst.BeaconId) : nullptr;
+	if (!Beacon)
+	{
+		UE_LOG(LogXRU1Quest, Error,
+			TEXT("[Mission] Call Reinforcements: маяк '%s' не найден на карте"),
+			*Inst.BeaconId.ToString());
+		return EStateTreeRunStatus::Failed;
+	}
+
+	// Отказ маяка (лимит волн исчерпан, волна уже в пути) — не ошибка сценария:
+	// шаг миссии не должен вставать из-за того, что подкрепление уже идёт.
+	const bool bAccepted = Beacon->RequestWave();
+	UE_LOG(LogXRU1Quest, Display,
+		TEXT("[Mission] Call Reinforcements: маяк '%s' — запрос %s"),
+		*Beacon->BeaconId.ToString(), bAccepted ? TEXT("принят") : TEXT("отклонён"));
+	return EStateTreeRunStatus::Succeeded;
 }

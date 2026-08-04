@@ -319,9 +319,37 @@ struct FTacticalTask_TutorialBeatInstanceData
 	/**
 	 * Страховка: не дождались события за столько секунд — играем реплику всё
 	 * равно. Иначе один несработавший сценарный выстрел вешал бы шаг навсегда.
+	 * Игнорируется при `bRequireTriggerEvent`.
 	 */
 	UPROPERTY(EditAnywhere, Category = "Tutorial|Триггер", meta = (ClampMin = "1"))
 	float TriggerTimeout = 25.f;
+
+	/**
+	 * Без события реплику НЕ играть вообще (страховочный таймаут выключен).
+	 *
+	 * Обучение ведёт игрока по сцене, и там реплика обязана прозвучать, даже
+	 * если постановка сорвалась. В бою наоборот: реакции вроде «Минус один» или
+	 * «Держись!» описывают то, чего может не случиться, — первого убийства
+	 * может не быть вовсе. Такая реплика, выданная по таймауту, врёт игроку.
+	 *
+	 * Ставится вместе со снятым `bConsideredForCompletion`: фоновая реакция ждёт
+	 * своё событие сколько угодно и не мешает состоянию завершиться.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Tutorial|Триггер")
+	bool bRequireTriggerEvent = false;
+
+	/**
+	 * После реплики задача остаётся Running и больше ничего не делает.
+	 *
+	 * Зачем: состояние с ОДНИМИ фоновыми репликами не имеет ни одной задачи,
+	 * учитываемой для завершения, и завершается сразу, как только первая из них
+	 * отговорит. Для родительского состояния миссии это означало бесконечный
+	 * перезапуск всего дерева — реплика Осы стартовала снова и снова
+	 * (прогон 2026-08-04). Реакция обязана «повиснуть» после своего одного раза:
+	 * состояние живёт, пока живут его дочерние шаги.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Tutorial|Триггер")
+	bool bKeepRunningAfterBeat = false;
 
 	UPROPERTY()
 	float ElapsedTime = 0.f;
@@ -610,5 +638,45 @@ struct XRU1_API FTacticalTask_ForceNextShot : public FStateTreeTaskCommonBase
 	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context,
 		const FStateTreeTransitionResult& Transition) const override;
 	virtual void ExitState(FStateTreeExecutionContext& Context,
+		const FStateTreeTransitionResult& Transition) const override;
+};
+
+// --- Вызов подкрепления (сценарный беат миссии) --------------------------------
+
+USTRUCT()
+struct FTacticalTask_CallReinforcementsInstanceData
+{
+	GENERATED_BODY()
+
+	/**
+	 * BeaconId маяка. Пусто — первый маяк на карте: на миссии с единственной
+	 * точкой высадки лишний идентификатор только плодит рассинхрон.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Reinforcements")
+	FName BeaconId;
+};
+
+/**
+ * Сценарный вызов подкрепления. Нужен там, где волна привязана к беату миссии
+ * («заряд снят — отход становится гонкой»), а не к просадке вражеской стороны.
+ *
+ * В XCOM 2 это тот же путь: `bKismetInitiatedReinforcements` — подкрепление,
+ * запрошенное скриптом уровня, а не расписанием. Сам маяк остаётся владельцем
+ * правил: он решает, не превышен ли лимит волн и когда именно высаживать.
+ */
+USTRUCT(meta = (DisplayName = "Call Reinforcements", Category = "XRU1 Mission"))
+struct XRU1_API FTacticalTask_CallReinforcements : public FStateTreeTaskCommonBase
+{
+	GENERATED_BODY()
+
+	FTacticalTask_CallReinforcements();
+
+	using FInstanceDataType = FTacticalTask_CallReinforcementsInstanceData;
+	virtual const UStruct* GetInstanceDataType() const override
+	{
+		return FInstanceDataType::StaticStruct();
+	}
+
+	virtual EStateTreeRunStatus EnterState(FStateTreeExecutionContext& Context,
 		const FStateTreeTransitionResult& Transition) const override;
 };

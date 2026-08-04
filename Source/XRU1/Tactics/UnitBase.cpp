@@ -4,6 +4,7 @@
 #include "CoverDetectionComponent.h"
 #include "CoverTuningDataAsset.h"
 #include "FogOfWarSubsystem.h"        // пересчёт видимости на подтверждённой смене состояния
+#include "TacticalQuestEvents.h"      // падение бойца — доменный факт для реплики медика
 #include "FogRevealableComponent.h"   // владелец скрытия презентации юнита
 #include "GA_Attack.h"
 #include "GA_Overwatch.h"
@@ -1330,6 +1331,15 @@ void AUnitBase::SetDowned(bool bNewDowned, float ReviveHealth, bool bPlaySound)
 	}
 	// Тяжелораненый лежит без шкалы; поднятый медиком получает её обратно.
 	SetOverheadHUDVisible(!bIsDowned);
+
+	// Боец отряда УПАЛ — доменный факт для реплики медика. Именно падение, а не
+	// любое попадание: «Держись! Иду» на царапину звучит нелепо, а на лежащем
+	// бойце — ровно по делу (фидбэк прогона 2026-08-04).
+	if (bIsDowned && GetGenericTeamId().GetId() == TacticsTeamIds::Player)
+	{
+		UTacticalQuestEvents::BroadcastQuestEvent(
+			this, TacticalQuestTags::Event_Tactical_Combat_Squad_Downed, this);
+	}
 	// Падение/подъём меняет состав источников зрения (`IsUnitAlive` ложна для
 	// Downed), а для врага — ещё и правило «тела видимы всегда».
 	if (UFogOfWarSubsystem* Fog = UFogOfWarSubsystem::Get(this))

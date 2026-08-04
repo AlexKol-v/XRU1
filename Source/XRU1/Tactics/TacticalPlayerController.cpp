@@ -1366,6 +1366,43 @@ bool ATacticalPlayerController::CanIssueCommandLogged(ETacticalPlayerCommand Com
 		static_cast<int32>(TargetingMode),
 		UTutorialActionGateSubsystem::AllowsAction(
 			this, TacticalCommandToTutorialAction(Command), SelectedUnit) ? 1 : 0);
+
+	// ОТКАЗ АТАКИ ОБЯЗАН НАЗЫВАТЬ ПРИЧИНУ ПО КАЖДОМУ ВРАГУ. Строки выше говорят
+	// только «условия свободны, но целей нет» — а игрок в этот момент ВИДИТ врага
+	// на экране и считает отказ багом (разбор лога 2026-08-04: 16 таких нажатий,
+	// все оказались честными — боец после перемещения сам закрылся стеной, — но
+	// доказывать это пришлось перекрёстной сверкой с оценками целей AI).
+	// Печатаем ровно тот статус, которым `GetTargetStatus` решает допуск, плюс
+	// дистанцию и видимость отрядом: по этой строке сразу видно, чем «нет линии
+	// огня из этой позиции» отличается от «слишком далеко» и «его никто не видит».
+	if (Command == ETacticalPlayerCommand::Attack && SelectedUnit)
+	{
+		const UWorld* World = GetWorld();
+		const UTurnManagerSubsystem* TurnManager =
+			World ? World->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
+		if (TurnManager)
+		{
+			for (const AActor* Enemy : TurnManager->GetOpposingUnits(SelectedUnit))
+			{
+				if (!Enemy || !UTacticsCombatStatics::IsUnitAlive(Enemy))
+				{
+					continue;
+				}
+				const EAttackTargetStatus Status = UGA_Attack::GetTargetStatus(SelectedUnit, Enemy);
+				UE_LOG(LogXRU1Quest, Display,
+					TEXT("[Command]   %s → %s: %s, дистанция=%.0f, видит отряд=%d"),
+					*GetNameSafe(SelectedUnit), *GetNameSafe(Enemy),
+					Status == EAttackTargetStatus::Valid ? TEXT("МОЖНО СТРЕЛЯТЬ")
+						: Status == EAttackTargetStatus::NoLineOfSight ? TEXT("нет линии огня из этой позиции")
+						: Status == EAttackTargetStatus::OutOfRange ? TEXT("слишком далеко")
+						: Status == EAttackTargetStatus::OutOfSight ? TEXT("вне собственного обзора, прицела отряда нет")
+						: Status == EAttackTargetStatus::Dead ? TEXT("мертва/не в бою")
+						: TEXT("не враг"),
+					FVector::Dist(SelectedUnit->GetActorLocation(), Enemy->GetActorLocation()),
+					IsVisibleToSquad(Enemy) ? 1 : 0);
+			}
+		}
+	}
 	return false;
 }
 
@@ -2351,7 +2388,24 @@ bool ATacticalPlayerController::IsTutorialBeatBlockingInput() const
 {
 	const UTutorialPresentationSubsystem* Presentation = GetWorld()
 		? GetWorld()->GetSubsystem<UTutorialPresentationSubsystem>() : nullptr;
-	return Presentation && Presentation->IsBeatActive();
+	if (!Presentation || !Presentation->IsBeatActive())
+	{
+		return false;
+	}
+
+	// Останавливать игру на время реплики — свойство СЦЕНАРИЯ, а не такта.
+	// Обучение ведёт игрока: следующий шаг не имеет права начаться, пока
+	// «Купол» не договорил. Боевая миссия наоборот — игрок ходит сразу, реплики
+	// только комментируют бой; блокировка там читается как зависание
+	// (прогон 2026-08-04: субтитр Осы и «ничего нельзя сделать»).
+	if (const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>())
+	{
+		if (const UTacticalScenarioDataAsset* Scenario = GameInstance->GetActiveScenario())
+		{
+			return Scenario->bBeatsBlockInput;
+		}
+	}
+	return true; // прямой PIE старых карт сохраняет прежнее поведение
 }
 
 bool ATacticalPlayerController::TrySkipTutorialBeat()
@@ -2826,8 +2880,14 @@ FTacticalMovePreview ATacticalPlayerController::GetMovePreviewAt(const FVector& 
 			continue;
 		}
 
-		// «Простреливает» = есть линия огня в пределах дальности. Тот же
-		// предикат, что решает выстрел, — превью не может разойтись с боем.
+		// «Простреливает» = есть линия огня в пределах дальности.
+		//
+		// ⚠️ Здесь намеренно ВИДИМОСТЬ из произвольной точки, а не огневое
+		// решение (`FindFiringSolution`): точка ГИПОТЕТИЧЕСКАЯ — юнита там ещё
+		// нет, компонент укрытий её не зафиксировал, и огневые позиции у краёв
+		// для неё не строятся (`GetFiringPositions` даёт только центр вне текущей
+		// позиции юнита). Превью отвечает на вопрос «увижу/увидят ли меня там»,
+		// допуск конкретного выстрела решает `UGA_Attack::GetTargetStatus`.
 		const bool bInRange = FVector::Dist(FloorPoint, Enemy->GetActorLocation()) <= SelectedUnit->AttackRange;
 		if (!bInRange ||
 			!UTacticsCombatStatics::HasLineOfSightFromLocation(World, EyeAtPoint, Enemy, SelectedUnit))
@@ -2896,7 +2956,17 @@ void ATacticalPlayerController::HandleFogVisibilityChanged(AActor* Actor, bool b
 		// (`XComCamera.ini: FirstSightedDelay = 0.75`), и обнаружение читается как
 		// событие, а не проскакивает между шагами. Один раз на врага за бой —
 		// повторные появления того же противника акцента не заслуживают.
-		if (FirstSightedDelay > 0.f && UTacticsCombatStatics::IsUnitAlive(Actor) &&
+		// ⚠️ Только в идущем бою. Первый пересчёт тумана проходит ДО `StartCombat`,
+		// и на нём каждый актор меняет состояние с «неизвестно» на фактическое —
+		// это инициализация кэша, а не обнаружение. Без гейта камера на нулевом
+		// кадре миссии уезжала к случайному врагу через всю карту и не отдавала
+		// кадр отряду («Focus → отряд ОТЛОЖЕН: камерой владеет режиссура такта»,
+		// прогон 2026-08-04).
+		const UTurnManagerSubsystem* TurnManager = GetWorld()
+			? GetWorld()->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
+		const bool bCombatRunning = TurnManager && TurnManager->IsInCombat();
+
+		if (bCombatRunning && FirstSightedDelay > 0.f && UTacticsCombatStatics::IsUnitAlive(Actor) &&
 			!UFogOfWarSubsystem::IsPlayerSideActor(Actor) &&
 			!FirstSightedEnemies.Contains(Actor) &&
 			!Camera->IsFramingShot() && !Camera->IsDirectorHolding())

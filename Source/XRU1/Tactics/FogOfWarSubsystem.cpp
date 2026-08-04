@@ -1,7 +1,9 @@
 #include "FogOfWarSubsystem.h"
 
 #include "FogRevealableComponent.h"
+#include "TacticalQuestEvents.h" // первый визуальный контакт — доменное событие сценария
 #include "TacticsCombatStatics.h"
+#include "TacticsTypes.h"
 #include "TurnManagerSubsystem.h"
 #include "UnitBase.h"
 #include "XRU1Log.h"
@@ -179,6 +181,9 @@ void UFogOfWarSubsystem::ResetForScenario(FName ScenarioId, int32 RunId)
 
 	VisibilityCache.Reset();
 	VisibleEnemies.Reset();
+	// «Первый контакт» — факт ОДНОГО запуска: retry обязан проговорить реплику
+	// заново, иначе второй заход по той же карте пройдёт молча.
+	SpottedEnemies.Reset();
 	Revealables.RemoveAllSwap([](const TWeakObjectPtr<UFogRevealableComponent>& Entry)
 	{
 		return !Entry.IsValid();
@@ -459,6 +464,32 @@ void UFogOfWarSubsystem::RecomputeNow(const TCHAR* Reason, bool bRoutine)
 	for (const TPair<AActor*, bool>& Change : PendingBroadcasts)
 	{
 		OnActorVisibilityChanged.Broadcast(Change.Key, Change.Value);
+
+		// Первый визуальный контакт с врагом — доменный факт сценария, а не
+		// только смена картинки: на нём висит реплика «Нас увидели». Публикуем
+		// ЗДЕСЬ, потому что здесь и принимается решение о видимости; квест
+		// получает его из единственного источника правды, как и HUD.
+		//
+		// ⚠️ Только В БОЮ. Первый пересчёт идёт из `StartMissionCombat` ДО
+		// `StartCombat`, и на нём КАЖДЫЙ актор меняет состояние с «неизвестно» на
+		// фактическое. Это инициализация кэша, а не обнаружение: без гейта
+		// реплика «Нас увидели» звучала на нулевом кадре миссии
+		// (прогон 2026-08-04).
+		const UTurnManagerSubsystem* Turns = GetWorld()
+			? GetWorld()->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
+		const bool bCombatRunning = Turns && Turns->IsInCombat();
+
+		if (Change.Value && Change.Key && bCombatRunning &&
+			!SpottedEnemies.Contains(Change.Key))
+		{
+			const AUnitBase* Unit = Cast<AUnitBase>(Change.Key);
+			if (Unit && Unit->GetGenericTeamId().GetId() == TacticsTeamIds::Enemy)
+			{
+				SpottedEnemies.Add(Change.Key);
+				UTacticalQuestEvents::BroadcastQuestEvent(
+					this, TacticalQuestTags::Event_Tactical_Combat_Enemy_Spotted, Change.Key);
+			}
+		}
 	}
 
 	// Пересчёт состоялся — даже если ни один актор не сменил видимость. Наблюдатели
