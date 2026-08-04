@@ -53,6 +53,11 @@ Fix Up Redirectors и сохранением ссылающихся карт (п
    для Half и 150 см для Full, высота считается от пола.
 10. Mission actors (`ABombObjective`, `AEvacZone`) находятся только в mission
     sublevel; tutorial zones/staged actors — только в tutorial sublevel.
+11. Группы врагов, зависящие от сложности, и подкрепления ставятся акторами
+    `ATacticalEncounter` / `ATacticalReinforcementBeacon` (поля и рецепт —
+    [16 §5.5](16_MISSION01_ASSEMBLY.md)). Расстановка проверяется командой
+    `xru1.Mission.Validate`: она печатает дистанции по навмешу сразу в ходах,
+    поды, маршруты и предупреждения.
 
 Не размещать `BP_TacticalCameraPawn` вручную: его создаёт `GM_Tactics` как
 Default Pawn в точке `PlayerStart`.
