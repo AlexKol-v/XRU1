@@ -167,6 +167,18 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Overwatch", meta = (ClampMin = "0"))
 	float ReactionMinTravel = 50.f;
 
+	/** Живо ли замороженное решение — та же проверка, что на commit реакции. */
+	virtual bool IsFrozenPresentationSolutionValid() const override
+	{
+		return IsFrozenReactionCommitValid();
+	}
+
+	/** Отмена транзакции реакции из общей фазы презентации. */
+	virtual bool AbortPresentation(const FGuid& InActionId) override
+	{
+		return AbortReactionAction(InActionId);
+	}
+
 	/** Удержание кадра реакции: убитая цель держится дольше живой. */
 	virtual float GetPresentationHoldDelay(const FGuid& ActionId) const override;
 

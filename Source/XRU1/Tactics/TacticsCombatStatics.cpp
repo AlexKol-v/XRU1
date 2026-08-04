@@ -383,6 +383,17 @@ bool UTacticsCombatStatics::ResolveShotMechanics(AActor* Shooter, AActor* Target
 			TacticalQuestTags::Event_Tactical_Combat_Enemy_Eliminated, Shooter, Target);
 	}
 
+	// Ранение бойца отряда — тоже доменный факт: на нём висит реплика медика
+	// («Держись! Иду…»). Публикуется здесь же, из подтверждённого урона, а не по
+	// событию здоровья: важен именно результат выстрела. Смерть и тяжёлое
+	// ранение — другие факты, у них свои каналы, поэтому условие требует живого.
+	if (bHit && IsUnitAlive(Target) && !IsUnitDowned(Target) &&
+		UTacticalQuestEvents::IsPlayerSideUnit(Target, Target))
+	{
+		UTacticalQuestEvents::BroadcastQuestEventEx(Target,
+			TacticalQuestTags::Event_Tactical_Combat_Squad_Wounded, Target, Shooter);
+	}
+
 	return bHit;
 }
 
@@ -975,11 +986,20 @@ void UTacticsCombatStatics::GetViableFiringPositions(const AActor* Shooter, cons
 EFiringStance UTacticsCombatStatics::GetFiringStance(const AActor* Shooter, const AActor* Target,
 	FVector& OutFiringEyeLocation)
 {
+	EFiringStance Stance = EFiringStance::Open;
+	FindFiringSolution(Shooter, Target, OutFiringEyeLocation, Stance);
+	return Stance;
+}
+
+bool UTacticsCombatStatics::FindFiringSolution(const AActor* Shooter, const AActor* Target,
+	FVector& OutFiringEyeLocation, EFiringStance& OutStance)
+{
+	OutStance = EFiringStance::Open;
 	OutFiringEyeLocation = Shooter ? Shooter->GetActorLocation() : FVector::ZeroVector;
 	const UWorld* World = Shooter ? Shooter->GetWorld() : nullptr;
 	if (!Shooter || !Target || !World)
 	{
-		return EFiringStance::Open;
+		return false;
 	}
 
 	const UCoverTuningDataAsset* Tuning = GetCoverTuning(World);
@@ -987,13 +1007,6 @@ EFiringStance UTacticsCombatStatics::GetFiringStance(const AActor* Shooter, cons
 	OutFiringEyeLocation = EyeLocation; // фолбэк — центр глаз, если LOS нет вообще
 
 	const FVector TargetLocation = Target->GetActorLocation();
-
-	// Точки цели — общий набор GetTargetExposedPoints. Прежние «глаза/корпус»
-	// не видели цель, выглядывающую из-за полного укрытия: стойка не находила
-	// НИ ОДНОЙ позиции, молча падала в Open с центральным глазом — и commit
-	// честно отклонял слепое решение. Отсюда вечный цикл выстрела AI.
-	TArray<FVector, TInlineAllocator<4>> TargetPoints;
-	GetTargetExposedPoints(World, Target, EyeLocation, TargetPoints);
 
 	const FCollisionObjectQueryParams& ObjectParams = GetShotGeometryObjects();
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(FiringStance), /*bTraceComplex=*/false);
@@ -1004,24 +1017,117 @@ EFiringStance UTacticsCombatStatics::GetFiringStance(const AActor* Shooter, cons
 		return !World->SweepSingleByObjectType(Hit, From, To, FQuat::Identity, ObjectParams, Sphere, Params);
 	};
 
+	// СВОЁ УКРЫТИЕ В СТОРОНУ ЦЕЛИ — нужно ровно для одного решения: высокую стену
+	// нельзя «перестрелять сверху», из-за неё выходят краем.
+	//
+	// ⚠️ ЗДЕСЬ НЕЛЬЗЯ звать GetCoverAgainst — это бесконечная рекурсия:
+	// GetCoverAgainst сам спрашивает GetFiringStance, чтобы узнать, ОТКУДА
+	// реально прилетит выстрел. Разрыв цикла осмысленный, а не технический:
+	// стойка — вопрос о СОБСТВЕННОЙ позе стрелка («стою ли я за своей стеной в
+	// сторону цели»), а GetCoverAgainst отвечает на другой вопрос — про фланг,
+	// то есть дойдёт ли конкретный выстрел.
+	const UCoverDetectionComponent* ActiveCover =
+		Shooter->FindComponentByClass<UCoverDetectionComponent>();
+	// Ответ один на весь вызов (стена и цель за перебор не меняются), а спрашивают
+	// его до трёх раз — центр, step-up, корпус. Мемоизация, а не три трейса.
+	TOptional<ECoverType> CachedOwnCover;
+	auto TraceOwnCoverTowardsTarget = [&]() -> ECoverType
+	{
+		if (CachedOwnCover.IsSet())
+		{
+			return CachedOwnCover.GetValue();
+		}
+		// Нет активной стены — трейсить нечего: MatchesActiveCoverHit всё равно
+		// не подтвердит попадание, а запрос стоит денег на каждом опросе HUD/AI.
+		if (!ActiveCover || ActiveCover->BestCoverAround == ECoverType::None)
+		{
+			CachedOwnCover = ECoverType::None;
+			return ECoverType::None;
+		}
+		float ShooterHalfHeight = 88.f;
+		if (const ACharacter* ShooterCharacter = Cast<ACharacter>(Shooter))
+		{
+			if (const UCapsuleComponent* Capsule = ShooterCharacter->GetCapsuleComponent())
+			{
+				ShooterHalfHeight = Capsule->GetScaledCapsuleHalfHeight();
+			}
+		}
+		const FVector ShooterFloor =
+			Shooter->GetActorLocation() - FVector(0.f, 0.f, ShooterHalfHeight);
+		// Стена дальше цели — не «моё укрытие в сторону цели» (тот же кламп
+		// «между», что и у GetCoverAgainst).
+		FHitResult CoverHit;
+		const ECoverType TracedCover = UCoverDetectionComponent::TraceCoverAtLocation(World,
+			ShooterFloor, (TargetLocation - Shooter->GetActorLocation()).GetSafeNormal2D(),
+			UCoverDetectionComponent::GetCoverTraceLength(Tuning, ShooterFloor, TargetLocation),
+			Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
+			Shooter, Tuning->LosSphereRadius, &CoverHit);
+		CachedOwnCover = ActiveCover->MatchesActiveCoverHit(CoverHit) ? TracedCover : ECoverType::None;
+		return CachedOwnCover.GetValue();
+	};
+
+	// ОЧЕВИДНЫЕ ТОЧКИ ЦЕЛИ — её глаза и корпус. Они входят в ЛЮБОЙ
+	// exposed-набор `GetTargetExposedPoints`, откуда бы он ни строился, поэтому
+	// чистый свип до любой из них — достаточное условие: полная проверка тоже
+	// пройдёт. Это «быстрое ДА», которое экономит построение пик-набора цели
+	// (nav-проекции + капсульные свипы по краям её укрытия).
+	const FVector ObviousTargetPoints[2] = {
+		TargetLocation + FVector(0.f, 0.f, Tuning->EyeHeightOffset),
+		TargetLocation - FVector(0.f, 0.f, 20.f)
+	};
+	auto SeesTargetFrom = [&](const FVector& From)
+	{
+		for (const FVector& Point : ObviousTargetPoints)
+		{
+			if (SphereClear(From, Point))
+			{
+				return true;
+			}
+		}
+		// Цель прячется — теперь без её пик-набора не обойтись. Предикат ТОТ ЖЕ,
+		// что у commit-валидации: позиция принимается, только если из неё выстрел
+		// реально пройдёт проверку (см. FindFiringSolution в .h).
+		return HasLineOfSightFromFrozenOrigin(World, From, Target);
+	};
+
+	// БЫСТРЫЙ ПУТЬ: центр глаз против очевидных точек цели. Центр — позиция 0
+	// полного перебора ниже, и решение для неё считается теми же двумя правилами,
+	// поэтому итог совпадает. Экономит целиком построение огневых позиций СТРЕЛКА
+	// (nav-проекции и капсульные свипы по краям его укрытия). Это важно: предикат
+	// зовётся на каждом опросе HUD (наведение, подсветка целей) и в оценке целей
+	// AI по всем врагам.
+	for (const FVector& Point : ObviousTargetPoints)
+	{
+		if (!SphereClear(EyeLocation, Point))
+		{
+			continue;
+		}
+		if (TraceOwnCoverTowardsTarget() == ECoverType::Full)
+		{
+			break; // высокая стена: центр не годится — ищем край полным перебором
+		}
+		OutFiringEyeLocation = EyeLocation;
+		OutStance = IsUnitInCoverPose(Shooter) ? EFiringStance::OverCover : EFiringStance::Open;
+		return true;
+	}
+
 	TArray<FVector, TInlineAllocator<4>> Positions;
 	GetFiringPositions(World, Shooter, EyeLocation, TargetLocation, Positions);
 
-	// Порядок в Positions: центр → быстрый step-out → края. Первая позиция с
-	// линией огня и определяет стойку (§III.3): центр → OverCover/Open, иначе StepOut.
+	// Корпусная точка стрелка — зеркало корпуса цели из GetTargetExposedPoints
+	// (Ф5). Без неё наборы направлений несимметричны: «стрелок.глаза → враг.корпус»
+	// проходило, а «враг.глаза → стрелок.корпус» — нет, и боец на склоне стрелял
+	// в того, кто ответить не мог. Идёт ПОСЛЕДНЕЙ: выйти краем лучше, чем бить от
+	// бедра. Классифицируется как центр (та же XY) — стойка по позе, не StepOut.
+	Positions.Add(EyeLocation - FVector(0.f, 0.f, Tuning->EyeHeightOffset + 20.f));
+
+	// Порядок в Positions: центр → быстрый step-out → края → корпус. Первая
+	// позиция с линией огня и определяет стойку (§III.3).
 	EFiringStance Stance = EFiringStance::Open;
+	bool bFound = false;
 	for (int32 i = 0; i < Positions.Num(); ++i)
 	{
-		bool bClear = false;
-		for (const FVector& Point : TargetPoints)
-		{
-			if (SphereClear(Positions[i], Point))
-			{
-				bClear = true;
-				break;
-			}
-		}
-		if (!bClear)
+		if (!SeesTargetFrom(Positions[i]))
 		{
 			continue;
 		}
@@ -1032,35 +1138,7 @@ EFiringStance UTacticsCombatStatics::GetFiringStance(const AActor* Shooter, cons
 		const bool bIsStepUp = i > 0 && FVector::Dist2D(Positions[i], EyeLocation) < 1.f;
 		if (i == 0 || bIsStepUp)
 		{
-			// ⚠️ ЗДЕСЬ НЕЛЬЗЯ звать GetCoverAgainst — это бесконечная рекурсия:
-			// GetCoverAgainst сам спрашивает GetFiringStance, чтобы узнать,
-			// ОТКУДА реально прилетит выстрел. Разрыв цикла осмысленный, а не
-			// технический: стойка — вопрос о СОБСТВЕННОЙ позе стрелка («стою ли я
-			// за своей стеной в сторону цели»), а GetCoverAgainst отвечает на
-			// другой вопрос — про фланг, то есть дойдёт ли конкретный выстрел.
-			float ShooterHalfHeight = 88.f;
-			if (const ACharacter* ShooterCharacter = Cast<ACharacter>(Shooter))
-			{
-				if (const UCapsuleComponent* Capsule = ShooterCharacter->GetCapsuleComponent())
-				{
-					ShooterHalfHeight = Capsule->GetScaledCapsuleHalfHeight();
-				}
-			}
-			const FVector ShooterFloor =
-				Shooter->GetActorLocation() - FVector(0.f, 0.f, ShooterHalfHeight);
-			// Стена дальше цели — не «моё укрытие в сторону цели» (тот же кламп
-			// «между», что и у GetCoverAgainst).
-			FHitResult CoverHit;
-			const ECoverType TracedCover = UCoverDetectionComponent::TraceCoverAtLocation(World,
-				ShooterFloor, (TargetLocation - Shooter->GetActorLocation()).GetSafeNormal2D(),
-				UCoverDetectionComponent::GetCoverTraceLength(Tuning, ShooterFloor, TargetLocation),
-				Tuning->HalfCoverHeight, Tuning->FullCoverHeight,
-				Shooter, Tuning->LosSphereRadius, &CoverHit);
-			const UCoverDetectionComponent* ActiveCover =
-				Shooter->FindComponentByClass<UCoverDetectionComponent>();
-			const ECoverType Cover = ActiveCover && ActiveCover->MatchesActiveCoverHit(CoverHit)
-				? TracedCover
-				: ECoverType::None;
+			const ECoverType Cover = TraceOwnCoverTowardsTarget();
 			if (Cover == ECoverType::Full)
 			{
 				// Высокую стену нельзя «перестрелять сверху» crouched-монтажом.
@@ -1069,13 +1147,23 @@ EFiringStance UTacticsCombatStatics::GetFiringStance(const AActor* Shooter, cons
 				continue;
 			}
 			OutFiringEyeLocation = Positions[i];
-			Stance = (Cover == ECoverType::Half) ? EFiringStance::OverCover : EFiringStance::Open;
+			// ⚠️ Стойка решается ПОЗОЙ бойца, а не направлением его стены.
+			// Прежнее правило смотрело только на `Cover` — укрытие МЕЖДУ стрелком и
+			// целью: боец, сидящий за стеной, которая смотрит вбок или назад,
+			// получал `Open` («стреляй с места, вставать незачем») и выпускал
+			// очередь СИДЯ, потому что стрелковый montage анимирован стоя, а поза
+			// оставалась `Crouch`/`High` (лог PIE 2026-08-04: 18 выстрелов из 43 —
+			// `[FireCommit] … поза=2/3`). Отдельного клипа стрельбы из приседа нет и
+			// не планируется, поэтому единственная честная презентация из укрытия —
+			// подняться, довернуться, выстрелить (та же ветка, что у OverCover).
+			Stance = IsUnitInCoverPose(Shooter) ? EFiringStance::OverCover : EFiringStance::Open;
 		}
 		else
 		{
 			OutFiringEyeLocation = Positions[i];
 			Stance = EFiringStance::StepOut;
 		}
+		bFound = true;
 		break;
 	}
 
@@ -1083,12 +1171,33 @@ EFiringStance UTacticsCombatStatics::GetFiringStance(const AActor* Shooter, cons
 	if (CVarLOSDebug.GetValueOnAnyThread() > 0)
 	{
 		static const TCHAR* StanceNames[] = { TEXT("Open"), TEXT("OverCover"), TEXT("StepOut") };
-		UE_LOG(LogXRU1Combat, Log, TEXT("[LOS] Stance %s -> %s: positions=%d stance=%s"),
+		UE_LOG(LogXRU1Combat, Log, TEXT("[LOS] Stance %s -> %s: positions=%d stance=%s решение=%d"),
 			*GetNameSafe(Shooter), *GetNameSafe(Target), Positions.Num(),
-			StanceNames[static_cast<uint8>(Stance)]);
+			StanceNames[static_cast<uint8>(Stance)], bFound ? 1 : 0);
 	}
 #endif
-	return Stance;
+	OutStance = Stance;
+	return bFound;
+}
+
+bool UTacticsCombatStatics::IsUnitInCoverPose(const AActor* Unit)
+{
+	// Источник — тот же срез, что читает Anim Blueprint (`FUnitVisualState`):
+	// «сидит за полуукрытием» / «прижат к высокой стене». Спрашивать компонент
+	// укрытий напрямую здесь нельзя — он отвечает на другой вопрос («есть ли
+	// рядом стена»), а нам нужно ровно то, что игрок видит на экране.
+	//
+	// ⚠️ Ответ честный и мгновенный: боец, которого презентация уже подняла
+	// (`SetPresentationStanding`), НЕ в позе укрытия. Переигрывать стойку это не
+	// может — она заморожена в `FTacticalFireActionContext` на Begin, а
+	// оставшиеся во время презентации потребители (камера, расчёт укрытия) берут
+	// у решения только точку выстрела.
+	if (const AUnitBase* UnitBase = Cast<AUnitBase>(Unit))
+	{
+		const EUnitPose Pose = UnitBase->GetVisualState().Pose;
+		return Pose == EUnitPose::CrouchCover || Pose == EUnitPose::HighCover;
+	}
+	return false;
 }
 
 float UTacticsCombatStatics::GetAimDistanceModifier(const AUnitBase* Shooter, float Distance)

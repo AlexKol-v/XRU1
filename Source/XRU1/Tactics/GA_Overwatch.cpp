@@ -242,9 +242,14 @@ bool UGA_Overwatch::TryReactTo(AActor* Target)
 	// дальность оружия, линия огня) — тому же, что у игрока и у AI. Радиус
 	// перцепции шире дальности стрельбы: без этого юнит реагировал бы на цели,
 	// в которые физически не может попасть.
+	//
+	// ⚠️ Линия огня спрашивается ТОЛЬКО через `CanTargetActor` — второй,
+	// параллельной проверки здесь быть не должно. Прежний дубль
+	// (`HasLineOfSight`) отвечал на вопрос видимости, а не огневого решения:
+	// реакция запускалась по одному предикату, а замороженную точку выстрела
+	// потом отклонял другой («Reject invalid frozen solution», лог PIE 2026-08-04).
 	const AUnitBase* ShooterUnit = Cast<AUnitBase>(Avatar);
-	if (!ShooterUnit || !DamageEffect || !UGA_Attack::CanTargetActor(ShooterUnit, Target)
-		|| !UTacticsCombatStatics::HasLineOfSight(ShooterUnit, Target))
+	if (!ShooterUnit || !DamageEffect || !UGA_Attack::CanTargetActor(ShooterUnit, Target))
 	{
 		return false;
 	}

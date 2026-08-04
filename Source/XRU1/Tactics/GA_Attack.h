@@ -170,12 +170,34 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Tactics|Attack")
 	static float ComputeAttackHitChance(const AUnitBase* Shooter, const AActor* Target);
 
-	/** Точность юнита по цели до укрытия: BaseAim минус штраф Squadsight (если нет своей LOS). */
+	/** Точность юнита по цели до укрытия: BaseAim минус штраф Squadsight. */
 	static float ComputeEffectiveAim(const AUnitBase* Shooter, const AActor* Target);
+
+	/**
+	 * Выстрел идёт «по наводке отряда»: цель ДАЛЬШЕ собственного обзора бойца
+	 * (`SquadVisionRange`), а стрелок владеет Squadsight. ЕДИНОЕ определение для
+	 * трёх мест: допуск цели (`GetTargetStatus`), метка транзакции выстрела и
+	 * штраф к точности (GDD §5.4, −10). Геометрия линии огня сюда не входит —
+	 * она обязательна всегда и проверяется отдельно.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Attack")
+	static bool IsSquadsightShot(const AUnitBase* Shooter, const AActor* Target);
 
 public:
 	/** Остаток «кадр ещё доезжает» для этой атаки (см. PreShotCameraSettleDelay). */
 	virtual float GetCameraSettleRemaining(const FGuid& ActionId) const override;
+
+	/** Живо ли замороженное решение — та же проверка, что на activation и commit. */
+	virtual bool IsFrozenPresentationSolutionValid() const override
+	{
+		return IsFrozenFireCommitValid();
+	}
+
+	/** Отмена транзакции атаки из общей фазы презентации. */
+	virtual bool AbortPresentation(const FGuid& InActionId) override
+	{
+		return AbortFireAction(InActionId);
+	}
 
 	/** Удержание кадра после выстрела: убитая цель держится дольше живой. */
 	virtual float GetPresentationHoldDelay(const FGuid& ActionId) const override;

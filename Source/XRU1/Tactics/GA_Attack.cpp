@@ -37,6 +37,17 @@ UGA_Attack::UGA_Attack()
 	DamageEffect = UGE_ShotDamage::StaticClass();
 }
 
+bool UGA_Attack::IsSquadsightShot(const AUnitBase* Shooter, const AActor* Target)
+{
+	// ЕДИНОЕ определение «стреляю по наводке отряда»: цель дальше СОБСТВЕННОГО
+	// обзора бойца. Оно же решает допуск цели в GetTargetStatus, оно же метит
+	// транзакцию выстрела, оно же начисляет штраф к точности — три места с
+	// одинаковым условием разъезжались бы при первой же правке.
+	return Shooter && Target && Shooter->bHasSquadsight
+		&& FVector::Dist(Shooter->GetActorLocation(), Target->GetActorLocation())
+			> UTacticsCombatStatics::SquadVisionRange;
+}
+
 float UGA_Attack::ComputeEffectiveAim(const AUnitBase* Shooter, const AActor* Target)
 {
 	if (!Shooter)
@@ -70,10 +81,16 @@ float UGA_Attack::ComputeEffectiveAim(const AUnitBase* Shooter, const AActor* Ta
 			Aim -= Tuning->HeightAdvantageAimBonus;
 		}
 
-		// 3) Squadsight-выстрел без собственной LOS — штраф. Берём из CDO
-		// способности атаки ЭТОГО юнита: HUD и выстрел считают одно и то же
-		// даже при перенастроенном BP-наследнике GA_Attack.
-		if (!UTacticsCombatStatics::HasLineOfSight(Shooter, Target))
+		// 3) Squadsight-выстрел — штраф (GDD §5.4: «цель дальше собственного
+		// обзора, обнаружена союзником» = −10). Берём из CDO способности атаки
+		// ЭТОГО юнита: HUD и выстрел считают одно и то же даже при
+		// перенастроенном BP-наследнике GA_Attack.
+		//
+		// ⚠️ Условие — ДИСТАНЦИЯ, а не `!HasLineOfSight`. На отсутствии линии огня
+		// эта ветка была недостижима: `ComputeEffectiveAim` зовётся только после
+		// `CanTargetActor`, а тот требует геометрию ВСЕГДА (сквозь стены не
+		// стреляет никто) — штраф не применялся ни разу, вопреки GDD.
+		if (IsSquadsightShot(Shooter, Target))
 		{
 			const UGA_Attack* AttackCDO = nullptr;
 			if (Shooter->AttackAbilityClass && Shooter->AttackAbilityClass->IsChildOf(UGA_Attack::StaticClass()))
@@ -123,7 +140,17 @@ EAttackTargetStatus UGA_Attack::GetTargetStatus(const AUnitBase* Shooter, const 
 	// Геометрическая линия огня обязательна ВСЕГДА — сквозь стены не стреляет
 	// никто (модель XCOM 2). Squadsight ниже расширяет только ОБНАРУЖЕНИЕ,
 	// а не геометрию.
-	if (!UTacticsCombatStatics::HasLineOfSight(Shooter, Target))
+	//
+	// ⚠️ Спрашиваем именно ОГНЕВОЕ РЕШЕНИЕ (`FindFiringSolution`), а не видимость
+	// (`HasLineOfSight`). Это тот же перебор, который потом даст замороженную
+	// точку выстрела, и та же проверка, которой activation отклоняет действие, —
+	// одна истина на HUD, AI и активацию. Пока здесь стояла видимость, её более
+	// широкий набор точек (корпус стрелка, быстрый путь без огневых позиций)
+	// показывал игроку шанс на выстрел, который activation тут же отклонял
+	// («Reject at activation: из замороженной позиции нет линии огня»).
+	FVector FiringEye = FVector::ZeroVector;
+	EFiringStance Stance = EFiringStance::Open;
+	if (!UTacticsCombatStatics::FindFiringSolution(Shooter, Target, FiringEye, Stance))
 	{
 		return EAttackTargetStatus::NoLineOfSight;
 	}
@@ -134,7 +161,7 @@ EAttackTargetStatus UGA_Attack::GetTargetStatus(const AUnitBase* Shooter, const 
 	// но никогда — по тем, кого не видит никто.
 	if (Distance > UTacticsCombatStatics::SquadVisionRange)
 	{
-		if (!Shooter->bHasSquadsight ||
+		if (!IsSquadsightShot(Shooter, Target) ||
 			!UTacticsCombatStatics::SquadHasLineOfSight(Shooter, Target))
 		{
 			return EAttackTargetStatus::OutOfSight;
@@ -264,9 +291,7 @@ void UGA_Attack::ActivateAbility(
 
 	// Squadsight-выстрел = цель дальше собственного обзора (обнаружена союзником);
 	// геометрию и союзную видимость уже гарантировал GetTargetStatus выше.
-	const bool bUsedSquadsight = Shooter->bHasSquadsight &&
-		FVector::Dist(Shooter->GetActorLocation(), Target->GetActorLocation())
-			> UTacticsCombatStatics::SquadVisionRange;
+	const bool bUsedSquadsight = IsSquadsightShot(Shooter, Target);
 	FireAction.Begin(Shooter, Target, FiringEyeLocation, ResolvedHitChance,
 		ResolvedDamage, Shooter->AttackRange, DamageEffect, ActionPointsBefore);
 	const UCoverDetectionComponent* Cover = Shooter->GetCoverDetection();

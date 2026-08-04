@@ -150,7 +150,14 @@ private:
 	{
 		if (UTacticalAbility* OwnerAbility = Ability.Get())
 		{
-			OwnerAbility->NotifyPresentationMontageStarting(ActionId);
+			if (!OwnerAbility->NotifyPresentationMontageStarting(ActionId))
+			{
+				// Решение протухло, пока ехал кадр (цель ушла за стену). Ветка НЕ
+				// продолжается: иначе боец отыграл бы вскидывание и выстрел, а
+				// commit отклонил бы его уже после анимации.
+				Response.DoneIf(true);
+				return;
+			}
 		}
 		Response.FinishAndTriggerIf(true, ExecutionFunction, OutputLink, CallbackTarget);
 	}
@@ -447,21 +454,59 @@ void UTacticalAbility::EnsureFacingAtCommit(const FGuid& ActionId)
 		/*bPlayTurnAnimation=*/false, /*TurnRateOverride=*/0.f, /*MinAngleOverride=*/181.f);
 }
 
-void UTacticalAbility::NotifyPresentationMontageStarting(const FGuid& ActionId)
+bool UTacticalAbility::NotifyPresentationMontageStarting(const FGuid& ActionId)
 {
 	const FTacticalFireActionContext* Action = GetPresentationAction(ActionId);
 	AUnitBase* Shooter = Action ? Cast<AUnitBase>(Action->Shooter.Get()) : nullptr;
-	if (Action && Shooter && Action->FiringStance == EFiringStance::OverCover)
+	if (!Action || !Shooter)
+	{
+		return false;
+	}
+
+	// ПОСЛЕДНЯЯ ТОЧКА, ГДЕ ОТКАЗ ЕЩЁ БЕСПЛАТЕН. Между активацией и стартом
+	// анимации проходит наводка камеры (а у реакции — ещё и окно slow-mo, за
+	// которое цель успевает уйти за стену). Раньше проверка стояла только на
+	// самом `FireCommit`: боец вскидывался, стрелял — и лишь тогда решение
+	// отклонялось («[ReactionAction] Reject invalid frozen solution», лог PIE
+	// 2026-08-04). Отказ ДО montage выглядит как несостоявшийся выстрел, а не
+	// как выстрел в никуда.
+	//
+	// ⚠️ КРОМЕ StepOut. Там боец УЖЕ вышел из укрытия, и возврат живёт в
+	// BP-ветке за montage (`Return from Step Out` → `Set Actor Location` +
+	// `Hug Cover`); `AbortPresentation` его не отыграет — транзакцию закроет, а
+	// боец останется стоять в чистом поле. Для этой стойки отказ уже НЕ бесплатен,
+	// поэтому решение проверяется по-старому — на самом `FireCommit`.
+	if (Action->FiringStance != EFiringStance::StepOut
+		&& !IsFrozenPresentationSolutionValid())
+	{
+		UE_LOG(LogTacticsPresentation, Warning,
+			TEXT("[Presentation] %s: решение протухло до старта montage (цель ушла из линии огня) — анимация не играется, id=%s"),
+			*GetNameSafe(Shooter), *ActionId.ToString(EGuidFormats::Digits));
+		AbortPresentation(ActionId);
+		return false;
+	}
+
+	if (Action->FiringStance == EFiringStance::OverCover)
 	{
 		// Отсчёт пошёл от реального старта анимации подъёма — теперь «встал,
 		// довернулся, выстрелил» складывается в одно непрерывное движение.
 		ScheduleAimTurnAfterRise(ActionId, *Action, Shooter, GetNameSafe(Shooter));
+	}
 
-		// И держим бойца на ногах до конца удержания кадра: montage кончается
-		// вскоре после выстрела, а садиться он должен вместе с уходом камеры.
+	// НА НОГАХ ДО КОНЦА КАДРА — для ОБЕИХ стойек, которые стартуют из укрытия.
+	// Стрелковый montage анимирован стоя; пока поза оставалась `Crouch`/`High`,
+	// боец выпускал очередь сидя. У StepOut это било так же, как у OverCover:
+	// он добегал до огневой точки, компонент укрытий снова находил там стену,
+	// поза возвращалась в `Crouch` — и выстрел уходил из приседа (лог PIE
+	// 2026-08-04, выстрелы 4/22/38: `стойка=StepOut`, `[FireCommit] … поза=2/3`).
+	// Обратно боец садится вместе с уходом камеры — в ReleasePresentationStanding.
+	if (Action->FiringStance == EFiringStance::OverCover
+		|| Action->FiringStance == EFiringStance::StepOut)
+	{
 		Shooter->SetPresentationStanding(true);
 		StandingUnit = Shooter;
 	}
+	return true;
 }
 
 void UTacticalAbility::ReleasePresentationStanding()

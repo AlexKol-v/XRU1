@@ -210,13 +210,45 @@ public:
 
 	/**
 	 * Стойка выстрела и точка глаз, из которой стрелок реально стреляет (для
-	 * анимации Ф10 и превью Ф11). LOS из центра + half/full между стрелком и
-	 * целью и HalfCover → OverCover; FullCover никогда не даёт приседание над
-	 * стеной и продолжает поиск target-aware края → StepOut. LOS из центра без
-	 * укрытия → Open. Нет подходящего края/LOS → Open, точка = центр глаз.
+	 * анимации Ф10 и превью Ф11). Тонкая обёртка над `FindFiringSolution` для
+	 * мест, где «решения нет» и «решение из центра» обрабатываются одинаково
+	 * (камера, расчёт укрытия): решения нет → Open, точка = центр глаз.
 	 */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Combat")
 	static EFiringStance GetFiringStance(const AActor* Shooter, const AActor* Target, FVector& OutFiringEyeLocation);
+
+	/**
+	 * ЕДИНЫЙ ИСТОЧНИК ПРАВДЫ «может ли этот боец выстрелить в эту цель».
+	 *
+	 * Ищет ПЕРВУЮ огневую позицию (порядок GetFiringPositions: центр → step-up →
+	 * края укрытия), из которой есть линия огня хотя бы в одну exposed-точку цели,
+	 * и возвращает её вместе со стойкой. `false` — стрелять неоткуда.
+	 *
+	 * ⚠️ Зачем отдельно от `HasLineOfSight`. Та отвечает на вопрос ВИДИМОСТИ и
+	 * перебирает более широкий набор (в т.ч. корпусную точку стрелка, которой нет
+	 * среди огневых позиций). Пока «можно стрелять» решала она, а activation
+	 * проверял замороженную точку выстрела (`HasLineOfSightFromFrozenOrigin`),
+	 * истин было ДВЕ: HUD показывал шанс, игрок жал выстрел и получал
+	 * `[FireAction] Reject at activation: из замороженной позиции нет линии огня`
+	 * (лог PIE 2026-08-04, Assault→Marauder_12 дважды подряд), а AI на том же
+	 * расхождении терял ход целиком («цель заблокирована до конца хода»).
+	 * Теперь предикат доступности и точка выстрела приходят из ОДНОГО перебора.
+	 *
+	 * Стойка (см. `IsUnitInCoverPose`): решение из центра/step-up у бойца в позе
+	 * укрытия → `OverCover` (встать, довернуться, выстрелить), в открытом поле →
+	 * `Open`, боковой край → `StepOut`.
+	 */
+	static bool FindFiringSolution(const AActor* Shooter, const AActor* Target,
+		FVector& OutFiringEyeLocation, EFiringStance& OutStance);
+
+	/**
+	 * Боец ПРЯМО СЕЙЧАС сидит за полуукрытием или прижат к высокой стене — то
+	 * есть на экране он в позе укрытия, а не на ногах. Читает тот же
+	 * `FUnitVisualState`, что и Anim Blueprint: отдельного «анимационного»
+	 * определения укрытия быть не должно.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Combat")
+	static bool IsUnitInCoverPose(const AActor* Unit);
 
 	/**
 	 * ФЛАНГ (§III.4, Ф8): цель СТОИТ в укрытии «вообще» (BestCoverAround != None),
