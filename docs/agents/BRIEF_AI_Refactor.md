@@ -69,7 +69,7 @@ FAIContact { AActor* Target; FVector LastKnownLocation; float LastSeenTurn;
 
 Заполняется через `FAIStyleTuning` в трёх ассетах
 `/Game/XRU1Game/Data/AI/DA_AI_Easy | DA_AI_Medium | DA_AI_Hard`
-(единое дерево Data Assets — [../06_CONVENTIONS.md](../06_CONVENTIONS.md) §3).
+(единое дерево Data Assets — [../05_WORKFLOW.md](../05_WORKFLOW.md) §3).
 Их ещё нет; `BP_TacticsGameInstance.AIProfilesByDifficulty` пуст, поэтому
 сложность пока меняет только HP/Aim врагов.
 Ориентир — XCOM 2, где Rookie/Commander/Legend отличаются не меткостью, а

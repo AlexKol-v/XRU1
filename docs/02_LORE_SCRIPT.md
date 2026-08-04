@@ -258,3 +258,141 @@ v2.3: Оса делает две перебежки на новую позици
 - Статусы: «Наблюдение», «Оборона», «Тяжело ранен», «Провокация».
 - Контекст: «Обезвредить (F)», «Эвакуация (F)»; подтверждение: «Попадание: 65%».
 - Заблокированные приказы в чужую фазу: «Ход противника — ждите».
+
+---
+
+## 8. Как сценарий собран в ассетах
+
+Тексты выше — авторский источник. Ниже — куда они попали и как устроены обе
+собранные последовательности. Механизмы задач и Action Gate — в
+[03_ARCHITECTURE.md](03_ARCHITECTURE.md) §9.
+
+### 8.1 Обучение: конфигурация A1–D3 в `ST_Quest_Tutorial`
+
+Префикс `Quest.Event.Tactical.` опущен. У всех `Tactical Objective`
+`bRequireExactChannel = true`. В `Allowed Actions` `Camera` можно не указывать —
+gate её не блокирует никогда.
+
+| Состояние | Задачи и настройки |
+|---|---|
+| `A1_SelectAndCamera` | **Gate**: `[Select]`, юнит `Unit_Tutorial_Medic`.<br>**Obj 1** `Tutorial.A1.SelectMedic` — `Unit.Selected`, Source медик.<br>**Obj 2** `Tutorial.A1.CameraAdjusted` — `Camera.Adjusted` (требует WASD **и** Q/E **и** колесо) |
+| `A2_MoveOpen` | **Gate**: `[Move]`, точки `Move_A2_01/02`, Tolerance 300.<br>**Obj** `Movement.Settled.Open`, Count **2**, `DistinctSources = false` — это один боец дважды |
+| `A3_EndTurn` | **Gate**: `[EndTurn]`.<br>**Obj** `Turn.Ended`.<br>**Scripted Shot**: `Holo_A_OpenField` → медик, шанс **100**, урон **30** |
+| `A4_ExposedHit` | **Gate**: `bLockGameplayInput`.<br>**Obj** `Turn.Player.Started` |
+| `A5_FullCover` | **Gate**: `[Move]`, точка `Move_A5_Cover`.<br>**Obj** `Movement.Settled.InCover` |
+| `A6_SelfHeal` | **Gate**: `[ClassAbility]`, цель — сам медик.<br>**Obj** `Ability.Heal.Normal` |
+| `A7_CoverMiss` | **Gate**: `[EndTurn]`.<br>**Scripted Shot**: шанс **0**, урон 0.<br>**Obj** `Turn.Player.Started` |
+| `A8_ReturnFire` | **Gate**: `[Attack]`, цель `Holo_A_OpenField`.<br>**Obj 1** `Combat.Attack.Normal`.<br>**Obj 2** (пустой Id) `Combat.Enemy.Eliminated` |
+| `A9_ReviveAssault` | **Set Actor Active** `Unit_Tutorial_Assault` (Downed — флагом `bStartDowned`).<br>**Gate**: `[Move, ClassAbility, EndTurn]`.<br>**Obj** `Ability.Heal.Revive` |
+| `B1_EnterSector` | **Gate**: `[Select, Move]`, Танк и Оса.<br>**Obj** `Zone.Entered`, зона `QZ_B1_Sector`, Count **2**, `DistinctSources = true` |
+| `B2_TankAdvance` | **Gate**: `[Move]`, Танк, точки `Move_B2_01/02`.<br>**Obj** `Movement.Settled.InCover` |
+| `B3_Taunt` | **Gate**: `[ClassAbility]`, Танк.<br>**Obj** `Ability.Taunt.Activated` |
+| `B4_AbsorbShot` | **Gate**: `[EndTurn]`.<br>**Scripted Shot**: `Holo_B_Range` → Танк, 100 / **30** — провокация уполовинит урон своим GE, вручную занижать нельзя.<br>**Obj** `Turn.Player.Started` |
+| `B5_SquadsightKill` | **Gate**: `[Select, Attack]`, Оса, цель `Holo_B_Range`. `Move` **не разрешён**.<br>**Obj 1** `Combat.Attack.Squadsight`.<br>**Obj 2** `Combat.Enemy.Eliminated` |
+| `C1_Brief` | **Set Actor Active** `Holo_C_Cover`.<br>**Gate**: `bLockGameplayInput`.<br>**Tutorial Beat**: «Купол», фокус на `Holo_C_Cover` |
+| `C2_RunAndGun` | Родитель с **Gate**: `[Move, ClassAbility, Attack]`, Кадет, точки `Move_C2_01/02`. Дети по порядку: `Ability.RunAndGun.Activated` → `Movement.Settled.Open` ×2 (`DistinctSources = false`) → `Combat.Attack.Normal` + `Combat.Enemy.Eliminated` |
+| `D1_PrepareAmbush` | **Gate**: `[Select, Overwatch, Hunker, EndTurn]`.<br>**Obj 1** `Ability.Overwatch.Activated`, Count **2**, distinct.<br>**Obj 2** `Ability.Hunker.Activated`, Count **2**, distinct.<br>**Obj 3** `Turn.Ended` |
+| `D2_ReactionKill` | **Set Actor Active** `Holo_D_Overwatch`.<br>**Gate**: `bLockGameplayInput`.<br>**Obj 1** `Combat.Attack.Overwatch`.<br>**Obj 2** `Combat.Enemy.Eliminated` |
+| `D3_Evacuate` | **Set Actor Active** `Evac_Tutorial`.<br>**Gate**: `[Select, Move, Interact]`.<br>**Obj** `Objective.Evac.Unit`, Count **4**, distinct |
+| `WaitResult` | **Quest Wait Outcome**: `Scenario.Succeeded` / `Scenario.Failed`, exact в обоих |
+
+**Неочевидное, что легко сломать:**
+
+- **Пустой `ObjectiveId` = скрытое условие.** Задача считает события и удерживает
+  состояние, но не попадает в трекер HUD. Так оформлены «цель уничтожена» и прочие
+  постусловия, которых игрок не должен видеть отдельной строкой.
+- **`DistinctSources = false` в A2 и C2_Move**: там один боец делает два
+  перемещения, включённый флаг засчитал бы только первое.
+- **Две задачи в одном состоянии у A8/B5/C2/D2.** Смертельный выстрел публикует
+  `Combat.Attack.*` и `Combat.Enemy.Eliminated` в одном кадре; два последовательных
+  состояния второй тег потеряли бы.
+- **У B5 нет `Move` в gate.** Шаг проверяет именно Squadsight: подойдёт Оса и
+  получит свою LOS — канал станет `Combat.Attack.Normal`, и шаг не закроется.
+  Запрет делает ошибку невозможной, а не «непонятной».
+- **A3 и A7 разрешают `EndTurn`**, иначе автозавершение хода при нулевых AP тоже
+  заблокировано (оно идёт через тот же gate) и сценарный выстрел не состоится.
+
+### 8.2 Ограничения расстановки обучения
+
+Числа, из-за которых шаги ломаются, если их нарушить:
+
+- **HP голограмм.** Шаги A8, B5 и C3 требуют смерти голограммы **с одного
+  выстрела**, а Медик и Клин бьют на 25, Оса на 40. `BaseMaxHealth` —
+  `EditAnywhere`, ставится прямо на экземпляре: рекомендуемые HP 20, `BaseAim` 40,
+  `ShotDamage` 10. Отдельный BP-класс не нужен.
+- **`EndTurn` в gate шагов, пересекающих границу хода.** По AP-бюджету граница
+  неизбежна между A8 и A9 (атака завершает активацию Медика), между B2 и B3 и
+  внутри D3 (дорога до эвакуации длиннее одного хода). Без `EndTurn` шаг встанет
+  намертво.
+- **Порядок расхода лечения.** У `GA_Heal` ровно 2 применения на миссию, и оба
+  расписаны: A6 (себя) и A9 (подъём Клина). Третьего не будет.
+
+### 8.3 Mission01: дерево целей `ST_Quest_Mission01`
+
+Дерево содержит **только цели** — реакции живут в таблице реплик (§8.4):
+
+```text
+Root
+└── Mission01            пустая группа
+    ├── DefuseStep01     Objective: Defuse.Progressed → DefuseStep02
+    ├── DefuseStep02     Objective: Defuse.Completed  → EvacuateUnits
+    ├── EvacuateUnits    Objective: Evac.Unit         → ConfirmSquad
+    ├── ConfirmSquad     Objective: Evac.Squad        → WaitResult, Root
+    └── WaitResult       Quest Wait Outcome           → «Дерево составлено»
+```
+
+Терминальные переходы у `ConfirmSquad` и `WaitResult` **обязательны**: без них
+после закрытия последней цели дерево уходит на второй круг, и в лог попадает лишний
+`НАЧАТ Defuse.Progressed` уже после победы.
+
+Тексты трекера в HUD (`Description`):
+
+| Состояние | Текст |
+|---|---|
+| `DefuseStep01` | «Добраться до заряда и начать обезвреживание» |
+| `DefuseStep02` | «Завершить обезвреживание заряда» |
+| `EvacuateUnits` | «Отвести отряд в зону эвакуации» |
+| `ConfirmSquad` | пусто — скрытое условие |
+
+### 8.4 Mission01: таблица реплик боя
+
+`/Game/XRU1Game/Data/Missions/DA_Voice_Mission01` (`UMissionVoiceDataAsset`), ссылка
+в `DA_Scenario_Mission01.VoiceLines`. Проигрывает `UMissionVoiceDirectorSubsystem`.
+
+| Реплика | Кто | Канал | Правило |
+|---|---|---|---|
+| «Наблюдаю „Ржавых“. Много…» | Оса | `Scenario.Ready` | 1 раз |
+| «Нас увидели. Работаем.» | Молот | `Combat.Enemy.Spotted` | 1 раз **за бой** |
+| «Минус один. Я быстро.» | Клин | `Combat.Enemy.Eliminated` | 1 раз |
+| «Держись! Иду…» | Шприц | `Combat.Squad.Downed` | 1 раз |
+| «Наполовину распутал…» | Шприц | `Objective.Defuse.Progressed` | 1 раз |
+| «Половина времени вышла…» | Купол | `Objective.Bomb.HalfTime` | 1 раз, фокус на заряд |
+| «ТРИ хода…» | Купол | `Objective.Bomb.FinalTurns` | 1 раз, фокус на заряд |
+| «Чисто! Таймер мёртв…» | Купол | `Objective.Defuse.Completed` | 1 раз, фокус на зону эвакуации |
+| «Первый на борту…» | Купол | `Objective.Evac.Unit` | 1 раз |
+
+Поля строки: `bOncePerMission` (по умолчанию да — почти все реплики описывают ПЕРВОЕ
+событие своего рода), `CooldownTurns`, `EarliestTurn`, `Priority` (при совпадении в
+один кадр звучит одна, очередь не копится) и `FocusAnchorId`.
+
+Два правила зафиксированы отдельно, потому что первый прогон нарушил оба:
+
+- **«Держись! Иду» — по падению, а не по попаданию.** Реплика медика на царапину
+  звучит нелепо; канал `Combat.Squad.Downed` публикуется из подтверждённой смены
+  состояния в `AUnitBase::SetDowned`. Канал `Squad.Wounded` (любой урон) остался для
+  будущих реплик поменьше.
+- **«Нас увидели» — один раз за бой.** Событие приходит на каждого впервые
+  замеченного врага: 13 врагов — не 13 докладов.
+
+### 8.5 Чем собирались графы
+
+Дерево миссии собрано **скриптом, а не мышью**: девять реплик по семь полей — это
+час кликов и ровно та работа, где опечатка в теге канала не видна до прогона.
+`UXRU1StateTreeAuthoringLibrary` даёт `AddChildState` (создаёт состояние,
+`TasksCompletion = All`), `AddTaskToState`, `ClearStateTasks` и
+`AddCompletionTransition`. Формат значений — тот же, что печатает экспорт ассета,
+поэтому эталон всегда под рукой: экспортировать готовое дерево обучения и взять
+строку оттуда.
+
+⚠️ **Русские тексты нельзя писать прямо в скрипте моста**: он сохраняет присланный
+`.py` в системной кодировке, и кириллица доезжает как `?????` — молча.

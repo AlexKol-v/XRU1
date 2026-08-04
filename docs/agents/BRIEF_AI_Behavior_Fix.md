@@ -6,7 +6,7 @@
 Читать перед началом: [../08_AI.md](../08_AI.md) (архитектура, разбор прошлых
 дефектов, тест-матрица §6), [BRIEF_AI_Refactor.md](BRIEF_AI_Refactor.md)
 (открытые задачи и таблица профилей сложности),
-[../16_MISSION01_ASSEMBLY.md](../16_MISSION01_ASSEMBLY.md) §3 (как устроена
+[../03_ARCHITECTURE.md](../03_ARCHITECTURE.md) §10 (как устроена
 расстановка, которую AI обязан отыгрывать).
 
 ---
@@ -78,7 +78,7 @@
    (см. `08_AI.md` §3.9). Навмеш переведён на `RuntimeGeneration = Dynamic`,
    строится 12.3 с — на старте боя он может быть не готов.
 5. **`agent radius 35.0`** в логе сборки навмеша против 45 в `DefaultEngine.ini`
-   (открытая задача в `04_ROADMAP.md`). Узкие проходы между контейнерами могут
+   (открытая задача в `04_BACKLOG.md`). Узкие проходы между контейнерами могут
    не проходиться.
 6. **Диагностика причин.** Сейчас Warning печатает СОСТОЯНИЕ, но не причину
    отказа. Добавить в него причину: «маршрут не построен», «точка вне навмеша»,
@@ -110,7 +110,7 @@
 `Tactics/TacticalQuestTasks.*`, `Tactics/TacticalQuestEvents.*`,
 `Tactics/TutorialPresentation.*`, `Tactics/TacticalScenarioDirector.*`,
 ассеты `/Game/XRU1Game/Quests/*`, `/Game/XRU1Game/Data/Missions/*`,
-доки `02_LORE_SCRIPT.md`, `11_SHARED_MAP_TUTORIAL.md`, `16_MISSION01_ASSEMBLY.md`.
+доки `02_LORE_SCRIPT.md`, `03_ARCHITECTURE.md`.
 
 **Общие файлы — только по согласованию:** `Tactics/TurnManagerSubsystem.*`,
 `Tactics/TacticsGameMode.*`, `Tactics/TacticsCombatStatics.*`.
@@ -139,7 +139,7 @@
 - [x] Поды не создаются для стороны игрока ни по одному триггеру (`IsEnemyPod`).
 - [ ] Три последовательных боя на Hard без зависаний фазы врага — **приёмка на
       пользователе**, полный список проверок в
-      [ACCEPTANCE_CHECKS.md](ACCEPTANCE_CHECKS.md) §1.
+      [../04_BACKLOG.md](../04_BACKLOG.md) §4.1–4.2.
 - [x] Профили `DA_AI_Easy/Medium/Hard` заведены и назначены
       ([BRIEF_AI_Refactor.md](BRIEF_AI_Refactor.md) §3).
 

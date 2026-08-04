@@ -57,6 +57,15 @@ void UMissionVoiceDirectorSubsystem::Deinitialize()
 
 void UMissionVoiceDirectorSubsystem::StartMission(UMissionVoiceDataAsset* Table)
 {
+	// Идемпотентность обязательна: директор поднимается раньше боя (чтобы не
+	// пропустить `Scenario.Ready`), а `StartMissionCombat` зовёт его ещё раз.
+	// Без этой проверки повторный вызов сбрасывал бы историю уже прозвучавших
+	// реплик, и первая из них могла прозвучать дважды.
+	if (bActive && ActiveTable == Table)
+	{
+		return;
+	}
+
 	StopMission();
 
 	ActiveTable = Table;

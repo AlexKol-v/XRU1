@@ -491,6 +491,28 @@ eas.destroy_actor(a)
   `SystemLibrary.break_hit_result` не существует: брать `hit.to_tuple()`,
   где `[4]` = Location, `[5]` = ImpactPoint, `[9]` = актор, `[10]` = компонент.
 
+**Три отказа `execute_script`, которые выглядят одинаково** (проверено 2026-08-04):
+
+| Ответ сервера | Причина |
+|---|---|
+| `route_handler_not_found` | путь `/mcp/tools/<имя>`; правильный — `/mcp/tool/<имя>` (единственное число) |
+| `Missing required parameter: script_content` | параметр называется **`script_content`**, не `script` |
+| `Script MUST include @Description in header comment` | либо шапка `@Description` в теле, либо отдельный параметр `description` |
+
+Вызов асинхронный: `execute_script` возвращает `task_id`, результат забирается
+`POST /mcp/tool/task_result` с этим `task_id`. Ошибки исполнения приходят **в
+теле успешного ответа** (`data.data.output`), а не HTTP-кодом.
+
+⚠️ **В режиме PIE редакторные функции возвращают `None`, а не ошибку.**
+`EditorAssetLibrary.load_asset` и `UnrealEditorSubsystem.get_editor_world` в
+скрипте молча отдают `None` (в логе только строка `The Editor is currently in a
+play mode`), и дальше падает `AttributeError` на `NoneType` — выглядит как «не
+нашёл ассет». Перед разбором ассетов убедиться, что пользователь вышел из PIE.
+
+⚠️ **`actor.get_outer().get_name()` не различает уровни**: у актора любого
+sublevel outer называется `PersistentLevel`. Владелец определяется по пакету:
+`actor.get_outer().get_path_name().split('.')[0]`.
+
 ### 5.2.8 ⚠️ Перенос ассетов: две ловушки, стоившие сессии (2026-08-03)
 
 **1. `delete_asset` по package_name УДАЛЯЕТ ЦЕЛЬ РЕДИРЕКТОРА, а не редиректор.**

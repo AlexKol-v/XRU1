@@ -103,6 +103,17 @@ bool ATacticsGameMode::StartScenarioCombat()
 	}
 
 	GetWorldTimerManager().ClearTimer(StartCombatTimerHandle);
+
+	// ⚠️ Реплики поднимаются РАНЬШЕ боя, и это принципиально.
+	//
+	// `Scenario.Ready` публикуется Director'ом на следующем тике после этого
+	// вызова, а сам бой может быть отложен ожиданием навмеша
+	// (`NavigationReadyTimeout`). Пока директор реплик стартовал вместе с боем,
+	// стартовая реплика Осы улетала в пустоту: подписки ещё не было
+	// (прогон 2026-08-04, разрыв 0.4 с). Презентационному слою готовый бой не
+	// нужен — ему нужна таблица, а она известна сразу.
+	StartMissionVoiceDirector();
+
 	StartMissionCombat();
 
 	// ⚠️ ОЖИДАНИЕ НАВИГАЦИИ — НЕ ОТКАЗ, и вернуть здесь false нельзя.
@@ -212,6 +223,21 @@ int32 ATacticsGameMode::SpawnConfiguredEncounters(EDifficultyLevel Difficulty)
 			Groups, Total, static_cast<int32>(Difficulty));
 	}
 	return Total;
+}
+
+void ATacticsGameMode::StartMissionVoiceDirector()
+{
+	UMissionVoiceDirectorSubsystem* Voice = GetWorld()
+		? GetWorld()->GetSubsystem<UMissionVoiceDirectorSubsystem>() : nullptr;
+	if (!Voice)
+	{
+		return;
+	}
+	const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>();
+	const UTacticalScenarioDataAsset* Scenario = GameInstance
+		? GameInstance->GetActiveScenario() : nullptr;
+	// Вызов идемпотентен: повторный запуск с той же таблицей ничего не сбрасывает.
+	Voice->StartMission(Scenario ? Scenario->VoiceLines.LoadSynchronous() : nullptr);
 }
 
 void ATacticsGameMode::StartMissionCombat()
@@ -445,13 +471,10 @@ void ATacticsGameMode::StartMissionCombat()
 			Scenario ? Scenario->bStartFullyExplored : false);
 	}
 
-	// Реплики боя ведёт отдельный директор по таблице сценария: StateTree
-	// отвечает за ЦЕЛИ, а реакции на события — за ним (16 §6.2).
-	if (UMissionVoiceDirectorSubsystem* Voice =
-		GetWorld()->GetSubsystem<UMissionVoiceDirectorSubsystem>())
-	{
-		Voice->StartMission(Scenario ? Scenario->VoiceLines.LoadSynchronous() : nullptr);
-	}
+	// Страховка для прямого запуска карты без Director'а: там `StartScenarioCombat`
+	// не вызывается вовсе, и поднять реплики больше некому. Повторный вызов на
+	// сценарном пути безвреден — `StartMission` идемпотентен.
+	StartMissionVoiceDirector();
 
 	bCombatStarted = true;
 	TurnManager->StartCombat(Players, Enemies);
