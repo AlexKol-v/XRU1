@@ -126,6 +126,14 @@ struct XRU1_API FAIPositionScoringTuning
 
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Position")
 	float EnemyVisibilityWeight = 20.f;
+
+	/** См. `AUnitAIController::RecentPositionPenalty` — штраф за возврат на прошлую позицию. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Position", meta = (ClampMin = "0"))
+	float RecentPositionPenalty = 30.f;
+
+	/** См. `AUnitAIController::RecentPositionRadius`. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Position", meta = (ClampMin = "0"))
+	float RecentPositionRadius = 300.f;
 };
 
 /** Коэффициенты выбора основной цели. */

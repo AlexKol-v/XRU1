@@ -3,6 +3,9 @@
 #include "UnitBase.h"
 #include "GA_Attack.h"
 #include "CoverDetectionComponent.h" // BestCoverAround — предусловие глухой обороны
+#include "TacticsGameplayTags.h"     // State.Taunting — hard contract провокации
+#include "AbilitySystemComponent.h"
+#include "AbilitySystemGlobals.h"
 #include "Misc/Crc.h"
 #include "Math/RandomStream.h"
 
@@ -72,9 +75,23 @@ float UAIEval_MoveToCover::ScoreAction(const FAIDecisionContext& Context, FAIDec
 	OutDecision.Destination = Point;
 	OutDecision.bIsCoverManeuver = true;
 	OutDecision.AcceptanceRadius = 40.f;
-	OutDecision.Reason = FString::Printf(TEXT("укрытие с линией огня (выстрел вторым AP): %s"),
-		*Details.Describe());
-	return BasePriority;
+
+	// ОТКРЫТЫЙ БОЕЦ СНАЧАЛА ВСТАЁТ В УКРЫТИЕ, а стреляет вторым очком.
+	//
+	// Без этой надбавки уверенный выстрел (Shoot: 100 × качество) всегда бил
+	// манёвр (80), и бот с двумя ОД оставался стрелять из чистого поля — жалоба
+	// «стоят и стреляют» по прогону 2026-08-04. Ошибка усиливается тем, что у
+	// нас `GA_Attack.bConsumesAllRemainingAP = true`: выстрел с места сжигает и
+	// второе очко, то есть выбор здесь не «сначала стрельнуть, потом уйти», а
+	// строго «или укрытие, или открытая позиция до конца хода противника».
+	//
+	// Надбавка даётся ТОЛЬКО когда боец реально открыт против главной угрозы.
+	// В рабочем укрытии Shoot по-прежнему выигрывает — это правило XCOM
+	// «стреляй, если можешь», и ломать его незачем.
+	const float Urgency = Context.bExposed ? ExposedUrgencyBonus : 0.f;
+	OutDecision.Reason = FString::Printf(TEXT("укрытие с линией огня (выстрел вторым AP)%s: %s"),
+		Context.bExposed ? TEXT(", боец открыт") : TEXT(""), *Details.Describe());
+	return BasePriority + Urgency;
 }
 
 // --- UAIEval_Shoot ------------------------------------------------------------
@@ -102,9 +119,10 @@ bool UAIEval_Shoot::IsApplicable(const FAIDecisionContext& Context) const
 		Context.PrimaryThreat && Context.ActionPointsLeft >= 1;
 }
 
-float UAIEval_Shoot::ScoreAction(const FAIDecisionContext& Context, FAIDecision& OutDecision) const
+float UAIEval_Shoot::ScoreShotAt(const FAIDecisionContext& Context, AActor* Target,
+	FAIDecision& OutDecision) const
 {
-	const float HitChance = UGA_Attack::ComputeAttackHitChance(Context.Unit, Context.PrimaryThreat);
+	const float HitChance = UGA_Attack::ComputeAttackHitChance(Context.Unit, Target);
 
 	// Качество выстрела по тем же порогам, что и скоринг цели (A3): уверенный —
 	// полный вес, средний — половина, сомнительный — четверть. Именно эта
@@ -119,10 +137,69 @@ float UAIEval_Shoot::ScoreAction(const FAIDecisionContext& Context, FAIDecision&
 	}
 
 	OutDecision.Kind = EAIActionKind::Shoot;
-	OutDecision.Target = Context.PrimaryThreat;
+	OutDecision.Target = Target;
 	OutDecision.Reason = FString::Printf(TEXT("выстрел по %s (шанс %.0f%%)"),
-		*GetNameSafe(Context.PrimaryThreat), HitChance);
+		*GetNameSafe(Target), HitChance);
 	return BasePriority * Quality;
+}
+
+float UAIEval_Shoot::ScoreAction(const FAIDecisionContext& Context, FAIDecision& OutDecision) const
+{
+	return ScoreShotAt(Context, Context.PrimaryThreat, OutDecision);
+}
+
+void UAIEval_Shoot::ProposeActions(const FAIDecisionContext& Context,
+	TArray<FAIDecision>& OutProposals) const
+{
+	// Главная угроза идёт первой и всегда: она уже прошла полный аддитивный
+	// скоринг цели (провокация, фланг, добивание), и её приоритет — контракт GDD.
+	FAIDecision Primary;
+	const float PrimaryScore = ScoreShotAt(Context, Context.PrimaryThreat, Primary);
+	if (PrimaryScore > 0.f)
+	{
+		Primary.Score = PrimaryScore;
+		OutProposals.Add(Primary);
+	}
+
+	// ⚠️ TAUNT — ЖЁСТКИЙ КОНТРАКТ (GDD §7). Если главной целью стал ДОСТУПНЫЙ
+	// провоцирующий в радиусе провокации, альтернативы не предлагаются вовсе:
+	// «обязан бить именно его» не должно вырождаться в «сильно предпочитает».
+	if (PrimaryScore > 0.f && Context.Unit && Context.Controller && Context.PrimaryThreat)
+	{
+		if (const UAbilitySystemComponent* ASC =
+			UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(Context.PrimaryThreat))
+		{
+			const float TauntDist = FVector::Dist(
+				Context.Unit->GetActorLocation(), Context.PrimaryThreat->GetActorLocation());
+			if (ASC->HasMatchingGameplayTag(TacticsGameplayTags::State_Taunting) &&
+				TauntDist <= Context.Controller->TauntPriorityRadius)
+			{
+				return;
+			}
+		}
+	}
+
+	// Остальные видимые угрозы — как отдельные предложения. Дороже одного
+	// расчёта шанса попадания на цель это не стоит.
+	for (const TObjectPtr<AActor>& Threat : Context.VisibleThreats)
+	{
+		AActor* Candidate = Threat.Get();
+		if (!Candidate || Candidate == Context.PrimaryThreat)
+		{
+			continue;
+		}
+		if (!UGA_Attack::CanTargetActor(Context.Unit, Candidate))
+		{
+			continue; // тот же предикат, что решает выстрел игрока
+		}
+		FAIDecision Alternative;
+		const float Score = ScoreShotAt(Context, Candidate, Alternative);
+		if (Score > 0.f)
+		{
+			Alternative.Score = Score;
+			OutProposals.Add(MoveTemp(Alternative));
+		}
+	}
 }
 
 // --- UAIEval_AdvanceToCover ---------------------------------------------------

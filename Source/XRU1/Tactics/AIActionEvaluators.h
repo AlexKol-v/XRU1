@@ -39,8 +39,29 @@ class XRU1_API UAIEval_MoveToCover : public UAIActionEvaluator
 	GENERATED_BODY()
 public:
 	UAIEval_MoveToCover();
+
+	/**
+	 * Надбавка к скору, когда боец СТОИТ ОТКРЫТЫМ против главной угрозы.
+	 *
+	 * `BasePriority` (80) заведомо ниже уверенного выстрела (`UAIEval_Shoot`,
+	 * до 100), поэтому без надбавки открытый бот с двумя ОД всегда стрелял с
+	 * места и оставался в поле до конца хода противника (выстрел сжигает остаток
+	 * ОД). 30 выводит манёвр на 110 — выше выстрела, но ниже отступления (120),
+	 * так что раненый по-прежнему уходит, а не лезет в перестрелку.
+	 *
+	 * 0 — вернуть прежнее поведение «стреляй, если можешь, откуда стоишь».
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Evaluator|MoveToCover", meta = (ClampMin = "0"))
+	float ExposedUrgencyBonus = 30.f;
+
 	virtual bool IsApplicable(const FAIDecisionContext& Context) const override;
 	virtual float ScoreAction(const FAIDecisionContext& Context, FAIDecision& OutDecision) const override;
+
+	/** Потолок обязан включать надбавку, иначе отсечение перебора срежет победителя. */
+	virtual float GetMaxPossibleScore() const override
+	{
+		return (BasePriority + ExposedUrgencyBonus) * Weight;
+	}
 };
 
 /**
@@ -56,6 +77,22 @@ public:
 	UAIEval_Shoot();
 	virtual bool IsApplicable(const FAIDecisionContext& Context) const override;
 	virtual float ScoreAction(const FAIDecisionContext& Context, FAIDecision& OutDecision) const override;
+
+	/**
+	 * AI-4: предлагает выстрел по КАЖДОЙ доступной цели, а не только по
+	 * `PrimaryThreat`. Это ровно тот случай, ради которого заведены полные
+	 * предложения, и он дешёвый: цена варианта — один расчёт шанса попадания.
+	 *
+	 * Итог сравнивается общей шкалой вместе с манёврами, поэтому «выстрелить в
+	 * менее приоритетного, но доступного» перестал быть невыразимым решением.
+	 */
+	virtual void ProposeActions(const FAIDecisionContext& Context,
+		TArray<FAIDecision>& OutProposals) const override;
+
+private:
+	/** Общая формула качества выстрела: скор и текст причины по одной цели. */
+	float ScoreShotAt(const FAIDecisionContext& Context, AActor* Target,
+		FAIDecision& OutDecision) const;
 };
 
 /**

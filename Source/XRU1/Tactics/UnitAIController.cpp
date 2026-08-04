@@ -6,6 +6,7 @@
 #include "ActionPointsComponent.h"
 #include "CoverDetectionComponent.h"
 #include "CoverTuningDataAsset.h"
+#include "FogOfWarSubsystem.h" // темп хода зависит от того, видит ли игрок бойца
 #include "TacticalAIDirectorSubsystem.h"
 #include "TacticalQuestEvents.h"
 #include "TutorialActionGate.h"
@@ -27,6 +28,7 @@
 #include "Navigation/CrowdFollowingComponent.h"
 #include "NavigationSystem.h"
 #include "GameFramework/Character.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
@@ -232,6 +234,8 @@ void AUnitAIController::ApplyBehaviorProfile()
 	CoverSnapDistance = PositionTuning.CoverSnapDistance;
 	MaxScoredThreats = PositionTuning.MaxScoredThreats;
 	EnemyVisibilityWeight = PositionTuning.EnemyVisibilityWeight;
+	RecentPositionPenalty = PositionTuning.RecentPositionPenalty;
+	RecentPositionRadius = PositionTuning.RecentPositionRadius;
 
 	const FAITargetScoringTuning& TargetTuning = BehaviorProfile->Target;
 	TargetHitChanceHighThreshold = TargetTuning.HitChanceHighThreshold;
@@ -297,7 +301,26 @@ void AUnitAIController::OnPossess(APawn* InPawn)
 	// Тревога — состояние конкретного бойца: новый пешка = новый пост.
 	AlertState = EUnitAlertState::Patrol;
 	bHasThreatLocation = false;
+	ContactMemory.Reset();
+	// Стартовая точка маршрута выбирается лениво, на первом шаге патруля:
+	// см. ResolveInitialPatrolIndex (ближайшая точка + смещение группы).
 	PatrolIndex = 0;
+	bPatrolIndexResolved = false;
+	PatrolDirection = 1;
+
+	// Скорость скрытого хода переключается СОБЫТИЕМ, а не опросом: боец,
+	// выбежавший из тумана посреди перебежки, обязан замедлиться в тот же кадр,
+	// когда игрок его увидел, иначе на глазах отряда он промчится ускоренно.
+	BaseWalkSpeed = 0.f;
+	if (UFogOfWarSubsystem* Fog = UFogOfWarSubsystem::Get(this))
+	{
+		Fog->OnActorVisibilityChanged.AddUniqueDynamic(
+			this, &AUnitAIController::HandleFogVisibilityChanged);
+	}
+	// Новая пешка — новая зона удержания: якорь перезапишется её позицией.
+	bPatrolAnchorSet = false;
+	bReportedOffNavmesh = false;
+	RecentTurnPositions.Reset();
 	ClearScriptedTurnProgram();
 
 	// Валидация настройки BP — один раз при вселении. Второго прямого
@@ -311,6 +334,130 @@ void AUnitAIController::OnPossess(APawn* InPawn)
 	}
 }
 
+void AUnitAIController::RememberContact(AActor* Target, const FVector& Location,
+	EAIContactSource Source, float Confidence)
+{
+	const UWorld* World = GetWorld();
+	const UTurnManagerSubsystem* TurnManager = World
+		? World->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
+	const int32 Turn = TurnManager ? TurnManager->GetTurnNumber() : 0;
+
+	// Контакт про ОДНОГО и того же противника обновляется, а не дублируется.
+	// Подозрения (без актора) объединяются по близости точки: три выстрела из
+	// одного окна — это одна цель для разведки, а не три.
+	for (FAIContact& Existing : ContactMemory)
+	{
+		const bool bSameActor = Target && Existing.bActorKnown && Existing.Target.Get() == Target;
+		const bool bSameSpot = !Target && !Existing.bActorKnown &&
+			FVector::Dist2D(Existing.LastKnownLocation, Location) < 400.f;
+		if (!bSameActor && !bSameSpot)
+		{
+			continue;
+		}
+		// Менее достоверный источник не портит более достоверный в том же ходу:
+		// увиденное своими глазами важнее услышанного.
+		if (Confidence >= Existing.Confidence || Existing.LastUpdatedTurn < Turn)
+		{
+			Existing.LastKnownLocation = Location;
+			Existing.Source = Source;
+			Existing.Confidence = FMath::Max(Existing.Confidence, Confidence);
+		}
+		Existing.LastUpdatedTurn = Turn;
+		return;
+	}
+
+	FAIContact Contact;
+	Contact.Target = Target;
+	Contact.bActorKnown = (Target != nullptr);
+	Contact.LastKnownLocation = Location;
+	Contact.LastUpdatedTurn = Turn;
+	Contact.Source = Source;
+	Contact.Confidence = Confidence;
+	ContactMemory.Add(Contact);
+
+	if (ContactMemory.Num() > MaxContactMemory)
+	{
+		// Вытесняем самый слабый, а не самый старый: свежий шум за стеной не
+		// должен выбивать подтверждённого стрелка, по которому бойца жгут.
+		int32 WeakestIndex = 0;
+		for (int32 i = 1; i < ContactMemory.Num(); ++i)
+		{
+			if (ContactMemory[i].Confidence < ContactMemory[WeakestIndex].Confidence)
+			{
+				WeakestIndex = i;
+			}
+		}
+		ContactMemory.RemoveAt(WeakestIndex);
+	}
+}
+
+bool AUnitAIController::GetBestContact(FAIContact& OutContact) const
+{
+	const FAIContact* Best = nullptr;
+	for (const FAIContact& Contact : ContactMemory)
+	{
+		if (!Contact.IsValidContact())
+		{
+			continue;
+		}
+		// Мёртвая цель контактом не считается: идти проверять труп незачем.
+		if (Contact.bActorKnown && !UTacticsCombatStatics::IsUnitAlive(Contact.Target.Get()))
+		{
+			continue;
+		}
+		if (!Best || Contact.Confidence > Best->Confidence ||
+			(Contact.Confidence == Best->Confidence && Contact.LastUpdatedTurn > Best->LastUpdatedTurn))
+		{
+			Best = &Contact;
+		}
+	}
+	if (!Best)
+	{
+		return false;
+	}
+	OutContact = *Best;
+	return true;
+}
+
+void AUnitAIController::AgeContactMemory()
+{
+	const UWorld* World = GetWorld();
+	const UTurnManagerSubsystem* TurnManager = World
+		? World->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
+	const int32 Turn = TurnManager ? TurnManager->GetTurnNumber() : 0;
+	const int32 MemoryTurns = FMath::Max(1, ContactMemoryTurns);
+
+	// Старение измеряется ХОДАМИ, а не кадрами: иначе долгая анимация выстрела
+	// «состарила» бы знание сильнее, чем целый ход противника.
+	ContactMemory.RemoveAll([Turn, MemoryTurns](const FAIContact& Contact)
+	{
+		if (Contact.bActorKnown && !Contact.Target.IsValid())
+		{
+			return true;
+		}
+		return (Turn - Contact.LastUpdatedTurn) > MemoryTurns;
+	});
+
+	for (FAIContact& Contact : ContactMemory)
+	{
+		const int32 Age = FMath::Max(0, Turn - Contact.LastUpdatedTurn);
+		Contact.Confidence = FMath::Clamp(
+			1.f - static_cast<float>(Age) / static_cast<float>(MemoryTurns), 0.05f, Contact.Confidence);
+	}
+}
+
+void AUnitAIController::RefreshInvestigateTarget()
+{
+	FAIContact Best;
+	if (GetBestContact(Best))
+	{
+		LastKnownThreatLocation = Best.LastKnownLocation;
+		bHasThreatLocation = true;
+		return;
+	}
+	bHasThreatLocation = false;
+}
+
 void AUnitAIController::HandlePerceptionUpdated(AActor* Actor, FAIStimulus Stimulus)
 {
 	const APawn* MyPawn = GetPawn();
@@ -321,40 +468,88 @@ void AUnitAIController::HandlePerceptionUpdated(AActor* Actor, FAIStimulus Stimu
 
 	if (Stimulus.WasSuccessfullySensed())
 	{
-		// Red alert: враг в прямой видимости.
+		// Red alert: враг в прямой видимости. Точку берём с живого актора — это
+		// единственный источник, где так делать ЧЕСТНО: мы его видим.
 		AlertState = EUnitAlertState::Combat;
+		RememberContact(Actor, Actor->GetActorLocation(), EAIContactSource::Sight, 1.f);
 		LastKnownThreatLocation = Actor->GetActorLocation();
 		bHasThreatLocation = true;
 	}
-	else if (AlertState == EUnitAlertState::Combat)
+	else
 	{
-		// Цель пропала из виду: red → yellow, идём к последней известной точке.
-		AlertState = EUnitAlertState::Investigate;
-		LastKnownThreatLocation = Stimulus.StimulusLocation;
-		bHasThreatLocation = true;
+		// ⚠️ Цель пропала из виду — точку берём из СТИМУЛА, а не с актора: его
+		// текущая позиция бойцу больше не известна.
+		//
+		// И тревога понижается только если это была ЕДИНСТВЕННАЯ цель. Раньше
+		// потеря любого противника роняла бойца в Investigate, даже когда рядом
+		// стоял второй, отлично видимый (§4/AI-2: «потеря одной цели не затирает
+		// более свежую память о другой»).
+		RememberContact(Actor, Stimulus.StimulusLocation, EAIContactSource::Sight, 0.8f);
+		if (AlertState == EUnitAlertState::Combat && !FindVisibleTarget())
+		{
+			AlertState = EUnitAlertState::Investigate;
+		}
+		RefreshInvestigateTarget();
 	}
 }
 
 void AUnitAIController::NotifyNoiseHeard(const FVector& NoiseLocation)
 {
+	// Шум даёт ТОЧКУ, но не актора: имени стрелка боец не знает (`bActorKnown`
+	// = false). Достоверность низкая — идти проверять, а не открывать огонь.
+	RememberContact(nullptr, NoiseLocation, EAIContactSource::Noise, 0.4f);
+
 	// Шум не понижает тревогу: в бою уже знаем больше, чем «где-то стреляли».
 	if (AlertState != EUnitAlertState::Combat)
 	{
 		AlertState = EUnitAlertState::Investigate;
-		LastKnownThreatLocation = NoiseLocation;
-		bHasThreatLocation = true;
+		RefreshInvestigateTarget();
 	}
 }
 
 void AUnitAIController::ExecuteUnitTurn(FSimpleDelegate OnFinished)
 {
 	TurnFinishedDelegate = MoveTemp(OnFinished);
+	// Темп хода зависит от того, видит ли игрок этого бойца (см. §«скрытый ход»).
+	ApplyHiddenMovementSpeed();
 	bTurnMoveInProgress = false;
 	bCoverMoveDoneThisTurn = false;
 	bManeuverInProgress = false;
 	DecisionOrdinalThisTurn = 0;
 	FailedAttackTargetsThisTurn.Reset(); // новый ход — новые попытки
 	bScriptedRepositionTried = false;
+	TurnIdleReasons.Reset();
+	LastMoveFailure.Reset();
+	// AI-2: знание стареет на границе активации, а не посреди неё — иначе
+	// решения одного и того же хода считались бы по «плывущей» достоверности.
+	AgeContactMemory();
+
+	// Память позиций для `RecentPositionPenalty`: пишем ТОЧКУ НА НАЧАЛО ХОДА,
+	// то есть место, где боец простоял ход противника. Именно возврат на неё
+	// читается игроком как метание.
+	//
+	// Дубли не копим: боец стреляет ход через ход и стоит на месте, а список из
+	// трёх одинаковых точек помнил бы всего одно место — ровно на шаг меньше,
+	// чем нужно, чтобы разорвать маятник.
+	if (const APawn* ControlledPawn = GetPawn())
+	{
+		const FVector TurnStart = ControlledPawn->GetActorLocation();
+		const bool bSameAsLast = RecentTurnPositions.Num() > 0 &&
+			FVector::Dist2D(RecentTurnPositions[0], TurnStart) <= RecentPositionRadius;
+		if (bSameAsLast)
+		{
+			RecentTurnPositions[0] = TurnStart;
+		}
+		else
+		{
+			RecentTurnPositions.Insert(TurnStart, 0);
+			if (RecentTurnPositions.Num() > MaxRecentPositions)
+			{
+				RecentTurnPositions.SetNum(MaxRecentPositions);
+			}
+		}
+	}
+
 	AdvanceTurnStep();
 }
 
@@ -550,14 +745,30 @@ void AUnitAIController::AdvanceTurnStep()
 		// знает о противнике, не смог построить путь, у него нет способностей),
 		// поэтому причина печатается всегда, а не под cvar: именно её ищут,
 		// когда «враги стоят столбом».
+		//
+		// ⚠️ Печатаем ПРИЧИНУ, а не только состояние. Прежняя строка сообщала
+		// alert/AP/число точек патруля — по ней нельзя было отличить «нет
+		// навмеша» от «нет способности», и каждый следующий прогон начинался с
+		// гадания (бриф AI §4.6). Отдельно проверяем, стоит ли боец вообще на
+		// навмеше: боец вне навмеша не строит НИ ОДНОГО маршрута, и это самая
+		// частая первопричина.
 		const UTacticalAIDirectorSubsystem* Director = GetAIDirector();
+		const FVector UnitLocation = Unit->GetActorLocation();
+		FVector Projected = FVector::ZeroVector;
+		const bool bOnNavmesh = ProjectOntoNavmesh(UnitLocation, Projected);
+		const float NavDrift = bOnNavmesh ? FVector::Dist(UnitLocation, Projected) : -1.f;
+
 		UE_LOG(LogXRU1AI, Warning,
 			TEXT("[AI] %s закончил ход БЕЗ ДЕЙСТВИЙ: alert=%d, под вскрыт=%d, AP=%d, ")
-			TEXT("видимая цель=%s, точек патруля=%d"),
+			TEXT("видимая цель=%s, точек патруля=%d, поз=(%.0f, %.0f), навмеш=%s. ПРИЧИНА: %s"),
 			*GetNameSafe(Unit), static_cast<int32>(AlertState),
 			(Director && Director->IsUnitPodActivated(Unit)) ? 1 : 0,
 			ActionPoints->CurrentActionPoints, *GetNameSafe(FindVisibleTarget()),
-			Unit->PatrolPoints.Num());
+			Unit->PatrolPoints.Num(), UnitLocation.X, UnitLocation.Y,
+			bOnNavmesh ? *FString::Printf(TEXT("да (%.0f см)"), NavDrift)
+				: TEXT("НЕТ — боец вне навмеша, маршруты не строятся"),
+			TurnIdleReasons.IsEmpty() ? TEXT("не записана (см. ветку без NoteIdleReason)")
+				: *TurnIdleReasons);
 		FinishUnitTurn();
 	}
 }
@@ -570,13 +781,19 @@ bool AUnitAIController::StepCombat(AUnitBase* Unit)
 		// Цели не видно, но под мог знать точку от союзника, попадания или шума.
 		// Идём к самому достоверному контакту вместо возврата в патруль: боец,
 		// по которому только что стреляли, обязан двигаться, а не стоять.
-		FAIContact Contact;
+		//
+		// AI-2: знание пода СЛИВАЕТСЯ в личную память как «сообщил союзник» —
+		// с пониженной достоверностью и отдельным источником. Так в логе видно,
+		// что боец идёт по чужой наводке, а не по собственным глазам, и так
+		// личная память не перетирается каждым обновлением группы.
+		FAIContact PodContact;
 		if (const UTacticalAIDirectorSubsystem* Director = GetAIDirector();
-			Director && Director->GetBestContact(Unit, Contact))
+			Director && Director->GetBestContact(Unit, PodContact))
 		{
-			LastKnownThreatLocation = Contact.LastKnownLocation;
-			bHasThreatLocation = true;
+			RememberContact(PodContact.Target.Get(), PodContact.LastKnownLocation,
+				EAIContactSource::Ally, PodContact.Confidence * 0.9f);
 		}
+		RefreshInvestigateTarget();
 
 		AlertState = EUnitAlertState::Investigate;
 		return StepInvestigate(Unit);
@@ -595,16 +812,27 @@ bool AUnitAIController::StepCombat(AUnitBase* Unit)
 		bManeuverInProgress = false; // однократное продолжение за шаг; при успехе взводится снова
 		if (PointsLeft > 0 && FVector::Dist2D(Unit->GetActorLocation(), PendingManeuverPoint) > 75.f)
 		{
-			if (MoveWithBudget(Unit, PendingManeuverPoint, /*AcceptanceRadius=*/40.f, PointsLeft))
+			if (MoveWithBudget(Unit, PendingManeuverPoint, /*AcceptanceRadius=*/40.f, PointsLeft,
+				/*RequiredGoalTolerance=*/ManeuverGoalTolerance))
 			{
 				bManeuverInProgress = true;
 				return true;
 			}
 			// Продолжение сорвалось: боец остался в открытом поле, и это надо
-			// видеть в логе, а не гадать «почему он не добежал».
+			// видеть в логе, а не гадать «почему он не добежал». Точку сверки
+			// снимаем: манёвр окончен, и сравнивать финальную позицию с целью,
+			// до которой мы сознательно не пошли, значит врать в лог.
+			bHasChosenManeuverPoint = false;
+			// И отпускаем намерение: держать чужую точку занятой ради манёвра,
+			// который не состоится, — прямой способ запереть соседа.
+			if (UTacticalAIDirectorSubsystem* Director = GetAIDirector())
+			{
+				Director->ReleaseReservation(Unit);
+			}
 			UE_LOG(LogXRU1AI, Warning,
-				TEXT("[AI] %s: не смог продолжить манёвр к (%.0f, %.0f) — остался на месте"),
-				*GetNameSafe(Unit), PendingManeuverPoint.X, PendingManeuverPoint.Y);
+				TEXT("[AI] %s: не смог продолжить манёвр к (%.0f, %.0f) — остался на месте (%s)"),
+				*GetNameSafe(Unit), PendingManeuverPoint.X, PendingManeuverPoint.Y,
+				LastMoveFailure.IsEmpty() ? TEXT("причина не записана") : *LastMoveFailure);
 		}
 	}
 
@@ -637,7 +865,23 @@ bool AUnitAIController::StepCombat(AUnitBase* Unit)
 			return true;
 		}
 	}
-	return false;
+
+	// Ни одно предложение не исполнилось. Записываем, ЧТО предлагалось: без
+	// этого «бой, цель видит — и всё равно ничего не сделал» неразбираем.
+	FString Offers;
+	for (const FAIDecision& Ranked : RankedDecisions)
+	{
+		Offers += FString::Printf(TEXT("%s%s (%.1f)"), Offers.IsEmpty() ? TEXT("") : TEXT(", "),
+			*Ranked.Reason, Ranked.Score);
+	}
+	NoteIdleReason(FString::Printf(TEXT("бой: ни один вариант не исполнился [%s]%s"),
+		Offers.IsEmpty() ? TEXT("предложений не было") : *Offers,
+		LastMoveFailure.IsEmpty() ? TEXT("") : *FString::Printf(TEXT("; движение: %s"), *LastMoveFailure)));
+
+	// ⚠️ Боец В БОЮ тоже не имеет права закончить ход ничем: он стоит в поле,
+	// видит противника и обязан хотя бы взять сектор под прицел. Ход при этом
+	// обязан завершиться — иначе фаза врага повиснет на нём.
+	return FallbackHoldOrSkip(Unit, TEXT("бой: исполнить решение не удалось"));
 }
 
 FAIDecisionContext AUnitAIController::BuildDecisionContext(AUnitBase* Unit, AActor* PrimaryThreat)
@@ -758,29 +1002,40 @@ FAIDecision AUnitAIController::DecideAction(const FAIDecisionContext& Context)
 			continue;
 		}
 
-		FAIDecision Candidate;
-		const float RawScore = Evaluator->ScoreAction(Context, Candidate);
-		const float Score = RawScore * Evaluator->Weight;
+		// AI-4: оценщик отдаёт 0..N предложений. Для большинства это по-прежнему
+		// ровно одно (база сводит метод к `ScoreAction`), но выстрел разворачивает
+		// перебор по всем доступным целям — и они сравниваются общей шкалой, а не
+		// проигрывают заранее выбранному `PrimaryThreat`.
+		TArray<FAIDecision> Proposals;
+		Evaluator->ProposeActions(Context, Proposals);
 
-		if (bLogAI)
+		if (Proposals.Num() == 0 && bLogAI)
 		{
-			UE_LOG(LogXRU1AI, Log, TEXT("[AI]   %s: скор %.1f%s — %s"),
-				*Evaluator->GetDebugName().ToString(), Score,
-				RawScore <= 0.f ? TEXT(" (отказ)") : TEXT(""),
-				Candidate.Reason.IsEmpty() ? TEXT("—") : *Candidate.Reason);
+			UE_LOG(LogXRU1AI, Log, TEXT("[AI]   %s: предложений нет (отказ)"),
+				*Evaluator->GetDebugName().ToString());
 		}
 
-		if (RawScore > 0.f)
+		for (FAIDecision& Candidate : Proposals)
 		{
+			// Вес оценщика применяется здесь, а не внутри: «характер» юнита —
+			// свойство набора, а не отдельного предложения.
+			Candidate.Score *= Evaluator->Weight;
+
+			if (bLogAI)
+			{
+				UE_LOG(LogXRU1AI, Log, TEXT("[AI]   %s: скор %.1f — %s"),
+					*Evaluator->GetDebugName().ToString(), Candidate.Score,
+					Candidate.Reason.IsEmpty() ? TEXT("—") : *Candidate.Reason);
+			}
+
 			// Запоминаем ВСЕ пригодные варианты, а не только лучший. Исполнение
 			// может провалиться (маршрут не строится, точка занята), и тогда ход
 			// обязан продолжиться следующим предложением, а не закончиться
 			// ничем. Именно на этом бот с видимой целью и целым AP «стоял».
-			Candidate.Score = Score;
 			RankedDecisions.Add(Candidate);
-			if (Score > BestScore)
+			if (Candidate.Score > BestScore)
 			{
-				BestScore = Score;
+				BestScore = Candidate.Score;
 				Best = Candidate;
 			}
 		}
@@ -850,6 +1105,8 @@ bool AUnitAIController::ExecuteDecision(AUnitBase* Unit, const FAIDecision& Deci
 	case EAIActionKind::Shoot:
 		if (!TryFireAtTarget(Unit, Decision.Target))
 		{
+			NoteIdleReason(FString::Printf(TEXT("выстрел по %s не принят способностью"),
+				*GetNameSafe(Decision.Target)));
 			return false; // способность отказала — активацию завершаем, без зацикливания
 		}
 		ScheduleNextStep();
@@ -873,9 +1130,19 @@ bool AUnitAIController::ExecuteDecision(AUnitBase* Unit, const FAIDecision& Deci
 				bHasChosenManeuverPoint = true;
 				return true;
 			}
+			NoteIdleReason(FString::Printf(TEXT("манёвр в (%.0f, %.0f): %s"),
+				Decision.Destination.X, Decision.Destination.Y,
+				LastMoveFailure.IsEmpty() ? TEXT("маршрут не построен") : *LastMoveFailure));
 			return false;
 		}
-		return MoveWithBudget(Unit, Decision.Destination, Decision.AcceptanceRadius);
+		if (MoveWithBudget(Unit, Decision.Destination, Decision.AcceptanceRadius))
+		{
+			return true;
+		}
+		NoteIdleReason(FString::Printf(TEXT("сближение в (%.0f, %.0f): %s"),
+			Decision.Destination.X, Decision.Destination.Y,
+			LastMoveFailure.IsEmpty() ? TEXT("маршрут не построен") : *LastMoveFailure));
+		return false;
 
 	case EAIActionKind::Overwatch:
 		// Обе способности сжигают остаток AP (bConsumesAllRemainingAP), поэтому
@@ -884,6 +1151,7 @@ bool AUnitAIController::ExecuteDecision(AUnitBase* Unit, const FAIDecision& Deci
 		// повис бы (ни FinishUnitTurn, ни следующего AdvanceTurnStep).
 		if (!TryActivateSelfAbility(Unit, Unit ? Unit->OverwatchAbilityClass : nullptr))
 		{
+			NoteIdleReason(TEXT("наблюдение как решение: способность не активировалась"));
 			return false;
 		}
 		ScheduleNextStep();
@@ -892,13 +1160,18 @@ bool AUnitAIController::ExecuteDecision(AUnitBase* Unit, const FAIDecision& Deci
 	case EAIActionKind::Hunker:
 		if (!TryActivateSelfAbility(Unit, Unit ? Unit->HunkerAbilityClass : nullptr))
 		{
+			NoteIdleReason(TEXT("глухая оборона как решение: способность не активировалась"));
 			return false;
 		}
 		ScheduleNextStep();
 		return true;
 
 	default:
-		return false; // Skip: делать нечего — активация окончена
+		// Skip: ни один оценщик не предложил применимого варианта. Это НЕ ошибка
+		// исполнения, но и не норма — именно здесь видно «утилити не нашло что
+		// делать при живой цели».
+		NoteIdleReason(TEXT("утилити не предложило ни одного применимого действия"));
+		return false;
 	}
 }
 
@@ -915,15 +1188,154 @@ bool AUnitAIController::StartManeuverTo(AUnitBase* Unit, const FVector& Point, c
 	// заведомо недостижима за одно очко и боец замирает в открытом поле.
 	const UActionPointsComponent* ManeuverAP = Unit ? Unit->GetActionPoints() : nullptr;
 	const int32 ManeuverBudget = ManeuverAP ? FMath::Max(1, ManeuverAP->CurrentActionPoints) : 1;
-	if (MoveWithBudget(Unit, Point, /*AcceptanceRadius=*/40.f, ManeuverBudget))
+	if (MoveWithBudget(Unit, Point, /*AcceptanceRadius=*/40.f, ManeuverBudget,
+		/*RequiredGoalTolerance=*/ManeuverGoalTolerance))
 	{
 		// Точка может быть дальше 1 AP (отступление/рывок): продолжение сделает
 		// следующий шаг хода — MoveWithBudget за раз проходит максимум MoveRange.
 		PendingManeuverPoint = Point;
 		bManeuverInProgress = true;
+		// AI-5: закрепляем НАМЕРЕНИЕ. Пока боец в пути, диск занятости он не
+		// ставит, и следующий боец имеет полное право выбрать ту же клетку.
+		if (UTacticalAIDirectorSubsystem* Director = GetAIDirector())
+		{
+			Director->ReservePosition(Unit, Point);
+		}
 		return true;
 	}
 	return false;
+}
+
+FAIPositionScoringTuning AUnitAIController::MakePositionTuningSnapshot() const
+{
+	// Копия RUNTIME-значений, а не ассета: к моменту боя веса уже прошли профиль
+	// сложности и оси стиля (`FlankPositionBonus *= FlankWillingness`). Чистый
+	// скорер обязан считать ровно тем, чем живёт игра.
+	FAIPositionScoringTuning Out;
+	Out.CoverDefenseWeight = CoverDefenseWeight;
+	Out.OpenCoverFactor = OpenCoverFactor;
+	Out.HalfCoverFactor = HalfCoverFactor;
+	Out.FullCoverFactor = FullCoverFactor;
+	Out.FlankPositionBonus = FlankPositionBonus;
+	Out.HeightPositionBonus = HeightPositionBonus;
+	Out.MinSpreadDistance = MinSpreadDistance;
+	Out.SpreadPenaltyMultiplier = SpreadPenaltyMultiplier;
+	Out.AllyVisibilityWeight = AllyVisibilityWeight;
+	Out.OverwatchExposurePenalty = OverwatchExposurePenalty;
+	Out.LineOfFireBonus = LineOfFireBonus;
+	Out.LoseLineOfFirePenalty = LoseLineOfFirePenalty;
+	Out.TravelCostPerCm = TravelCostPerCm;
+	Out.IdealRangeWeight = IdealRangeWeight;
+	Out.IdealRangeFalloff = IdealRangeFalloff;
+	Out.RelocateBias = RelocateBias;
+	Out.RetreatHealthFraction = RetreatHealthFraction;
+	Out.RetreatRewardPerCm = RetreatRewardPerCm;
+	Out.CoverSnapDistance = CoverSnapDistance;
+	Out.MaxScoredThreats = MaxScoredThreats;
+	Out.EnemyVisibilityWeight = EnemyVisibilityWeight;
+	Out.RecentPositionPenalty = RecentPositionPenalty;
+	Out.RecentPositionRadius = RecentPositionRadius;
+	return Out;
+}
+
+float AUnitAIController::ScorePositionFacts(const FAIPositionFacts& Facts,
+	const FAIPositionScoringTuning& T, float IdealCombatRange, bool bRetreat, bool bAdvance)
+{
+	// 1) ЦЕННОСТЬ УКРЫТИЯ — формула XCOM: среднее по всем угрозам, где открытость
+	// даёт резко отрицательный вклад. Именно это, а не отдельное правило, и даёт
+	// «AI боится флангов».
+	float Score = (Facts.ThreatsScored > 0
+		? Facts.CoverFactorSum / Facts.ThreatsScored
+		: 0.f) * T.CoverDefenseWeight;
+
+	if (Facts.ThreatsFlanked > 0)
+	{
+		Score += T.FlankPositionBonus;
+	}
+
+	// 2) ВИДИМОСТЬ ВРАГОВ (XCOM `fEnemyVisibility`). При отступлении знак
+	// обратный: раненому нужен разрыв линии огня, а не новая точка для той же
+	// перестрелки (§3.12).
+	if (bRetreat)
+	{
+		Score += (Facts.ThreatsVisible > 0 ? 0.f : 1.f) * T.EnemyVisibilityWeight;
+	}
+	else
+	{
+		const float VisibilityScore = Facts.ThreatsVisible > 0
+			? static_cast<float>(Facts.ThreatsVisible) / FMath::Max(1, T.MaxScoredThreats)
+			: -1.f;
+		Score += VisibilityScore * T.EnemyVisibilityWeight;
+	}
+
+	// 3) СПЛОЧЁННОСТЬ (XCOM `fAllyVisWeight`): доля видимых своих.
+	if (Facts.AlliesTotal > 0)
+	{
+		Score += (static_cast<float>(Facts.AlliesVisible) / Facts.AlliesTotal) * T.AllyVisibilityWeight;
+	}
+
+	// 4) РИСК ОВЕРВОТЧА. Конечная точка и маршрут считаются РАЗДЕЛЬНО: встать под
+	// прицелом опаснее, чем пробежать мимо, поэтому пробежка стоит половину.
+	Score -= Facts.ThreatsOverwatching * T.OverwatchExposurePenalty;
+	Score -= Facts.RouteOverwatchExposures * T.OverwatchExposurePenalty * 0.5f;
+
+	// 5) ВЫСОТА — тот же порог, что даёт бонус к точности.
+	if (Facts.bHeightAdvantage)
+	{
+		Score += T.HeightPositionBonus;
+	}
+
+	// 6) ЛИНИЯ ОГНЯ.
+	//
+	// ⚠️ ПРИ ОТСТУПЛЕНИИ ОНА НЕ СТОИТ НИЧЕГО — ни бонуса, ни штрафа.
+	//
+	// Это XCOM-профиль `Fallback`: там `fEnemyVisWeight = 0`, то есть у бегущего
+	// возможность стрелять не влияет на выбор точки вообще. Первая редакция
+	// правки «прячется где попало» инвертировала только вес видимости (+20 за
+	// разрыв контакта), а бонус за линию огня оставила работать в полную силу
+	// (+25) — и укрытая точка, откуда врага ВИДНО, по-прежнему выигрывала пять
+	// очков у точки, где его не видно. Дефект пойман автотестом
+	// `XRU1.AI.Position.RetreatBreaksLineOfSight`, а не прогоном: в бою разница
+	// в пять очков выглядит просто «неудачным выбором».
+	//
+	// При наступлении отсутствие линии огня тоже не штрафуется — иначе бот
+	// отвергает промежуточное укрытие без выстрела и бежит напролом.
+	if (!bRetreat)
+	{
+		Score += Facts.ThreatsVisible > 0
+			? T.LineOfFireBonus
+			: (bAdvance ? 0.f : -T.LoseLineOfFirePenalty);
+	}
+
+	// 7) ЦЕНА ПЕРЕБЕЖКИ и ДИСТАНЦИЯ.
+	Score -= T.TravelCostPerCm * Facts.TravelDistance;
+	if (bRetreat)
+	{
+		Score += T.RetreatRewardPerCm * Facts.ThreatDistance;
+	}
+	else
+	{
+		// Близость к идеальной дистанции боя, формула XCOM:
+		// 1 − |dist − ideal| / falloff, зажато [−1..1].
+		const float Deviation = FMath::Abs(Facts.ThreatDistance - IdealCombatRange);
+		const float RangeScore = FMath::Clamp(
+			1.f - Deviation / FMath::Max(1.f, T.IdealRangeFalloff), -1.f, 1.f);
+		Score += RangeScore * T.IdealRangeWeight;
+	}
+
+	// 8) ВОЗВРАТ НА ПРОШЛУЮ ПОЗИЦИЮ — против маятника (§3.12.1).
+	if (Facts.bRecentlyOccupied)
+	{
+		Score -= T.RecentPositionPenalty;
+	}
+
+	// 9) КУЧНОСТЬ — множитель только к ПОЛОЖИТЕЛЬНОМУ скору (XCOM). К
+	// отрицательному он работал бы наоборот, делая плохую точку лучше.
+	if (Score > 0.f && Facts.bCrowded)
+	{
+		Score *= T.SpreadPenaltyMultiplier;
+	}
+	return Score;
 }
 
 bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, float PathBudget,
@@ -1022,18 +1434,27 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 	 * когда у бота есть уверенный выстрел (отсечение по потолку скора в
 	 * DecideAction).
 	 */
-	auto EvaluatePoint = [&](const FVector& FloorPoint, FAICoverPointResult& Out)
+	// СТАДИЯ «ФАКТЫ»: только измерения, ни одного веса. Всё, что дальше делает с
+	// ними арифметику, живёт в чистой `ScorePositionFacts` и потому проверяемо
+	// автотестом без мира (AI-3).
+	auto BuildPositionFacts = [&](const FVector& FloorPoint, FAIPositionFacts& Facts,
+		FAICoverPointResult& Out)
 	{
+		Facts = FAIPositionFacts();
 		Out = FAICoverPointResult();
 		Out.Point = FloorPoint;
+		Facts.ThreatDistance = FVector::Dist(FloorPoint, ThreatLocation);
+		Facts.TravelDistance = FVector::Dist2D(UnitLocation, FloorPoint);
+		Facts.bHeightAdvantage = (FloorPoint.Z - ThreatLocation.Z) >= Tuning->HeightAdvantageZ;
+		Facts.AlliesTotal = Allies.Num();
 		if (Threats.Num() == 0)
 		{
-			return 0.f;
+			return;
 		}
+		Facts.ThreatsScored = Threats.Num();
 
 		const FVector EyeAtPoint = FloorPoint + FVector(0.f, 0.f, EyeHeight);
 
-		float CoverSum = 0.f;
 		for (const TObjectPtr<AActor>& ThreatActor : Threats)
 		{
 			if (!ThreatActor)
@@ -1046,9 +1467,9 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 			// (толстый луч на высотах half/full), а не углом к стене.
 			switch (Cover->EvaluateCoverAtLocation(FloorPoint, ThreatPos))
 			{
-			case ECoverType::Full: CoverSum += FullCoverFactor; ++Out.ThreatsCovered; break;
-			case ECoverType::Half: CoverSum += HalfCoverFactor; ++Out.ThreatsCovered; break;
-			default:               CoverSum += OpenCoverFactor; ++Out.ThreatsExposed;  break;
+			case ECoverType::Full: Facts.CoverFactorSum += FullCoverFactor; ++Out.ThreatsCovered; break;
+			case ECoverType::Half: Facts.CoverFactorSum += HalfCoverFactor; ++Out.ThreatsCovered; break;
+			default:               Facts.CoverFactorSum += OpenCoverFactor; ++Out.ThreatsExposed;  break;
 			}
 
 			// 2) КОГО ОТТУДА ВИДНО. Тем же предикатом, что решает выстрел, —
@@ -1057,23 +1478,19 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 				UTacticsCombatStatics::HasLineOfSightFromLocation(World, EyeAtPoint, ThreatActor, Unit))
 			{
 				++Out.ThreatsVisible;
+				++Facts.ThreatsVisible;
 
 				// 2b) A7 `SafeToMove`. Видимость взаимна: раз я вижу оттуда врага,
 				// то и он видит меня — а если он В НАБЛЮДЕНИИ, то встретит меня
 				// реакционным выстрелом. Считается ЗДЕСЬ, потому что стоит ровно
 				// ноль: линия огня для этой пары уже посчитана строкой выше.
-				//
-				// ⚠️ Осознанное упрощение против XCOM: там проверяется весь
-				// МАРШРУТ, у нас — только КОНЕЧНАЯ точка. Полная проверка пути
-				// стоила бы отдельного перебора LOS по каждому отрезку каждого из
-				// 48 кандидатов. Конечная точка — доминирующий член: именно на ней
-				// юнит остаётся стоять до конца хода противника.
 				if (const UAbilitySystemComponent* ThreatASC =
 					UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(ThreatActor))
 				{
 					if (ThreatASC->HasMatchingGameplayTag(TacticsGameplayTags::State_Overwatch))
 					{
 						++Out.ThreatsOverwatching;
+						++Facts.ThreatsOverwatching;
 					}
 				}
 			}
@@ -1083,8 +1500,11 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 			if (UTacticsCombatStatics::IsTargetFlankedByLocation(ThreatActor, FloorPoint))
 			{
 				++Out.ThreatsFlanked;
+				++Facts.ThreatsFlanked;
 			}
 		}
+		Facts.ThreatsCovered = Out.ThreatsCovered;
+		Facts.ThreatsExposed = Out.ThreatsExposed;
 
 		// 4) СПЛОЧЁННОСТЬ (XCOM `fAllyVisWeight`): видно ли отсюда своих. Быстрый
 		// путь LOS без выглядывания — вопрос «поддержат ли меня», а не «попаду ли
@@ -1094,10 +1514,69 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 			if (UTacticsCombatStatics::HasLineOfSightFromLocation(World, EyeAtPoint, Ally))
 			{
 				++Out.AlliesVisible;
+				++Facts.AlliesVisible;
 			}
 		}
 
-		return CoverSum / Threats.Num();
+		// 5) КУЧНОСТЬ и 6) ВОЗВРАТ — тоже факты, а не веса.
+		if (MinSpreadDistance > 0.f)
+		{
+			for (const FVector& AllyLocation : AllyLocations)
+			{
+				if (FVector::Dist2D(AllyLocation, FloorPoint) < MinSpreadDistance)
+				{
+					Facts.bCrowded = true;
+					break;
+				}
+			}
+		}
+		if (RecentPositionPenalty > 0.f && RecentPositionRadius > 0.f)
+		{
+			const float RecentRadiusSq = FMath::Square(RecentPositionRadius);
+			for (int32 i = 1; i < RecentTurnPositions.Num(); ++i)
+			{
+				if (FVector::DistSquared2D(RecentTurnPositions[i], FloorPoint) < RecentRadiusSq)
+				{
+					Facts.bRecentlyOccupied = true;
+					break;
+				}
+			}
+		}
+
+		// 7) РИСК ПО МАРШРУТУ (AI-3). В XCOM `SafeToMove` проверяет весь путь; у
+		// нас раньше оценивалась только конечная точка, и бот спокойно пробегал
+		// через сектор чужого овервотча, лишь бы финиш был чистым.
+		//
+		// Полный перебор LOS по каждому отрезку каждого кандидата неподъёмен
+		// (48 точек × угрозы × отрезки), поэтому берём СЕРЕДИНУ перебежки: одна
+		// проба на кандидата, а именно середина чаще всего и есть открытый
+		// участок между двумя укрытиями. Это дешёвое приближение, но оно ловит
+		// ровно тот случай, ради которого правило существует.
+		if (Facts.TravelDistance > 200.f)
+		{
+			const FVector MidPoint = (UnitLocation + FloorPoint) * 0.5f;
+			const FVector MidEye = FVector(MidPoint.X, MidPoint.Y, FloorPoint.Z) +
+				FVector(0.f, 0.f, EyeHeight);
+			for (const TObjectPtr<AActor>& ThreatActor : Threats)
+			{
+				if (!ThreatActor)
+				{
+					continue;
+				}
+				const UAbilitySystemComponent* ThreatASC =
+					UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(ThreatActor);
+				if (!ThreatASC ||
+					!ThreatASC->HasMatchingGameplayTag(TacticsGameplayTags::State_Overwatch))
+				{
+					continue; // не в наблюдении — по пути он не выстрелит
+				}
+				if (UTacticsCombatStatics::HasLineOfSightFromLocation(World, MidEye, ThreatActor, Unit))
+				{
+					++Facts.RouteOverwatchExposures;
+				}
+			}
+			Out.ThreatsOverwatching += Facts.RouteOverwatchExposures;
+		}
 	};
 
 	// Взвешенная оценка позиции (веса — Tactics|AI|Weights):
@@ -1105,80 +1584,17 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 	//   ± дистанция до цели − цена пути, затем штраф за кучность.
 	// В режиме ОТСТУПЛЕНИЯ дистанция инвертируется (награда за удаление) и
 	// потеря линии огня не штрафуется — выживание важнее выстрела.
+	// Веса снимаются ОДИН раз на весь перебор: они не меняются между кандидатами,
+	// а чистый скорер должен получать ровно то, чем живёт runtime.
+	const FAIPositionScoringTuning ScoringTuning = MakePositionTuningSnapshot();
+
+	// Обёртка «померить и посчитать». Вся арифметика — в статической
+	// `ScorePositionFacts`, здесь только связка стадий.
 	auto ScorePosition = [&](const FVector& FloorPoint, FAICoverPointResult& Out)
 	{
-		const float ThreatDistance = FVector::Dist(FloorPoint, ThreatLocation);
-
-		float Score = EvaluatePoint(FloorPoint, Out) * CoverDefenseWeight;
-		if (Out.ThreatsFlanked > 0)
-		{
-			Score += FlankPositionBonus;
-		}
-
-		// «Сколько врагов видно» (XCOM fEnemyVisibility): не видно никого → −1.
-		// Укрытие, из которого нельзя ответить, — это не позиция, а угол.
-		const float VisibilityScore = Out.ThreatsVisible > 0
-			? static_cast<float>(Out.ThreatsVisible) / FMath::Max(1, MaxScoredThreats)
-			: -1.f;
-		Score += VisibilityScore * EnemyVisibilityWeight;
-
-		// Сплочённость: доля видимых своих × вес (XCOM `fAllyVisWeight`). Без
-		// этого члена у AI был только анти-кучный штраф — отряд умел разбегаться,
-		// но не умел держать линию.
-		if (Allies.Num() > 0)
-		{
-			Score += (static_cast<float>(Out.AlliesVisible) / Allies.Num()) * AllyVisibilityWeight;
-		}
-
-		// A7 `SafeToMove`: точка под чужим наблюдением. Штраф за КАЖДОГО
-		// наблюдателя — два овервотча на одном направлении вдвое опаснее одного.
-		Score -= Out.ThreatsOverwatching * OverwatchExposurePenalty;
-
-		// Линию огня считаем по ЛЮБОЙ угрозе, а не только по основной цели:
-		// иначе точка, откуда простреливается сосед, но не «главный», честно
-		// считалась бы бесполезной.
-		const bool bCanShoot = Out.ThreatsVisible > 0;
-
-		// Превышение над целью: тот же порог, что даёт бонус к точности.
-		if (FloorPoint.Z - ThreatLocation.Z >= Tuning->HeightAdvantageZ)
-		{
-			Score += HeightPositionBonus;
-		}
-
-		// При отступлении И при наступлении отсутствие линии огня НЕ штрафуется:
-		// иначе бот отвергает промежуточное укрытие без выстрела и бежит напролом.
-		Score += bCanShoot ? LineOfFireBonus : ((bRetreat || bAdvance) ? 0.f : -LoseLineOfFirePenalty);
-		Score -= TravelCostPerCm * FVector::Dist2D(UnitLocation, FloorPoint);
-		if (bRetreat)
-		{
-			Score += RetreatRewardPerCm * ThreatDistance;
-		}
-		else
-		{
-			// Близость к ИДЕАЛЬНОЙ дистанции боя (A4), формула XCOM:
-			//   1 − |dist − ideal| / falloff, зажато [−1..1].
-			// Это единственное, что удерживает бота от «добежать вплотную»:
-			// укрытие тянет прятаться, линия огня — видеть цель, а дистанцию до
-			// A4 не оценивал никто.
-			const float Deviation = FMath::Abs(ThreatDistance - Unit->IdealCombatRange);
-			const float RangeScore = FMath::Clamp(1.f - Deviation / FMath::Max(1.f, IdealRangeFalloff), -1.f, 1.f);
-			Score += RangeScore * IdealRangeWeight;
-		}
-
-		// Кучность: множитель только к ПОЛОЖИТЕЛЬНОМУ скору (XCOM). К
-		// отрицательному он бы работал наоборот — делал плохую точку лучше.
-		if (Score > 0.f && MinSpreadDistance > 0.f)
-		{
-			for (const FVector& AllyLocation : AllyLocations)
-			{
-				if (FVector::Dist2D(AllyLocation, FloorPoint) < MinSpreadDistance)
-				{
-					Score *= SpreadPenaltyMultiplier;
-					break;
-				}
-			}
-		}
-		return Score;
+		FAIPositionFacts Facts;
+		BuildPositionFacts(FloorPoint, Facts, Out);
+		return ScorePositionFacts(Facts, ScoringTuning, Unit->IdealCombatRange, bRetreat, bAdvance);
 	};
 
 	// Базовая линия — ТЕКУЩАЯ позиция теми же правилами + порог значимости:
@@ -1194,6 +1610,20 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 	FAICoverPointResult BestDetails;
 	bool bFound = false;
 
+	// СЧЁТЧИКИ СТАДИЙ (AI-1). Без них «поиск позиции ничего не нашёл» —
+	// неразличимая ситуация: то ли навмеш пуст, то ли всё занято, то ли ни один
+	// кандидат не побил базовую линию. Каждая стадия отвечает за свой отказ.
+	const double SearchStartTime = FPlatformTime::Seconds();
+	int32 StatGenerated = 0;
+	int32 StatOffNavmesh = 0;
+	int32 StatOccupied = 0;
+	int32 StatReserved = 0;
+	int32 StatUnreachable = 0;
+	int32 StatScored = 0;
+
+	UTacticalAIDirectorSubsystem* Director = GetAIDirector();
+	const float ReservationRadius = Director ? Director->ReservationRadius : 0.f;
+
 	// Кольцевой сэмплинг вокруг юнита в пределах бюджета пути (1 AP — манёвр
 	// с выстрелом, 2 AP — отступление/рывок: поле поиска шире).
 	const float Radii[] = {0.35f, 0.6f, 0.85f, 1.0f};
@@ -1205,10 +1635,12 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 		{
 			const float Angle = 2.f * PI * Step / AngleSteps;
 			const FVector Candidate = UnitLocation + FVector(FMath::Cos(Angle), FMath::Sin(Angle), 0.f) * Radius;
+			++StatGenerated;
 
 			FNavLocation Projected;
 			if (!NavSys->ProjectPointToNavigation(Candidate, Projected, FVector(100.f, 100.f, 300.f)))
 			{
+				++StatOffNavmesh;
 				continue;
 			}
 
@@ -1224,6 +1656,15 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 			}
 			if (bBlocked)
 			{
+				++StatOccupied;
+				continue;
+			}
+
+			// AI-5: точку уже застолбил другой боец. Диски занятости этого не
+			// ловят — тот, кто в пути, диск не ставит.
+			if (Director && Director->IsPositionReserved(Unit, Projected.Location, ReservationRadius))
+			{
+				++StatReserved;
 				continue;
 			}
 
@@ -1298,6 +1739,7 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 					CandidatePoint, PathBudget, Reachable) ||
 				FVector::Dist2D(Reachable, CandidatePoint) > 75.f)
 			{
+				++StatUnreachable;
 				continue;
 			}
 
@@ -1306,6 +1748,7 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 			// выстрел, и из тех же огневых позиций peek).
 			FAICoverPointResult Details;
 			const float Score = ScorePosition(CandidatePoint, Details);
+			++StatScored;
 			if (Score <= BestScore)
 			{
 				continue;
@@ -1341,6 +1784,15 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 				TEXT("порог %.1f (ничего лучше в бюджете)"),
 				*BaselineDetails.Describe(), BaselineScore, BaselineScore + RelocateBias);
 		}
+
+		// AI-1: цена и КПД перебора по стадиям. «Оценено 0 из 48» и «оценено 40,
+		// но ни одна не побила базу» — совершенно разные диагнозы, и различить их
+		// иначе нечем.
+		UE_LOG(LogXRU1AI, Log,
+			TEXT("[AI]     перебор: сгенерировано %d, вне навмеша %d, занято %d, ")
+			TEXT("зарезервировано %d, не дойти %d, оценено %d за %.2f мс"),
+			StatGenerated, StatOffNavmesh, StatOccupied, StatReserved, StatUnreachable,
+			StatScored, (FPlatformTime::Seconds() - SearchStartTime) * 1000.0);
 	}
 	return bFound;
 }
@@ -1462,6 +1914,37 @@ bool AUnitAIController::StepInvestigate(AUnitBase* Unit)
 		return StepPatrol(Unit);
 	}
 
+	// ПОВОДОК ЧАСОВОГО. Пост существует, чтобы его охраняли: боец у заряда не
+	// имеет права уйти на звук за полкарты и оставить объект пустым. Проверка
+	// стоит ДО расчёта дистанции до точки — если точка вне поводка, туда не идут
+	// вообще, а не «идут, пока не устанут».
+	//
+	// После вскрытия пода поводок снимается: тогда это уже не охрана объекта, а
+	// бой, и часовой обязан воевать наравне со всеми.
+	const UTacticalAIDirectorSubsystem* Director = GetAIDirector();
+	const bool bPodActivated = Director && Director->IsUnitPodActivated(Unit);
+	if (!bPodActivated && PostLeashRadius > 0.f && IsPostSentry(Unit) && bPatrolAnchorSet)
+	{
+		const float FromPost = FVector::Dist2D(PatrolAnchorLocation, LastKnownThreatLocation);
+		if (FromPost > PostLeashRadius)
+		{
+			if (TacticsDebug::IsAILogEnabled())
+			{
+				UE_LOG(LogXRU1AI, Log,
+					TEXT("[AI] %s: точка интереса в %.0f см от поста (поводок %.0f) — "
+						 "остаюсь охранять"),
+					*GetNameSafe(Unit), FromPost, PostLeashRadius);
+			}
+			// Знание не выбрасываем: если противник подойдёт ближе, боец
+			// среагирует на новый, уже близкий контакт.
+			Unit->FaceTowardsSmooth(LastKnownThreatLocation, /*bPlayTurnAnimation=*/false);
+			NoteIdleReason(FString::Printf(
+				TEXT("часовой: шум в %.0f см от поста, дальше поводка %.0f — не иду"),
+				FromPost, PostLeashRadius));
+			return FallbackHoldOrSkip(Unit, TEXT("охрана поста: шум слишком далеко"));
+		}
+	}
+
 	// Дошли до точки интереса и никого не нашли.
 	if (FVector::Dist2D(Unit->GetActorLocation(), LastKnownThreatLocation) <= InvestigateAcceptanceRadius * 2.f)
 	{
@@ -1503,117 +1986,572 @@ bool AUnitAIController::StepInvestigate(AUnitBase* Unit)
 			}
 		}
 
-		bHasThreatLocation = false;
+		// Точка проверена — контакт, который сюда вёл, отработан и забывается.
+		// Именно контакт, а не вся память: рядом может лежать более старое, но
+		// всё ещё живое знание о другом противнике, и его боец обязан проверить
+		// следующим (AI-2), а не начинать с чистого листа.
+		const FVector CheckedPoint = LastKnownThreatLocation;
+		const float ForgetRadius = FMath::Max(200.f, InvestigateAcceptanceRadius * 2.f);
+		ContactMemory.RemoveAll([&CheckedPoint, ForgetRadius](const FAIContact& Contact)
+		{
+			return FVector::Dist2D(Contact.LastKnownLocation, CheckedPoint) <= ForgetRadius;
+		});
+		RefreshInvestigateTarget();
+		if (bHasThreatLocation)
+		{
+			return StepInvestigate(Unit); // есть куда идти дальше — идём
+		}
+
 		AlertState = EUnitAlertState::Patrol;
 		return StepPatrol(Unit);
 	}
 
-	return MoveWithBudget(Unit, LastKnownThreatLocation, InvestigateAcceptanceRadius);
+	// Точка интереса может быть дальше одного хода — это нормально, идём частями.
+	if (MoveWithBudget(Unit, LastKnownThreatLocation, InvestigateAcceptanceRadius,
+		/*MaxActionPoints=*/Unit->GetActionPoints() ? Unit->GetActionPoints()->CurrentActionPoints : 1))
+	{
+		return true;
+	}
+
+	// Маршрут к точке интереса не строится. Раньше здесь ход просто заканчивался
+	// ничем: 14 пустых ходов группы `Post_7` в прогоне 2026-08-04 — это именно
+	// он. Боец, который слышал бой и знает направление, обязан хотя бы держать
+	// его под прицелом (в XCOM 2 этого как раз не хватает, см. заголовок
+	// InvestigateOverwatchChance).
+	NoteIdleReason(FString::Printf(
+		TEXT("разведка точки (%.0f, %.0f), %.0f см: %s"),
+		LastKnownThreatLocation.X, LastKnownThreatLocation.Y,
+		FVector::Dist2D(Unit->GetActorLocation(), LastKnownThreatLocation),
+		LastMoveFailure.IsEmpty() ? TEXT("маршрут не построен") : *LastMoveFailure));
+
+	Unit->FaceTowardsSmooth(LastKnownThreatLocation, /*bPlayTurnAnimation=*/false);
+	return FallbackHoldOrSkip(Unit, TEXT("разведка: к точке не пройти, держу направление"));
 }
 
-bool AUnitAIController::StepPatrol(AUnitBase* Unit)
+void AUnitAIController::NoteIdleReason(const FString& Reason)
 {
-	if (Unit->PatrolPoints.Num() == 0)
+	if (Reason.IsEmpty())
 	{
-		// Пост без маршрута. Раньше боец просто пропускал ход — на карте без
-		// расставленных PatrolPoints это выглядело как «половина врагов сломана»:
-		// камера подлетала к ним, и они ничего не делали.
-		// Часовой на посту держит направление под прицелом; это и полезнее, и
-		// читается как осмысленное поведение.
-		if (Unit->OverwatchAbilityClass && TryActivateSelfAbility(Unit, Unit->OverwatchAbilityClass))
+		return;
+	}
+	// Цепочка, а не одна причина: разбирать надо весь спуск по лестнице
+	// фолбэков. «Маршрут не построен → в зоне нет свободной точки → наблюдение
+	// не активировалось» отвечает на вопрос сразу, одна последняя строка — нет.
+	int32 Links = 0;
+	for (int32 i = 0; i < TurnIdleReasons.Len(); ++i)
+	{
+		Links += (TurnIdleReasons[i] == TEXT('|')) ? 1 : 0;
+	}
+	if (Links >= MaxIdleReasons)
+	{
+		return;
+	}
+	if (!TurnIdleReasons.IsEmpty())
+	{
+		TurnIdleReasons += TEXT(" | ");
+	}
+	TurnIdleReasons += Reason;
+}
+
+bool AUnitAIController::IsPostSentry(const AUnitBase* Unit) const
+{
+	return Unit && Unit->PatrolPoints.Num() == 0 && Unit->PatrolRoamRadius <= 0.f;
+}
+
+bool AUnitAIController::HoldPositionOnPost(AUnitBase* Unit, const TCHAR* Reason)
+{
+	// Часовой на посту держит направление под прицелом. Раньше боец без маршрута
+	// просто пропускал ход — на карте без расставленных PatrolPoints это
+	// выглядело как «половина врагов сломана»: камера подлетала к ним, и они
+	// ничего не делали.
+	if (!Unit->OverwatchAbilityClass)
+	{
+		NoteIdleReason(FString::Printf(
+			TEXT("%s: OverwatchAbilityClass не назначен у %s"), Reason, *GetNameSafe(Unit->GetClass())));
+		return false;
+	}
+	if (TryActivateSelfAbility(Unit, Unit->OverwatchAbilityClass))
+	{
+		if (TacticsDebug::IsAILogEnabled())
+		{
+			UE_LOG(LogXRU1AI, Log, TEXT("[AI] %s: %s — встал в наблюдение"),
+				*GetNameSafe(Unit), Reason);
+		}
+		ScheduleNextStep();
+		return true;
+	}
+	NoteIdleReason(FString::Printf(
+		TEXT("%s: наблюдение не активировалось (способность отказала или ОД не списаны)"), Reason));
+	return false;
+}
+
+bool AUnitAIController::FallbackHoldOrSkip(AUnitBase* Unit, const TCHAR* Context)
+{
+	UActionPointsComponent* ActionPoints = Unit ? Unit->GetActionPoints() : nullptr;
+	if (!ActionPoints)
+	{
+		return false;
+	}
+
+	// 1) Держать сектор — самое осмысленное, что можно сделать, никуда не дойдя.
+	if (HoldPositionOnPost(Unit, Context))
+	{
+		return true;
+	}
+
+	// 2) Вжаться в укрытие, если оно тут есть. Не «на всякий случай»: боец, не
+	// сумевший сдвинуться, стоит там, где стоит, и единственный способ сделать
+	// это место лучше — использовать имеющуюся стену.
+	if (Unit->HunkerAbilityClass)
+	{
+		const UCoverDetectionComponent* Cover = Unit->GetCoverDetection();
+		if (Cover && Cover->BestCoverAround != ECoverType::None &&
+			TryActivateSelfAbility(Unit, Unit->HunkerAbilityClass))
 		{
 			if (TacticsDebug::IsAILogEnabled())
 			{
-				UE_LOG(LogXRU1AI, Log, TEXT("[AI] %s: пост без маршрута — встал в наблюдение"),
-					*GetNameSafe(Unit));
+				UE_LOG(LogXRU1AI, Log, TEXT("[AI] %s: %s — глухая оборона в имеющемся укрытии"),
+					*GetNameSafe(Unit), Context);
 			}
 			ScheduleNextStep();
 			return true;
 		}
-		return false;
 	}
 
-	const AActor* PatrolPoint = Unit->PatrolPoints[PatrolIndex % Unit->PatrolPoints.Num()];
-	if (!PatrolPoint)
+	// 3) ЧЕСТНЫЙ ПРОПУСК. Действия не будет, но ход обязан быть ЗАВЕРШИМЫМ: без
+	// списания очка следующий AdvanceTurnStep повторил бы тот же отказ, и разбор
+	// свёлся бы к «почему он думает вечно». Возвращаем false — вызывающий
+	// напечатает Warning с накопленной цепочкой причин, а ОД уже списано, так
+	// что зациклиться шаг не может.
+	ActionPoints->TrySpendActionPoint(ActionPoints->CurrentActionPoints);
+	return false;
+}
+
+bool AUnitAIController::StepRoamAroundAnchor(AUnitBase* Unit, const FVector& Anchor,
+	float RadiusOverride)
+{
+	UWorld* World = GetWorld();
+	UNavigationSystemV1* Nav = World
+		? FNavigationSystem::GetCurrent<UNavigationSystemV1>(World) : nullptr;
+	if (!Nav)
+	{
+		NoteIdleReason(TEXT("обход зоны: навигационной системы нет"));
+		return FallbackHoldOrSkip(Unit, TEXT("удержание: навигации нет"));
+	}
+
+	const float Radius = RadiusOverride > 0.f
+		? RadiusOverride
+		: FMath::Max(100.f, Unit->PatrolRoamRadius);
+
+	// Розыгрыш детерминированный (то же правило, что у Overwatch на
+	// расследовании): зерно собирается из карты, хода, имени бойца и номера
+	// решения. Случайность здесь — разнообразие маршрута, а не источник
+	// невоспроизводимых прогонов.
+	FRandomStream Stream(static_cast<int32>(BuildDecisionSeed(Unit, FName(TEXT("PatrolRoam")))));
+
+	for (int32 Attempt = 0; Attempt < 8; ++Attempt)
+	{
+		const float Angle = Stream.FRandRange(0.f, 2.f * PI);
+		// sqrt() даёт равномерное распределение ПО ПЛОЩАДИ круга: без него
+		// боец кучкуется у центра зоны.
+		const float Distance = Radius * FMath::Sqrt(Stream.FRand());
+		const FVector Candidate = Anchor +
+			FVector(FMath::Cos(Angle) * Distance, FMath::Sin(Angle) * Distance, 0.f);
+
+		FNavLocation Projected;
+		if (!Nav->ProjectPointToNavigation(Candidate, Projected, FVector(200.f, 200.f, 300.f)))
+		{
+			continue;
+		}
+		// Слишком близкая цель — шаг «на месте»: маршрут не построится, и ход
+		// закончится без действий.
+		if (FVector::Dist2D(Projected.Location, Unit->GetActorLocation()) < 200.f)
+		{
+			continue;
+		}
+		if (MoveWithBudget(Unit, Projected.Location, 100.f))
+		{
+			if (TacticsDebug::IsAILogEnabled())
+			{
+				UE_LOG(LogXRU1AI, Log, TEXT("[AI] %s: обход зоны удержания (радиус %.0f)"),
+					*GetNameSafe(Unit), Radius);
+			}
+			return true;
+		}
+	}
+
+	// В зоне не нашлось куда идти (тесно, всё занято) — держим сектор.
+	NoteIdleReason(FString::Printf(
+		TEXT("обход зоны (радиус %.0f): ни одна из 8 точек не подошла%s"),
+		Radius, LastMoveFailure.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(" — %s"), *LastMoveFailure)));
+	return FallbackHoldOrSkip(Unit, TEXT("удержание: свободной точки в зоне нет"));
+}
+
+bool AUnitAIController::StepPatrol(AUnitBase* Unit)
+{
+	// Якорь зоны удержания: он же стартовая позиция бойца. Запоминается один
+	// раз, иначе зона «уползала» бы вслед за самим бойцом.
+	if (!bPatrolAnchorSet)
+	{
+		PatrolAnchorLocation = Unit->GetActorLocation();
+		bPatrolAnchorSet = true;
+	}
+
+	const int32 PointCount = Unit->PatrolPoints.Num();
+
+	// Ноль или одна точка — это не маршрут, а приказ удерживать место.
+	// Полная таблица режимов — в комментарии к AUnitBase::PatrolPoints.
+	if (PointCount <= 1)
+	{
+		const AActor* HoldPoint = PointCount == 1 ? Unit->PatrolPoints[0].Get() : nullptr;
+		const FVector Anchor = HoldPoint ? HoldPoint->GetActorLocation() : PatrolAnchorLocation;
+		const float DistanceToAnchor = FVector::Dist2D(Unit->GetActorLocation(), Anchor);
+		const bool bAtAnchor = DistanceToAnchor <= 150.f;
+
+		if (Unit->PatrolRoamRadius > 0.f)
+		{
+			// Боец далеко от своей зоны (сдвинули приказом, оттеснили) —
+			// сначала возвращается, и только потом бродит внутри неё.
+			if (DistanceToAnchor > Unit->PatrolRoamRadius)
+			{
+				if (MoveWithBudget(Unit, Anchor, 100.f))
+				{
+					return true;
+				}
+				NoteIdleReason(FString::Printf(
+					TEXT("возврат в зону удержания (%.0f см до якоря): %s"),
+					DistanceToAnchor, *LastMoveFailure));
+				// Дойти до якоря не вышло — это не повод стоять: пробуем обойти
+				// зону вокруг СЕБЯ, а не вокруг недостижимого якоря.
+				return StepRoamAroundAnchor(Unit, Unit->GetActorLocation(),
+					FMath::Max(Unit->PatrolRoamRadius, Unit->MoveRange));
+			}
+			return StepRoamAroundAnchor(Unit, Anchor);
+		}
+
+		// Без радиуса: дойти до точки удержания и держать сектор. Без этой
+		// ветки боец каждый ход «шёл» к точке, на которой уже стоит, маршрут
+		// не строился, и ход заканчивался без единого действия.
+		//
+		// ⚠️ ЧАСОВОЙ ВОЗВРАЩАЕТСЯ НА ПОСТ. Раньше боец без маршрута (`HoldPoint`
+		// == nullptr — так настроен сторож у заряда) всегда уходил в наблюдение
+		// ГДЕ СТОИТ: сместился на шум или его оттеснили — и объект остался без
+		// охраны навсегда. Якорь у него есть (стартовая позиция), возвращаться
+		// есть куда.
+		if (!bAtAnchor)
+		{
+			if (MoveWithBudget(Unit, Anchor, 100.f))
+			{
+				if (TacticsDebug::IsAILogEnabled())
+				{
+					UE_LOG(LogXRU1AI, Log, TEXT("[AI] %s: возвращаюсь на пост (%.0f см)"),
+						*GetNameSafe(Unit), DistanceToAnchor);
+				}
+				return true;
+			}
+			NoteIdleReason(FString::Printf(TEXT("возврат на пост (%.0f см): %s"),
+				DistanceToAnchor, *LastMoveFailure));
+		}
+		return FallbackHoldOrSkip(Unit,
+			HoldPoint ? TEXT("удержание точки") : TEXT("пост без маршрута"));
+	}
+
+	// Вход в маршрут считается ОДИН раз и лениво: к первому шагу патруля боец
+	// уже стоит там, где его поставили (спавн мог скорректировать позицию).
+	if (!bPatrolIndexResolved)
+	{
+		PatrolIndex = ResolveInitialPatrolIndex(Unit);
+		bPatrolIndexResolved = true;
+	}
+
+	PatrolIndex = FMath::Clamp(PatrolIndex, 0, PointCount - 1);
+	if (!Unit->PatrolPoints[PatrolIndex])
+	{
+		NoteIdleReason(FString::Printf(TEXT("точка маршрута №%d пустая (ссылка на удалённый актор)"),
+			PatrolIndex));
+		return FallbackHoldOrSkip(Unit, TEXT("маршрут повреждён"));
+	}
+
+	// У точки — переводим индекс на следующую: иначе боец «идёт» туда, где уже
+	// стоит, маршрут не строится, и ход заканчивается без единого действия.
+	if (FVector::Dist2D(Unit->GetActorLocation(),
+		Unit->PatrolPoints[PatrolIndex]->GetActorLocation()) <= 150.f)
+	{
+		AdvancePatrolIndex(Unit);
+	}
+
+	// ⚠️ ПЕРЕБОР ПО МАРШРУТУ, а не одна попытка.
+	//
+	// Прежняя версия делала РОВНО ОДИН `MoveWithBudget` к текущей вершине и при
+	// отказе возвращала false — без фолбэка вообще. Достаточно было одной
+	// недостижимой вершины (точка на бордюре, за закрытой дверью, в дыре
+	// навмеша), чтобы группа встала навсегда: индекс не двигался, и каждый
+	// следующий ход повторял тот же отказ. Ровно это и дал прогон 2026-08-04 —
+	// 62 пустых хода у группы `Post_3` с 12 точками.
+	//
+	// Теперь недостижимая вершина ПРОПУСКАЕТСЯ: обходим маршрут дальше, как и
+	// сделал бы часовой, наткнувшийся на запертую дверь. Ограничение — число
+	// точек: полный круг без успеха означает, что дело не в вершине.
+	FString FirstFailure;
+	const int32 MaxProbes = FMath::Min(PointCount, 6);
+	for (int32 Probe = 0; Probe < MaxProbes; ++Probe)
+	{
+		const AActor* PatrolPoint = Unit->PatrolPoints[PatrolIndex];
+		if (PatrolPoint && MoveWithBudget(Unit, PatrolPoint->GetActorLocation(), 100.f))
+		{
+			return true;
+		}
+		if (FirstFailure.IsEmpty())
+		{
+			FirstFailure = FString::Printf(TEXT("точка маршрута №%d (%s): %s"),
+				PatrolIndex, *GetNameSafe(PatrolPoint),
+				LastMoveFailure.IsEmpty() ? TEXT("недостижима") : *LastMoveFailure);
+		}
+		AdvancePatrolIndex(Unit);
+	}
+
+	NoteIdleReason(FString::Printf(TEXT("маршрут из %d точек: %d вершин подряд недостижимы — %s"),
+		PointCount, MaxProbes, *FirstFailure));
+
+	// Маршрут целиком не строится — боец не «сломан», он просто заперт. Ведёт
+	// себя как часовой: обходит участок вокруг себя, а не стоит столбом.
+	if (StepRoamAroundAnchor(Unit, Unit->GetActorLocation(), Unit->MoveRange))
+	{
+		return true;
+	}
+	return FallbackHoldOrSkip(Unit, TEXT("маршрут патруля недоступен"));
+}
+
+int32 AUnitAIController::ResolveInitialPatrolIndex(const AUnitBase* Unit) const
+{
+	const int32 PointCount = Unit->PatrolPoints.Num();
+	if (PointCount <= 1)
+	{
+		return 0;
+	}
+
+	int32 Base = 0;
+	if (Unit->bPatrolStartFromNearest)
+	{
+		// Ближайшая точка маршрута к месту, где боец реально стоит. Дистанция
+		// по прямой: маршрут ещё не начат, и строить путь до каждой точки ради
+		// выбора стартовой — неоправданно дорого на старте боя.
+		float BestDistSq = TNumericLimits<float>::Max();
+		for (int32 i = 0; i < PointCount; ++i)
+		{
+			const AActor* Point = Unit->PatrolPoints[i];
+			if (!Point)
+			{
+				continue;
+			}
+			const float DistSq = FVector::DistSquared2D(
+				Unit->GetActorLocation(), Point->GetActorLocation());
+			if (DistSq < BestDistSq)
+			{
+				BestDistSq = DistSq;
+				Base = i;
+			}
+		}
+	}
+
+	// Смещение растягивает группу по маршруту. У кольца оно заворачивается, у
+	// незамкнутой линии — упирается в её конец (дальше идти всё равно некуда).
+	const int32 Offset = FMath::Max(0, Unit->PatrolStartIndex);
+	return Unit->PatrolRouteMode == EPatrolRouteMode::PingPong
+		? FMath::Clamp(Base + Offset, 0, PointCount - 1)
+		: (Base + Offset) % PointCount;
+}
+
+void AUnitAIController::AdvancePatrolIndex(const AUnitBase* Unit)
+{
+	const int32 PointCount = Unit->PatrolPoints.Num();
+	if (PointCount <= 1)
+	{
+		PatrolIndex = 0;
+		return;
+	}
+
+	if (Unit->PatrolRouteMode == EPatrolRouteMode::PingPong)
+	{
+		// На концах незамкнутого маршрута боец разворачивается и идёт назад по
+		// тем же точкам. Кольцевой обход тут погнал бы его от последней точки к
+		// первой через весь маршрут — вхолостую и мимо охраняемого участка.
+		if (PatrolIndex + PatrolDirection < 0 || PatrolIndex + PatrolDirection >= PointCount)
+		{
+			PatrolDirection = -PatrolDirection;
+		}
+		PatrolIndex = FMath::Clamp(PatrolIndex + PatrolDirection, 0, PointCount - 1);
+		return;
+	}
+
+	PatrolIndex = (PatrolIndex + 1) % PointCount;
+}
+
+bool AUnitAIController::ProjectOntoNavmesh(const FVector& Location, FVector& OutProjected,
+	const FVector& Extent) const
+{
+	UWorld* World = GetWorld();
+	UNavigationSystemV1* Nav = World
+		? FNavigationSystem::GetCurrent<UNavigationSystemV1>(World) : nullptr;
+	if (!Nav)
 	{
 		return false;
 	}
-
-	// У точки — идём к следующей на этом же ходу.
-	if (FVector::Dist2D(Unit->GetActorLocation(), PatrolPoint->GetActorLocation()) <= 150.f)
+	FNavLocation Projected;
+	if (!Nav->ProjectPointToNavigation(Location, Projected, Extent))
 	{
-		++PatrolIndex;
-		const AActor* Next = Unit->PatrolPoints[PatrolIndex % Unit->PatrolPoints.Num()];
-		return Next ? MoveWithBudget(Unit, Next->GetActorLocation(), 100.f) : false;
+		return false;
 	}
-
-	return MoveWithBudget(Unit, PatrolPoint->GetActorLocation(), 100.f);
+	OutProjected = Projected.Location;
+	return true;
 }
 
 bool AUnitAIController::MoveWithBudget(AUnitBase* Unit, const FVector& Goal, float AcceptanceRadius,
-	int32 MaxActionPoints)
+	int32 MaxActionPoints, float RequiredGoalTolerance)
 {
+	LastMoveFailure.Reset();
 	if (!Unit || !Unit->GetActionPoints())
 	{
+		LastMoveFailure = TEXT("нет пешки или компонента ОД");
 		return false;
 	}
 	MaxActionPoints = FMath::Max(1, MaxActionPoints);
 
+	// ЦЕЛЬ ПРИВОДИТСЯ К НАВМЕШУ ОДИН РАЗ, до всех планировщиков. Патрульные точки
+	// и якоря зон дизайнер ставит по геометрии, а не по навмешу: TargetPoint,
+	// стоящий на бордюре или в 40 см над полом, отдельного маршрута не получает —
+	// и весь режим патруля выглядел как «боец ничего не делает».
+	FVector NavGoal = Goal;
+	if (FVector Projected; ProjectOntoNavmesh(Goal, Projected, FVector(300.f, 300.f, 500.f)))
+	{
+		NavGoal = Projected;
+	}
+
 	// В бою враг использует ровно тот же occupancy-aware планировщик, что и игрок:
 	// волна заранее огибает диски союзников, а не надеется на локальный Detour Crowd.
-	if (const UTurnManagerSubsystem* TurnManager = GetWorld()
+	const UTurnManagerSubsystem* TurnManager = GetWorld()
 		? GetWorld()->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
-		TurnManager && TurnManager->IsInCombat())
+	if (TurnManager && TurnManager->IsInCombat())
 	{
 		ATacticalPlayerController* PlayerController = GetWorld()
 			? Cast<ATacticalPlayerController>(GetWorld()->GetFirstPlayerController()) : nullptr;
 		FMoveOrderPlan Plan;
-		if (!PlayerController ||
-			!PlayerController->PlanMoveForUnit(Unit, Goal, MaxActionPoints, Plan) ||
+		if (!PlayerController)
+		{
+			LastMoveFailure = TEXT("нет ATacticalPlayerController — планировщик недоступен");
+		}
+		else if (!PlayerController->PlanMoveForUnit(Unit, NavGoal, MaxActionPoints, Plan) ||
 			Plan.PathPoints.Num() < 2)
 		{
-			return false;
+			LastMoveFailure = TEXT("планировщик не построил маршрут");
+		}
+		else if (RequiredGoalTolerance > 0.f &&
+			FVector::Dist2D(Plan.PathPoints.Last(), NavGoal) > RequiredGoalTolerance)
+		{
+			// Планировщик поля при неудаче подставляет БЛИЖАЙШИЙ достижимый
+			// сэмпл. Для манёвра это подмена оценённой точки: укрытие считалось
+			// в одном месте, а боец встал бы в другом.
+			LastMoveFailure = FString::Printf(
+				TEXT("план ведёт не в выбранную точку (промах %.0f см при допуске %.0f)"),
+				FVector::Dist2D(Plan.PathPoints.Last(), NavGoal), RequiredGoalTolerance);
+		}
+		else
+		{
+			// Реальная стоимость плана: манёвр в укрытие за 2 AP теперь исполняется
+			// ОДНИМ маршрутом и оплачивается целиком, как приказ игрока. Планирование
+			// бюджетом в 1 AP оставляло бойца стоять на полпути посреди поля.
+			PendingMoveActionPointCost = FMath::Max(1, Plan.ActionPointCost);
+			bTurnMoveInProgress = true; // AP спишется в OnMoveCompleted.
+			const EPathFollowingRequestResult::Type Result = MoveAlongRoute(
+				Plan.PathPoints, FMath::Min(AcceptanceRadius, 40.f));
+			if (Result == EPathFollowingRequestResult::RequestSuccessful)
+			{
+				Unit->NotifyUnitStateChanged();
+				return true;
+			}
+			bTurnMoveInProgress = false;
+			LastMoveFailure = TEXT("MoveAlongRoute отклонил готовый план");
+		}
+		// РАЗОВЫЙ ДИАГНОЗ. Поле дистанций проецирует позицию бойца с допуском в
+		// одну ячейку (35 см). Не спроецировалась — боец физически стоит не на
+		// проходимом полу, и это дефект РАССТАНОВКИ, а не AI: чинится переносом
+		// точки спавна, а не весами. Печатаем один раз на вселение, иначе
+		// строка повторится в каждом ходу до конца боя.
+		if (!bReportedOffNavmesh && !LastMoveFailure.IsEmpty())
+		{
+			FVector Ignored;
+			if (!ProjectOntoNavmesh(Unit->GetActorLocation(), Ignored, FVector(40.f, 40.f, 300.f)))
+			{
+				bReportedOffNavmesh = true;
+				UE_LOG(LogXRU1AI, Warning,
+					TEXT("[AI] %s стоит ВНЕ НАВМЕША (%.0f, %.0f, %.0f): планировщик поля не строит ")
+					TEXT("для него ни одного маршрута, работает только прямой путь. ")
+					TEXT("Проверь точку спавна энкаунтера — см. [Encounter] ... без подтверждения навмешем"),
+					*GetNameSafe(Unit), Unit->GetActorLocation().X, Unit->GetActorLocation().Y,
+					Unit->GetActorLocation().Z);
+			}
 		}
 
-		// Реальная стоимость плана: манёвр в укрытие за 2 AP теперь исполняется
-		// ОДНИМ маршрутом и оплачивается целиком, как приказ игрока. Планирование
-		// бюджетом в 1 AP оставляло бойца стоять на полпути посреди поля.
-		PendingMoveActionPointCost = FMath::Max(1, Plan.ActionPointCost);
-		bTurnMoveInProgress = true; // AP спишется в OnMoveCompleted.
-		const EPathFollowingRequestResult::Type Result = MoveAlongRoute(
-			Plan.PathPoints, FMath::Min(AcceptanceRadius, 40.f));
-		if (Result == EPathFollowingRequestResult::RequestSuccessful)
-		{
-			Unit->NotifyUnitStateChanged();
-			return true;
-		}
-		bTurnMoveInProgress = false;
-		return false;
+		// ⚠️ НЕ выходим: дальше идёт ПРЯМОЙ навмеш-путь как фолбэк.
+		//
+		// Планировщик игрока строит поле дистанций ВОКРУГ БОЙЦА и начинается с
+		// проекции его собственной позиции на навмеш. Боец, поставленный на
+		// неподтверждённую точку (`[Encounter] ... без подтверждения навмешем`),
+		// не получает поля вообще — то есть теряет не «идеальный маршрут», а
+		// ЛЮБОЕ перемещение до конца боя. Прямой путь хуже: он не знает о дисках
+		// занятости и полагается на Detour Crowd. Но «пошёл неоптимально» — это
+		// поведение, а «стоял 22 хода» — дефект.
 	}
 
-	// Вне пошагового боя оставляем дешёвый navmesh-путь для патруля.
+	// Дешёвый navmesh-путь: вне боя это штатный режим патруля, в бою — фолбэк.
+	const float DirectBudget = Unit->MoveRange * static_cast<float>(MaxActionPoints);
 	FVector BudgetedGoal;
-	if (!UTacticsCombatStatics::GetPointAlongPathBudget(this, Unit, Unit->GetActorLocation(), Goal,
-		Unit->MoveRange, BudgetedGoal))
+	if (!UTacticsCombatStatics::GetPointAlongPathBudget(this, Unit, Unit->GetActorLocation(), NavGoal,
+		DirectBudget, BudgetedGoal))
 	{
+		LastMoveFailure = LastMoveFailure.IsEmpty()
+			? FString(TEXT("навмеш не построил путь до цели"))
+			: LastMoveFailure + TEXT("; навмеш тоже не построил путь");
 		return false;
 	}
 
 	// Не вставать в диск занятости другого юнита (замена навмеш-вырезов).
 	if (!UTacticsCombatStatics::AdjustGoalOutOfUnits(GetWorld(), Unit, BudgetedGoal))
 	{
+		LastMoveFailure = TEXT("конечная точка занята бойцами, вытолкнуть некуда");
 		return false;
 	}
 
 	// Бюджетная точка совпадает с текущей позицией — двигаться некуда.
 	if (FVector::Dist2D(Unit->GetActorLocation(), BudgetedGoal) <= 50.f)
 	{
+		LastMoveFailure = TEXT("бюджетная точка совпала с текущей позицией");
+		return false;
+	}
+
+	// «Дойти именно сюда»: прямой путь обрезается бюджетом хода и на обходном
+	// маршруте кончается где угодно. Для манёвра такой приказ хуже отказа —
+	// боец уйдёт от оценённого укрытия и встанет в открытом поле.
+	if (RequiredGoalTolerance > 0.f &&
+		FVector::Dist2D(BudgetedGoal, NavGoal) > RequiredGoalTolerance)
+	{
+		LastMoveFailure = FString::Printf(
+			TEXT("%sпрямой путь не доводит до точки (промах %.0f см при допуске %.0f)"),
+			LastMoveFailure.IsEmpty() ? TEXT("") : *FString::Printf(TEXT("%s; "), *LastMoveFailure),
+			FVector::Dist2D(BudgetedGoal, NavGoal), RequiredGoalTolerance);
 		return false;
 	}
 
 	const EPathFollowingRequestResult::Type Result = MoveToLocation(BudgetedGoal, AcceptanceRadius);
 	if (Result == EPathFollowingRequestResult::RequestSuccessful)
 	{
+		if (TurnManager && TurnManager->IsInCombat() && TacticsDebug::IsAILogEnabled())
+		{
+			UE_LOG(LogXRU1AI, Log,
+				TEXT("[AI] %s: план поля не построился (%s) — иду прямым навмеш-путём"),
+				*GetNameSafe(Unit), *LastMoveFailure);
+		}
+		LastMoveFailure.Reset();
 		PendingMoveActionPointCost = 1;
 		bTurnMoveInProgress = true; // AP спишется в OnMoveCompleted
 		Unit->NotifyUnitStateChanged();
@@ -1622,10 +2560,12 @@ bool AUnitAIController::MoveWithBudget(AUnitBase* Unit, const FVector& Goal, flo
 	if (Result == EPathFollowingRequestResult::AlreadyAtGoal)
 	{
 		// У цели: тратим AP, чтобы ход гарантированно закончился, и продолжаем.
+		LastMoveFailure.Reset();
 		Unit->GetActionPoints()->TrySpendActionPoint();
 		ScheduleNextStep();
 		return true;
 	}
+	LastMoveFailure = TEXT("path following отклонил приказ (MoveToLocation)");
 	return false;
 }
 
@@ -2026,7 +2966,15 @@ void AUnitAIController::TryFinalizeMoveSettlement()
 	{
 		const float Drift = FVector::Dist2D(Unit->GetActorLocation(), ChosenManeuverPoint);
 		bHasChosenManeuverPoint = false;
-		if (Drift > ManeuverArrivalTolerance && TacticsDebug::IsAILogEnabled())
+		// ⚠️ БЕЗ cvar — это регрессионный сторож, а не отладка.
+		//
+		// Пока предупреждение было под `xru1.AI.LogCombat`, расхождение плана и
+		// факта жило в проекте незамеченным: боец уезжал за 21 метр от
+		// оценённого укрытия и вставал в чистом поле, а снаружи это выглядело
+		// «AI мечется» (§3.12.1). После введения `RequiredGoalTolerance` строка
+		// обязана исчезнуть из логов совсем; если она появилась — сломалось
+		// исполнение приказа, и узнать об этом надо без переключения cvar.
+		if (Drift > ManeuverArrivalTolerance)
 		{
 			UE_LOG(LogXRU1AI, Warning, TEXT("[AI] %s: встал НЕ в выбранную точку — расхождение %.0f см ")
 				TEXT("(решил (%.0f, %.0f), стоит (%.0f, %.0f)). Укрытие на месте: %d"),
@@ -2087,14 +3035,80 @@ void AUnitAIController::TryFinalizeMoveSettlement()
 
 void AUnitAIController::ScheduleNextStep()
 {
-	if (ActionInterval <= 0.f)
+	// Пауза между шагами существует ради ЧИТАЕМОСТИ хода. Если бойца не видно,
+	// читать нечего: интервал вырождается в тик. На карте с десятком врагов это
+	// и превращает ход противника из «канители» в несколько секунд.
+	const float Interval = IsHiddenFromSquad() ? 0.f : ActionInterval;
+	if (Interval <= 0.f)
 	{
 		TurnStepTimerHandle = GetWorldTimerManager().SetTimerForNextTick(
 			this, &AUnitAIController::AdvanceTurnStep);
 		return;
 	}
 	GetWorldTimerManager().SetTimer(TurnStepTimerHandle, this,
-		&AUnitAIController::AdvanceTurnStep, ActionInterval, false);
+		&AUnitAIController::AdvanceTurnStep, Interval, false);
+}
+
+void AUnitAIController::HandleFogVisibilityChanged(AActor* Actor, bool /*bVisible*/)
+{
+	if (Actor && Actor == GetPawn())
+	{
+		ApplyHiddenMovementSpeed();
+	}
+}
+
+bool AUnitAIController::IsHiddenFromSquad() const
+{
+	const AActor* Unit = GetPawn();
+	if (!Unit)
+	{
+		return false;
+	}
+	if (const UFogOfWarSubsystem* Fog = UFogOfWarSubsystem::Get(this))
+	{
+		return !Fog->IsActorCurrentlyVisible(Unit);
+	}
+	return false;
+}
+
+void AUnitAIController::ApplyHiddenMovementSpeed()
+{
+	ACharacter* MovingPawn = Cast<ACharacter>(GetPawn());
+	UCharacterMovementComponent* Movement = MovingPawn ? MovingPawn->GetCharacterMovement() : nullptr;
+	if (!Movement)
+	{
+		return;
+	}
+
+	if (BaseWalkSpeed <= 0.f)
+	{
+		BaseWalkSpeed = Movement->MaxWalkSpeed; // запоминаем «настоящую» скорость один раз
+	}
+
+	// XCOM 2 невидимую часть пути вообще не проигрывает (`X2Action_Move`
+	// вырезает её, а полностью скрытый юнит телепортируется). Мы не телепортируем
+	// сознательно: перемещение у нас — механика, на которой висят реакция
+	// Overwatch и стимулы перцепции, и «прыжок» мимо зоны реакции был бы
+	// нечестен. Вместо этого скрытый боец идёт свой путь ускоренно, а в момент
+	// появления в поле зрения скорость мгновенно возвращается к обычной.
+	const bool bUnseen = IsHiddenFromSquad();
+	const float Desired = bUnseen
+		? BaseWalkSpeed * FMath::Max(1.f, HiddenMovementSpeedMultiplier)
+		: BaseWalkSpeed;
+	if (!FMath::IsNearlyEqual(Movement->MaxWalkSpeed, Desired))
+	{
+		Movement->MaxWalkSpeed = Desired;
+	}
+}
+
+void AUnitAIController::RestoreMovementSpeed()
+{
+	ACharacter* MovingPawn = Cast<ACharacter>(GetPawn());
+	UCharacterMovementComponent* Movement = MovingPawn ? MovingPawn->GetCharacterMovement() : nullptr;
+	if (Movement && BaseWalkSpeed > 0.f)
+	{
+		Movement->MaxWalkSpeed = BaseWalkSpeed;
+	}
 }
 
 void AUnitAIController::FinishUnitTurn()
@@ -2102,7 +3116,18 @@ void AUnitAIController::FinishUnitTurn()
 	GetWorldTimerManager().ClearTimer(TurnStepTimerHandle);
 	GetWorldTimerManager().ClearTimer(MoveSettlementTimerHandle);
 	PendingSettlementUnit.Reset();
+	// Ускорение живёт ровно один ход: боец, замеченный в фазу игрока, не должен
+	// бегать втрое быстрее на глазах у отряда.
+	RestoreMovementSpeed();
 	bTurnMoveInProgress = false;
+
+	// AI-5: намерение живёт ровно до конца активации. Дальше боец уже стоит на
+	// точке и держит её обычным диском занятости — держать ещё и резервацию
+	// значило бы запрещать соседу подойти к тому же укрытию навсегда.
+	if (UTacticalAIDirectorSubsystem* Director = GetAIDirector())
+	{
+		Director->ReleaseReservation(Cast<AUnitBase>(GetPawn()));
+	}
 
 	// Сначала сбрасываем делегат, потом зовём: колбэк может тут же начать новый ход.
 	FSimpleDelegate Finished = MoveTemp(TurnFinishedDelegate);

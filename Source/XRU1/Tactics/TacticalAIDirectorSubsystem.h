@@ -55,7 +55,21 @@ struct XRU1_API FAIContact
 	UPROPERTY(BlueprintReadOnly, Category = "AI|Contact")
 	float Confidence = 1.f;
 
-	bool IsValidContact() const { return Target.IsValid() && Confidence > 0.f; }
+	/**
+	 * Актор противника ИЗВЕСТЕН. false — «подозрение»: знаем только точку.
+	 *
+	 * Так устроен шум: выстрел за стеной даёт место, но не имя стрелка. Хранить
+	 * для него `Target` было бы прямым нарушением честности §7 — боец получил бы
+	 * ссылку на актора, которого не видел, и любая будущая правка могла бы
+	 * прочитать его ЖИВУЮ позицию вместо запомненной.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "AI|Contact")
+	bool bActorKnown = true;
+
+	bool IsValidContact() const
+	{
+		return Confidence > 0.f && (!bActorKnown || Target.IsValid());
+	}
 };
 
 /** Состояние одной группы (пода) врагов. */
@@ -149,6 +163,48 @@ public:
 	/** Забыть контакты старше `ContactMemoryTurns`. Зовётся на смене хода. */
 	void AgeContacts(int32 CurrentTurn);
 
+	// --- Резервации позиций (AI-5) -------------------------------------------
+	//
+	// ⚠️ ЗАЧЕМ ЭТО НУЖНО, ЕСЛИ ХОДЫ ПОСЛЕДОВАТЕЛЬНЫЕ.
+	//
+	// Диски занятости (`UTacticsCombatStatics::GetUnitObstacles`) защищают от
+	// СТОЯЩИХ бойцов, но они намеренно не видят того, кто СЕЙЧАС В ПУТИ: иначе
+	// бегущий блокировал бы сам себя. Пока враг ходит по одному, дыра невелика,
+	// но она есть и уже наблюдаема:
+	//
+	//  - боец A выбрал точку и пошёл к ней двухходовым манёвром. Его активация
+	//    продолжается на следующем шаге, а диск занятости он не ставит;
+	//  - реакционный выстрел Overwatch может прервать A и передать ход дальше;
+	//  - продолжение манёвра A на следующем ходу целится в ТУ ЖЕ точку, которую
+	//    за это время мог занять B.
+	//
+	// Резервация закрывает ровно этот промежуток: точка помечена за бойцом с
+	// момента ВЫБОРА и до фактического финиша или срыва. Это и есть минимальный
+	// координатор из плана AI-5 — без ролей и без бюджета, только «не выдавать
+	// двум бойцам одну cover anchor».
+
+	/**
+	 * Закрепляет точку за юнитом. Прежняя резервация того же юнита снимается:
+	 * одно намерение на бойца, иначе брошенные точки копились бы до конца боя.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|AI|Reservations")
+	void ReservePosition(AUnitBase* Unit, const FVector& Point);
+
+	/** Снимает резервацию юнита (финиш, срыв, смерть, конец хода). */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|AI|Reservations")
+	void ReleaseReservation(const AUnitBase* Unit);
+
+	/**
+	 * Занята ли точка чужой резервацией. `Requester` исключается — свою же
+	 * точку боец обязан считать свободной, иначе продолжение манёвра отвергло
+	 * бы собственную цель.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Tactics|AI|Reservations")
+	bool IsPositionReserved(const AUnitBase* Requester, const FVector& Point, float Radius) const;
+
+	/** Сбрасывает все резервации (смена фазы, конец боя). */
+	void ClearReservations();
+
 	// --- Тюнинг --------------------------------------------------------------
 
 	/** Радиус, в котором смерть союзника поднимает соседние поды, см. */
@@ -158,6 +214,15 @@ public:
 	/** Сколько ходов держится контакт без подтверждения. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Tactics|AI|Pods")
 	int32 ContactMemoryTurns = 3;
+
+	/**
+	 * Радиус, в котором чужая резервация делает точку недоступной (см).
+	 * По умолчанию — примерно два просвета `GetUnitClearance`: двое не должны
+	 * целиться в одну и ту же сторону одного укрытия.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Tactics|AI|Reservations",
+		meta = (ClampMin = "0"))
+	float ReservationRadius = 200.f;
 
 protected:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
@@ -170,8 +235,18 @@ private:
 	/** Переводит под в бой и сообщает его бойцам. Возвращает true при смене состояния. */
 	bool ActivatePod(FName PodId, const TCHAR* Reason);
 
+	/**
+	 * Есть ли в поде хоть один боец вражеской стороны. Регистрация идёт без
+	 * фильтра команды (TeamId в OnPossess ещё не назначен), поэтому поды заводят
+	 * и бойцы игрока — вскрывать и поднимать их нельзя.
+	 */
+	static bool IsEnemyPod(const struct FAIPodState& Pod);
+
 	int32 GetCurrentTurn() const;
 
 	UPROPERTY()
 	TMap<FName, FAIPodState> Pods;
+
+	/** Намерения бойцов: юнит → точка, куда он уже направляется. */
+	TMap<TWeakObjectPtr<const AUnitBase>, FVector> Reservations;
 };
