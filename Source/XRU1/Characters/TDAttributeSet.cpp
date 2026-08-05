@@ -15,25 +15,47 @@ UTDAttributeSet::UTDAttributeSet()
     InitShield(0.f);
 }
 
+bool UTDAttributeSet::PreGameplayEffectExecute(FGameplayEffectModCallbackData& Data)
+{
+    if (!Super::PreGameplayEffectExecute(Data))
+    {
+        return false;
+    }
+
+    if (Data.EvaluatedData.Attribute == GetHealthAttribute())
+    {
+        float& Magnitude = Data.EvaluatedData.Magnitude;
+        if (Magnitude < 0.f)
+        {
+            // Mitigation меняет единственную применяемую дельту ДО Health delegate.
+            // Старый refund в Post успевал сообщить временный полный/смертельный урон,
+            // после чего лишь возвращал HP и мог оставить ложный Downed/Death state.
+            if (GetShield() > 0.f)
+            {
+                Magnitude = 0.f;
+            }
+            else if (Data.Target.HasMatchingGameplayTag(TacticsGameplayTags::State_Taunting))
+            {
+                Magnitude *= 0.5f;
+            }
+        }
+    }
+
+    return true;
+}
+
 void UTDAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModCallbackData& Data)
 {
     Super::PostGameplayEffectExecute(Data);
 
     if (Data.EvaluatedData.Attribute == GetHealthAttribute())
     {
-        const float Magnitude = Data.EvaluatedData.Magnitude;
-        // Щит активен — отыгрываем входящий урон обратно. Положительные дельты (heal) пропускаем.
-        if (GetShield() > 0.f && Magnitude < 0.f)
+        // Magnitude уже прошёл shield/taunt mitigation в Pre; здесь только границы Health.
+        const float ClampedHealth = FMath::Clamp(GetHealth(), 0.f, GetMaxHealth());
+        if (ClampedHealth != GetHealth())
         {
-            SetHealth(GetHealth() - Magnitude);
+            SetHealth(ClampedHealth);
         }
-        // «Провокация» танка (GDD §7): −50% входящего урона — половину возвращаем.
-        else if (Magnitude < 0.f &&
-            Data.Target.HasMatchingGameplayTag(TacticsGameplayTags::State_Taunting))
-        {
-            SetHealth(GetHealth() - Magnitude * 0.5f);
-        }
-        SetHealth(FMath::Clamp(GetHealth(), 0.f, GetMaxHealth()));
     }
     else if (Data.EvaluatedData.Attribute == GetMoveSpeedAttribute())
     {

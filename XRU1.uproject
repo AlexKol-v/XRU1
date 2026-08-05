@@ -49,6 +49,10 @@
 		{
 			"Name": "STQuestSystem",
 			"Enabled": true
+		},
+		{
+			"Name": "UnrealClaude",
+			"Enabled": false
 		}
 	]
 }

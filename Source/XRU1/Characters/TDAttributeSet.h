@@ -19,6 +19,7 @@ class XRU1_API UTDAttributeSet : public UAttributeSet
 public:
 	UTDAttributeSet();
 
+	virtual bool PreGameplayEffectExecute(FGameplayEffectModCallbackData& Data) override;
 	virtual void PostGameplayEffectExecute(const FGameplayEffectModCallbackData& Data) override;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Attributes")
@@ -41,7 +42,7 @@ public:
 	/**
 	 * Оставшееся время действия защитного щита в секундах. > 0 = щит активен.
 	 * Тикается вниз ATDCombatant::Tick. При активном щите урон по Health
-	 * поглощается в PostGameplayEffectExecute.
+	 * обнуляется в PreGameplayEffectExecute до изменения атрибута.
 	 */
 	UPROPERTY(BlueprintReadOnly, Category = "Attributes")
 	FGameplayAttributeData Shield;

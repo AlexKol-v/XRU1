@@ -49,7 +49,7 @@ public:
 	/** Хелпер для статиков боевой механики; nullptr вне игрового World. */
 	static UCombatFeedbackSubsystem* Get(const UObject* WorldContext);
 
-	/** Число урона над целью (округляется до целого). */
+	/** Фактически снятые HP после всех mitigation/clamp (округляются до целого). */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Feedback")
 	void ShowDamage(AActor* Target, float Amount);
 

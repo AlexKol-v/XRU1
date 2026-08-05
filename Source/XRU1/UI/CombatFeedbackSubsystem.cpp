@@ -29,6 +29,11 @@ bool UCombatFeedbackSubsystem::DoesSupportWorldType(const EWorldType::Type World
 
 void UCombatFeedbackSubsystem::ShowDamage(AActor* Target, float Amount)
 {
+	// Ноль после щита/mitigation не превращаем в ложную единицу урона.
+	if (!FMath::IsFinite(Amount) || Amount <= KINDA_SMALL_NUMBER)
+	{
+		return;
+	}
 	const int32 Rounded = FMath::Max(1, FMath::RoundToInt(FMath::Abs(Amount)));
 	PushEntry(Target, FText::AsNumber(Rounded), ECombatFeedbackKind::Damage);
 }

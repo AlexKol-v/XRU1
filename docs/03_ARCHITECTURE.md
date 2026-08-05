@@ -919,7 +919,11 @@ HUD читает состояние и отправляет команды че�
 target panel с HP, шансом, LOS и щитом/флангом; индикатор фазы и кнопка конца хода;
 счётчик врагов через `GetVisibleEnemyCount`; move range и превью пути; оверхед
 HP/AP, укрытие и статусы (HP-бар секционный, секция = 10 HP); floating-фидбек
-(`UCombatFeedbackSubsystem`: урон, «+лечение», `ПРОМАХ`, `НАБЛЮДЕНИЕ`); карточка
+(`UCombatFeedbackSubsystem`: урон, «+лечение», `ПРОМАХ`, `НАБЛЮДЕНИЕ`). Число
+урона — фактическая дельта `Health` после GameplayEffect, провокации, щита и clamp,
+а не исходный damage roll. Shield/Taunt меняют magnitude в
+`UTDAttributeSet::PreGameplayEffectExecute` до Health delegate: временный полный
+урон не может преждевременно вызвать Downed/Death; карточка
 действующего врага в его фазу; строка цели миссии и указатель к заряду/эвакуации.
 
 ⚠️ Подсказка — это **tooltip, а не подпись**: переименовать текст на кнопке из кода
@@ -1368,4 +1372,3 @@ UnrealEditor-Cmd.exe XRU1.uproject -ExecCmds="Automation RunTests XRU1.AI; Quit"
 | Толстая проба блокера тумана | за каждым бруствером тянется тень | блокером считается только ПОЛНОЕ укрытие: проба 10 см на высоте `FullCoverHeight` |
 | Кириллица в скриптах MCP-моста | скрипт молча не выполняется | тело скрипта — только ASCII, см. [agents/AGENT_UNREAL_TOOLING.md](agents/AGENT_UNREAL_TOOLING.md) |
 | Смена уровня внутри `execute_script` | гарантированный краш редактора | переключаться только инструментом `open_level` |
-

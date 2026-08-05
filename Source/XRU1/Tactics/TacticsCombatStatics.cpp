@@ -322,14 +322,26 @@ bool UTacticsCombatStatics::ResolveShotMechanics(AActor* Shooter, AActor* Target
 			{
 				// Разброс ±10% (GDD §5.4), туториальные форс-выстрелы тоже слегка варьируются.
 				const float FinalDamage = FMath::Abs(Damage) * FMath::FRandRange(0.9f, 1.1f);
+				// AttributeSet — единственный владелец mitigation (провокация, щит, clamp).
+				// Поэтому UI получает не исходный roll, а фактическую дельту Health после GE.
+				// Иначе при State.Taunting механика снимала половину, а floating text показывал
+				// полный FinalDamage — два разных источника правды об одном попадании.
+				const ATDCombatant* TargetCombatant = Cast<ATDCombatant>(Target);
+				const float HealthBefore = TargetCombatant ? TargetCombatant->GetHealth() : 0.f;
 				Spec.Data->SetSetByCallerMagnitude(TacticsGameplayTags::Data_Damage, -FinalDamage);
 				TargetASC->ApplyGameplayEffectSpecToSelf(*Spec.Data);
 
-				// Подтверждённый факт урона — единственная честная точка для
-				// всплывающего числа (отменённый/сорванный выстрел не всплывёт).
-				if (UCombatFeedbackSubsystem* Feedback = UCombatFeedbackSubsystem::Get(Target))
+				const float AppliedDamage = TargetCombatant
+					? FMath::Max(0.f, HealthBefore - TargetCombatant->GetHealth())
+					: 0.f;
+				// Подтверждённый результат механики — единственная честная точка для
+				// всплывающего числа. Полностью поглощённый урон цифру не создаёт.
+				if (AppliedDamage > KINDA_SMALL_NUMBER)
 				{
-					Feedback->ShowDamage(Target, FinalDamage);
+					if (UCombatFeedbackSubsystem* Feedback = UCombatFeedbackSubsystem::Get(Target))
+					{
+						Feedback->ShowDamage(Target, AppliedDamage);
+					}
 				}
 			}
 		}

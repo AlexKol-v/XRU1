@@ -84,7 +84,7 @@ protected:
  * «Провокация» танка (GDD §7): 1 AP, завершает активацию, 1 раз за миссию.
  * До своего следующего хода танк — приоритетная цель врагов (тег
  * State.Taunting в выборе цели AI) и получает −50% входящего урона
- * (обрабатывается в UTDAttributeSet::PostGameplayEffectExecute).
+ * (обрабатывается в UTDAttributeSet::PreGameplayEffectExecute до изменения Health).
  */
 UCLASS()
 class XRU1_API UGA_Taunt : public UGA_SelfBuffUntilNextTurn
