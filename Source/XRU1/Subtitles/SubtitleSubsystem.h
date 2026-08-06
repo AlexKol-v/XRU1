@@ -106,6 +106,28 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Субтитры")
 	bool IsShowingLine() const { return ActiveHandle.IsValid(); }
 
+	/**
+	 * Строка есть, но показывать её сейчас нельзя — дисплей обязан её спрятать.
+	 *
+	 * Такое состояние даёт пауза. Субтитр — часть ИГРОВОГО кадра, а не оболочки:
+	 * пока мир остановлен, реплика не звучит (`SetGameplayAudioPaused`) и её
+	 * часы не идут, поэтому текст под меню паузы висел бы как приклеенный —
+	 * ровно то, что видно в прогоне обучения. Снимать строку при этом нельзя:
+	 * голос продолжится С ТОГО ЖЕ МЕСТА, и субтитр обязан вернуться вместе с ним.
+	 * Отсюда именно ПОДАВЛЕНИЕ показа, а не снятие строки.
+	 *
+	 * Состояние НЕ кешируется: слой каждый раз спрашивает владельца паузы.
+	 * Кешированный флаг зависит от парности событий Push/Pop, а любое пропущенное
+	 * оповещение (аварийный сброс на travel, причина из другого мира) оставлял бы
+	 * субтитры спрятанными навсегда.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Субтитры")
+	bool IsDisplaySuppressed() const;
+
+	/** Строка, которую дисплей должен рисовать сейчас (пустая — не рисовать ничего). */
+	UFUNCTION(BlueprintPure, Category = "Субтитры")
+	FXRU1SubtitleLine GetVisibleLine() const;
+
 	/** Копией, а не ссылкой: UFUNCTION не умеет возвращать ссылку. */
 	UFUNCTION(BlueprintPure, Category = "Субтитры")
 	FXRU1SubtitleLine GetActiveLine() const { return ActiveLine; }
@@ -164,6 +186,10 @@ private:
 
 	/** Смена уровня: viewport очищен, оверлей нужно поставить заново. */
 	void HandlePostLoadMap(UWorld* LoadedWorld);
+
+	/** Игра встала на паузу / продолжилась — показ строки подавляется и возвращается. */
+	UFUNCTION()
+	void HandlePauseChanged(bool bPaused);
 
 	/** Язык сменился: перерисовать активную строку. */
 	void HandleTextRevisionChanged();

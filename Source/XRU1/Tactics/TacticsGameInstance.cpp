@@ -7,8 +7,10 @@
 #include "TacticsSaveGame.h"
 #include "TacticsUserSettings.h"
 #include "GamePauseSubsystem.h"
+#include "AssetRegistry/AssetRegistryModule.h" // поиск обучающих сценариев по классу
 #include "GameFramework/GameUserSettings.h"
 #include "Kismet/GameplayStatics.h"
+#include "Modules/ModuleManager.h"
 
 void UTacticsGameInstance::Init()
 {
@@ -52,6 +54,38 @@ bool UTacticsGameInstance::SaveCampaign()
 		return false;
 	}
 	return UGameplayStatics::SaveGameToSlot(CurrentSave, SaveSlotName, 0);
+}
+
+void UTacticsGameInstance::MarkTutorialScenariosCompleted()
+{
+	if (!CurrentSave)
+	{
+		UE_LOG(LogXRU1UI, Warning,
+			TEXT("[Campaign] пропуск обучения запрошен без активной кампании — игнорирую"));
+		return;
+	}
+
+	const FAssetRegistryModule& Registry =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	TArray<FAssetData> Found;
+	Registry.Get().GetAssetsByClass(
+		UTacticalScenarioDataAsset::StaticClass()->GetClassPathName(), Found);
+
+	int32 Marked = 0;
+	for (const FAssetData& Data : Found)
+	{
+		const UTacticalScenarioDataAsset* Scenario = Cast<UTacticalScenarioDataAsset>(Data.GetAsset());
+		if (Scenario && Scenario->Kind == ETacticalScenarioKind::Tutorial
+			&& !Scenario->ScenarioId.IsNone())
+		{
+			CurrentSave->CompletedMissions.AddUnique(Scenario->ScenarioId);
+			++Marked;
+		}
+	}
+
+	SaveCampaign();
+	UE_LOG(LogXRU1UI, Display,
+		TEXT("[Campaign] обучение пропущено: зачтено сценариев — %d"), Marked);
 }
 
 UTacticsSaveGame* UTacticsGameInstance::LoadCampaign()

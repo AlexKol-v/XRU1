@@ -675,6 +675,169 @@ bool UXRU1WidgetAuthoringLibrary::BuildPauseMenuLayout(const FString& AssetPath,
 #endif
 }
 
+bool UXRU1WidgetAuthoringLibrary::AddPauseMenuHubButton(const FString& AssetPath)
+{
+#if WITH_EDITOR
+	UWidgetBlueprint* Blueprint = LoadObject<UWidgetBlueprint>(nullptr, *NormalizeAssetPath(AssetPath));
+	if (!Blueprint || !Blueprint->WidgetTree)
+	{
+		UE_LOG(LogXRU1UI, Error, TEXT("WidgetAuthoring: не найден Widget Blueprint '%s'"), *AssetPath);
+		return false;
+	}
+	UWidgetTree* Tree = Blueprint->WidgetTree;
+
+	if (Tree->FindWidget(TEXT("Btn_ToHub")))
+	{
+		return true; // уже добавлена
+	}
+
+	UButton* ReturnToMenu = Cast<UButton>(Tree->FindWidget(TEXT("Btn_ReturnToMenu")));
+	UVerticalBox* Content = ReturnToMenu ? Cast<UVerticalBox>(ReturnToMenu->GetParent()) : nullptr;
+	if (!Content)
+	{
+		UE_LOG(LogXRU1UI, Error,
+			TEXT("WidgetAuthoring: в '%s' нет Btn_ReturnToMenu в VerticalBox — некуда вставлять"),
+			*AssetPath);
+		return false;
+	}
+
+	const FMenuPalette Palette = LoadPalette();
+	UButton* Button = MakeTextButton(Tree, TEXT("Btn_ToHub"),
+		NSLOCTEXT("XRU1.Menu", "PauseToHub", "На базу"), Palette);
+
+	const int32 InsertIndex = Content->GetChildIndex(ReturnToMenu);
+	Content->InsertChildAt(InsertIndex, Button);
+	if (UVerticalBoxSlot* Slot = Cast<UVerticalBoxSlot>(Button->Slot))
+	{
+		Slot->SetPadding(FMargin(0.f, 8.f));
+		Slot->SetHorizontalAlignment(HAlign_Fill);
+	}
+
+	return FinalizeBlueprint(Blueprint);
+#else
+	return false;
+#endif
+}
+
+bool UXRU1WidgetAuthoringLibrary::AddDifficultySkipTutorialToggle(const FString& AssetPath)
+{
+#if WITH_EDITOR
+	UWidgetBlueprint* Blueprint = LoadObject<UWidgetBlueprint>(nullptr, *NormalizeAssetPath(AssetPath));
+	if (!Blueprint || !Blueprint->WidgetTree)
+	{
+		UE_LOG(LogXRU1UI, Error, TEXT("WidgetAuthoring: не найден Widget Blueprint '%s'"), *AssetPath);
+		return false;
+	}
+	UWidgetTree* Tree = Blueprint->WidgetTree;
+
+	UButton* Hard = Cast<UButton>(Tree->FindWidget(TEXT("Btn_Hard")));
+	if (!Hard)
+	{
+		UE_LOG(LogXRU1UI, Error,
+			TEXT("WidgetAuthoring: в '%s' не найден Btn_Hard — не от чего искать контейнер"),
+			*AssetPath);
+		return false;
+	}
+
+	// Целевой контейнер — БЛИЖАЙШИЙ Overlay над кнопками: в нём строку можно
+	// поставить ПОД рядом кнопок по центру. Первая версия останавливалась на
+	// первом же контейнере «на несколько детей» — им оказывался HorizontalBox
+	// самих кнопок, и чекбокс вставал сбоку от «Сложный», а не под рядом.
+	UOverlay* Overlay = nullptr;
+	for (UPanelWidget* Ancestor = Hard->GetParent(); Ancestor; Ancestor = Ancestor->GetParent())
+	{
+		if (UOverlay* AsOverlay = Cast<UOverlay>(Ancestor))
+		{
+			Overlay = AsOverlay;
+			break;
+		}
+	}
+	if (!Overlay)
+	{
+		UE_LOG(LogXRU1UI, Error,
+			TEXT("WidgetAuthoring: над Btn_Hard в '%s' нет Overlay — вёрстка экрана неожиданная"),
+			*AssetPath);
+		return false;
+	}
+
+	// Строка уже существует (в т.ч. в старой позиции) — только переставить.
+	if (UWidget* ExistingBackdrop = Tree->FindWidget(TEXT("Brd_SkipTutorial")))
+	{
+		if (ExistingBackdrop->GetParent() != Overlay)
+		{
+			ExistingBackdrop->RemoveFromParent();
+			Overlay->AddChildToOverlay(ExistingBackdrop);
+		}
+		if (UOverlaySlot* Slot = Cast<UOverlaySlot>(ExistingBackdrop->Slot))
+		{
+			Slot->SetHorizontalAlignment(HAlign_Center);
+			Slot->SetVerticalAlignment(VAlign_Center);
+			Slot->SetPadding(FMargin(0.f, 240.f, 0.f, 0.f));
+		}
+		return FinalizeBlueprint(Blueprint);
+	}
+
+	// Первый запуск мог оставить «сирот» под WidgetTree (вставка в SizeBox не
+	// прижилась). Повторный ConstructWidget с теми же именами упал бы на
+	// коллизии имён, поэтому сироты сначала убираются.
+	auto ReclaimName = [Tree](const TCHAR* Name)
+	{
+		if (UObject* Existing = StaticFindObject(UObject::StaticClass(), Tree, Name))
+		{
+			Existing->Rename(nullptr, GetTransientPackage(),
+				REN_DontCreateRedirectors | REN_NonTransactional);
+		}
+	};
+	ReclaimName(TEXT("Box_SkipTutorial"));
+	ReclaimName(TEXT("Chk_SkipTutorial"));
+	ReclaimName(TEXT("Txt_SkipTutorial"));
+	ReclaimName(TEXT("Brd_SkipTutorial"));
+
+	const FMenuPalette Palette = LoadPalette();
+
+	// Тёмная подложка в стиле панелей меню: фон экрана светлый (арт стола), и
+	// голый текст на нём читается плохо.
+	UBorder* Backdrop = Tree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("Brd_SkipTutorial"));
+	Backdrop->SetBrushColor(Palette.PanelBackground);
+	Backdrop->SetPadding(FMargin(14.f, 8.f));
+
+	UHorizontalBox* Row = Tree->ConstructWidget<UHorizontalBox>(
+		UHorizontalBox::StaticClass(), TEXT("Box_SkipTutorial"));
+	Backdrop->SetContent(Row);
+
+	UCheckBox* Check = Tree->ConstructWidget<UCheckBox>(
+		UCheckBox::StaticClass(), TEXT("Chk_SkipTutorial"));
+	Check->SetIsChecked(false);
+	Row->AddChildToHorizontalBox(Check);
+	if (UHorizontalBoxSlot* Slot = Cast<UHorizontalBoxSlot>(Check->Slot))
+	{
+		Slot->SetVerticalAlignment(VAlign_Center);
+		Slot->SetPadding(FMargin(0.f, 0.f, 10.f, 0.f));
+	}
+
+	UTextBlock* Label = MakeText(Tree, TEXT("Txt_SkipTutorial"),
+		NSLOCTEXT("XRU1.Menu", "SkipTutorial", "Пропустить обучение"), 18, Palette.PrimaryText);
+	Row->AddChildToHorizontalBox(Label);
+	if (UHorizontalBoxSlot* Slot = Cast<UHorizontalBoxSlot>(Label->Slot))
+	{
+		Slot->SetVerticalAlignment(VAlign_Center);
+	}
+
+	// Центр Overlay + верхний отступ = строка по центру, чуть ниже ряда кнопок.
+	Overlay->AddChildToOverlay(Backdrop);
+	if (UOverlaySlot* Slot = Cast<UOverlaySlot>(Backdrop->Slot))
+	{
+		Slot->SetHorizontalAlignment(HAlign_Center);
+		Slot->SetVerticalAlignment(VAlign_Center);
+		Slot->SetPadding(FMargin(0.f, 240.f, 0.f, 0.f));
+	}
+
+	return FinalizeBlueprint(Blueprint);
+#else
+	return false;
+#endif
+}
+
 bool UXRU1WidgetAuthoringLibrary::BuildIntroPlayerLayout(const FString& AssetPath, bool bOverwriteExisting)
 {
 #if WITH_EDITOR

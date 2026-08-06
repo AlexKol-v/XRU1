@@ -86,6 +86,23 @@ public:
 	static bool AddScreenBackground(const FString& AssetPath);
 
 	/**
+	 * Точечная правка WBP_PauseMenuWidget: кнопка `Btn_ToHub` («На базу») перед
+	 * `Btn_ReturnToMenu`. Отдельная функция, а не пересборка BuildPauseMenuLayout:
+	 * полная перезапись стёрла бы фон и любые рукотворные правки экрана.
+	 * Идемпотентна — существующая кнопка означает успех без изменений.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "XRU1|Widget Authoring")
+	static bool AddPauseMenuHubButton(const FString& AssetPath);
+
+	/**
+	 * Точечная правка WBP_DifficultySelect: строка «Пропустить обучение» с
+	 * чекбоксом `Chk_SkipTutorial` между кнопками сложности и «Назад».
+	 * Идемпотентна — существующий чекбокс означает успех без изменений.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "XRU1|Widget Authoring")
+	static bool AddDifficultySkipTutorialToggle(const FString& AssetPath);
+
+	/**
 	 * Вставляет в корневой лейаут (`WBP_PrimaryGameLayout`) общий фон
 	 * `Img_ScreenBackdrop` — под все стеки-слои.
 	 *

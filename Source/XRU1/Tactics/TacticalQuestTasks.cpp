@@ -22,6 +22,7 @@
 #include "TacticsCombatStatics.h"
 #include "TacticalQuestEvents.h"
 #include "TacticalQuestZone.h"
+#include "TurnManagerSubsystem.h" // watchdog сценарных задач тикает только в фазу врага
 #include "UnitAIController.h"
 #include "UnitBase.h"
 
@@ -89,6 +90,72 @@ namespace TacticalQuestTasks_Internal
 			// которых отряд не разведал, и застывшая на старте область показала бы
 			// бойца, убегающего в темноту.
 			OutAreaHandle = FogGrid->AddScriptedReveal(Actor, FVector::ZeroVector);
+		}
+	}
+
+	// --- Страховочные таймеры сценария (watchdog) --------------------------------
+	//
+	// Правило: страховочный таймер считает НЕ астрономическое время, а время, в
+	// течение которого ожидаемое событие вообще МОГЛО случиться.
+	//
+	// Зачем: таймауты сценарных задач существуют против зависшей постановки —
+	// не выданного приказа, не заспавнившегося контроллера, недостижимой точки.
+	// Но сценарный выстрел и сценарный ход врага исполняются ТОЛЬКО в фазу
+	// врага, а фаза врага наступает лишь после того, как игрок завершит свой ход.
+	// Пока таймер тикал вслепую, он отмерял в первую очередь раздумья игрока:
+	// достаточно было отойти от компьютера на минуту, чтобы шаг обучения ушёл в
+	// Failed и уронил весь сценарий — при полностью исправной постановке.
+	// Игрок, который думает или отошёл, — это не сбой, и watchdog не имеет права
+	// его наказывать.
+	//
+	// Поэтому таймер сценарной задачи замирает в чужую фазу: приказ поставлен в
+	// ход игрока, исполнение возможно только в ход врага — до него ждать нечего.
+	// Защита от реального зависания сохраняется полностью: как только условие
+	// «событие могло бы произойти» выполнено, отсчёт идёт как раньше.
+	//
+	// ⚠️ У Tutorial Beat гейта НЕТ намеренно. Его таймаут — не приговор шагу, а
+	// СПАСЕНИЕ: по нему реплика играет «как есть», когда триггер потерян или
+	// камера не освободилась (пауза посреди кадра выстрела оставляла
+	// IsPlayingPresentationFrame взведённым — лог 2026-08-05). Заморозка этого
+	// таймаута по «игрок отошёл» превращала страховку в вечное ожидание: такт не
+	// стартовал, состояние не завершалось, диалог вставал насмерть. Реплика,
+	// сыгранная по таймауту при отошедшем игроке, — мелкая косметика; вставший
+	// сценарий — поломка. Из двух зол выбрано меньшее.
+
+	/** Фаза врага: только в ней исполняются сценарный выстрел и сценарный ход. */
+	bool IsEnemyPhaseActive(FStateTreeExecutionContext& Context)
+	{
+		const UWorld* World = GetWorld(Context);
+		const UTurnManagerSubsystem* Turns = World
+			? World->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
+		// Без менеджера ходов (тесты, недособранная карта) страховку не отключаем:
+		// неизвестная фаза не должна превращать таймаут в вечное ожидание.
+		return !Turns || Turns->GetCurrentPhase() == ETurnPhase::Enemy;
+	}
+
+	/**
+	 * Один шаг страховочного таймера. `bCanProgress` — может ли ожидаемое
+	 * событие случиться прямо сейчас; если нет, время не идёт вовсе.
+	 * Раз в `IdleReportSeconds` печатает, ПОЧЕМУ таймер стоит: иначе замерший
+	 * watchdog неотличим в логе от потерянного шага.
+	 */
+	void TickWatchdog(float& InOutElapsed, float DeltaTime, bool bCanProgress,
+		const TCHAR* TaskName, const TCHAR* IdleReason)
+	{
+		if (bCanProgress)
+		{
+			InOutElapsed += DeltaTime;
+			return;
+		}
+
+		constexpr double IdleReportSeconds = 30.0;
+		static double LastReportTime = 0.0;
+		const double Now = FPlatformTime::Seconds();
+		if (Now - LastReportTime > IdleReportSeconds)
+		{
+			LastReportTime = Now;
+			UE_LOG(LogXRU1Quest, Verbose,
+				TEXT("[Watchdog] %s: отсчёт таймаута приостановлен (%s)"), TaskName, IdleReason);
 		}
 	}
 
@@ -527,7 +594,6 @@ EStateTreeRunStatus FTacticalTask_ScriptedShot::Tick(
 	FStateTreeExecutionContext& Context, const float DeltaTime) const
 {
 	FInstanceDataType& Inst = Context.GetInstanceData(*this);
-	Inst.ElapsedTime += DeltaTime;
 
 	UTacticalScenarioSubsystem* Registry =
 		TacticalQuestTasks_Internal::GetScenarioRegistry(Context);
@@ -542,6 +608,14 @@ EStateTreeRunStatus FTacticalTask_ScriptedShot::Tick(
 	// выстрела уже закрылась — presentation и урон доведены до конца.
 	FGuid ActionId;
 	const bool bActionInProgress = UGA_Attack::GetAttackActionInProgressFor(Shooter, ActionId);
+
+	// Приказ ставится в ход ИГРОКА, а стреляет голограмма в свой — до фазы врага
+	// ждать нечего, и отсчёт таймаута там измерял бы только раздумья игрока.
+	// Начавшийся выстрел досчитывается в любой фазе: он уже идёт.
+	TacticalQuestTasks_Internal::TickWatchdog(Inst.ElapsedTime, DeltaTime,
+		TacticalQuestTasks_Internal::IsEnemyPhaseActive(Context) || bActionInProgress
+			|| !Shooter->HasPendingScriptedShot(),
+		TEXT("Scripted Shot"), TEXT("ход игрока — стрелять голограмме ещё не время"));
 	if (!Shooter->HasPendingScriptedShot() && Inst.bOrderIssued && !bActionInProgress)
 	{
 		// Объявляем о завершении САМИ: обычные выстрелы врага quest-событий не
@@ -695,7 +769,12 @@ EStateTreeRunStatus FTacticalTask_TutorialBeat::Tick(
 	// Фаза ожидания: события-триггера и/или свободной камеры.
 	if (!Inst.bBeatStarted)
 	{
+		// Отсчёт БЕЗ гейтов, в отличие от сценарных задач: этот таймаут не валит
+		// шаг, а спасает его — играет реплику «как есть», когда триггер потерян
+		// или камера так и не освободилась. Замороженная страховка уже вставала
+		// колом после паузы посреди кадра выстрела (2026-08-05).
 		Inst.ElapsedTime += DeltaTime;
+
 		bool bTriggered = !Inst.TriggerEvent.IsValid(); // без триггера ждём только камеру
 		Context.ForEachEvent([&Inst, &bTriggered](const FStateTreeEvent& Event)
 		{
@@ -1154,13 +1233,21 @@ EStateTreeRunStatus FTacticalTask_ScriptedEnemyTurn::Tick(
 	FStateTreeExecutionContext& Context, const float DeltaTime) const
 {
 	FInstanceDataType& Inst = Context.GetInstanceData(*this);
-	Inst.ElapsedTime += DeltaTime;
 
 	UTacticalScenarioSubsystem* Registry =
 		TacticalQuestTasks_Internal::GetScenarioRegistry(Context);
 	AUnitBase* Unit = Registry
 		? Cast<AUnitBase>(Registry->FindScenarioActor(Inst.UnitAnchorId)) : nullptr;
 	AUnitAIController* AI = Unit ? Cast<AUnitAIController>(Unit->GetController()) : nullptr;
+
+	// Программа армируется в ход игрока (инвариант §5.3-3), а исполняется в ход
+	// врага. Отсчёт до фазы врага измерял бы, сколько игрок думает над своим
+	// ходом, — и шаг C1 обучения разваливался от одной отлучки за чаем.
+	// Начатая программа досчитывается: она уже идёт и обязана дойти до конца.
+	TacticalQuestTasks_Internal::TickWatchdog(Inst.ElapsedTime, DeltaTime,
+		TacticalQuestTasks_Internal::IsEnemyPhaseActive(Context)
+			|| (AI && AI->IsScriptedTurnProgramStarted()),
+		TEXT("Scripted Enemy Turn"), TEXT("ход игрока — программа врага ещё не начиналась"));
 
 	// Смерть исполнителя посреди программы — постановка сорвана: дальше шаги
 	// секции без него не сыграть, честный Failed уронит сценарий на рестарт.

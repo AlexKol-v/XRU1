@@ -835,6 +835,15 @@ void UDifficultySelectWidget::ChooseDifficulty(EDifficultyLevel Difficulty)
 	if (UTacticsGameInstance* GI = GetTacticsGameInstance())
 	{
 		GI->StartNewCampaign(Difficulty);
+
+		// «Без обучения»: полигон зачитывается сразу, и хаб открывает боевую
+		// миссию с первого визита. Именно зачёт в сейве, а не обход проверки:
+		// прогрессию по-прежнему решает один механизм — RequiredMissions.
+		if (Chk_SkipTutorial && Chk_SkipTutorial->IsChecked())
+		{
+			GI->MarkTutorialScenariosCompleted();
+		}
+
 		if (IntroScreenClass)
 		{
 			PushScreen(IntroScreenClass);
@@ -887,6 +896,7 @@ void UPauseMenuWidget::NativeOnInitialized()
 
 	if (Btn_Resume)       { Btn_Resume->OnClicked.AddUniqueDynamic(this, &UPauseMenuWidget::HandleResumeClicked);             RegisterButtonSounds(Btn_Resume); }
 	if (Btn_Settings)     { Btn_Settings->OnClicked.AddUniqueDynamic(this, &UPauseMenuWidget::HandleSettingsClicked);         RegisterButtonSounds(Btn_Settings); }
+	if (Btn_ToHub)        { Btn_ToHub->OnClicked.AddUniqueDynamic(this, &UPauseMenuWidget::HandleToHubClicked);               RegisterButtonSounds(Btn_ToHub); }
 	if (Btn_ReturnToMenu) { Btn_ReturnToMenu->OnClicked.AddUniqueDynamic(this, &UPauseMenuWidget::HandleReturnToMenuClicked); RegisterButtonSounds(Btn_ReturnToMenu); }
 }
 
@@ -896,6 +906,8 @@ void UPauseMenuWidget::HandleSettingsClicked()
 {
 	PushScreen(SettingsScreenClass);
 }
+
+void UPauseMenuWidget::HandleToHubClicked() { RequestReturnToHub(); }
 
 void UPauseMenuWidget::HandleReturnToMenuClicked() { RequestReturnToMenu(); }
 
@@ -924,6 +936,23 @@ void UPauseMenuWidget::RequestReturnToMenu()
 	}
 }
 
+void UPauseMenuWidget::RequestReturnToHub()
+{
+	OnReturnToHubClicked.Broadcast();
+	// Тот же уход с уровня, что и в меню: полная уборка паузы обязательна,
+	// иначе причина текущего экрана пережила бы travel и заморозила хаб.
+	if (UGamePauseSubsystem* Pause = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UGamePauseSubsystem>() : nullptr)
+	{
+		Pause->ClearAllPauseReasons();
+	}
+
+	if (UTacticsGameInstance* GI = GetTacticsGameInstance())
+	{
+		GI->TravelToHub();
+	}
+}
+
 // --- USettingsMenuWidget ----------------------------------------------------
 
 void USettingsMenuWidget::NativeOnInitialized()
@@ -948,15 +977,10 @@ void USettingsMenuWidget::NativeOnInitialized()
 		}
 	}
 
-	// Выпадающий список качества: опции создаются здесь, а не в Designer,
-	// чтобы порядок 0..3 всегда совпадал с ScalabilityLevel.
-	if (Cmb_Quality && Cmb_Quality->GetOptionCount() == 0)
-	{
-		Cmb_Quality->AddOption(TEXT("Низкое"));
-		Cmb_Quality->AddOption(TEXT("Среднее"));
-		Cmb_Quality->AddOption(TEXT("Высокое"));
-		Cmb_Quality->AddOption(TEXT("Эпическое"));
-	}
+	// Опции всех выпадающих списков создаются кодом, а не в Designer, чтобы
+	// порядок всегда совпадал с enum'ами, — и перезаливаются на каждый Refresh,
+	// потому что UComboBoxString хранит FString и не переводится сам.
+	RebuildLocalizedComboOptions();
 
 	// Камера: те же два события, что и у звука — «тащат» применяем сразу, «отпустил»
 	// пишем на диск. Игрок подбирает обзор и чувствительность глазами, поэтому
@@ -972,30 +996,6 @@ void USettingsMenuWidget::NativeOnInitialized()
 	}
 	if (Chk_InvertPitch) { Chk_InvertPitch->OnCheckStateChanged.AddUniqueDynamic(this, &USettingsMenuWidget::HandleCameraCheckChanged); }
 	if (Chk_EdgeScroll)  { Chk_EdgeScroll->OnCheckStateChanged.AddUniqueDynamic(this, &USettingsMenuWidget::HandleCameraCheckChanged); }
-
-	// Субтитры: опции списков создаются здесь, а не в Designer — порядок обязан
-	// совпадать с порядком значений EXRU1SubtitleTextSize/EXRU1SubtitleBackdrop.
-	if (Cmb_SubtitleSize && Cmb_SubtitleSize->GetOptionCount() == 0)
-	{
-		Cmb_SubtitleSize->AddOption(NSLOCTEXT("XRU1.Menu", "SubSizeNormal", "Обычный").ToString());
-		Cmb_SubtitleSize->AddOption(NSLOCTEXT("XRU1.Menu", "SubSizeLarge", "Крупный").ToString());
-		Cmb_SubtitleSize->AddOption(NSLOCTEXT("XRU1.Menu", "SubSizeExtra", "Очень крупный").ToString());
-	}
-	if (Cmb_SubtitleBackdrop && Cmb_SubtitleBackdrop->GetOptionCount() == 0)
-	{
-		Cmb_SubtitleBackdrop->AddOption(NSLOCTEXT("XRU1.Menu", "SubBackNone", "Без подложки").ToString());
-		Cmb_SubtitleBackdrop->AddOption(NSLOCTEXT("XRU1.Menu", "SubBackSoft", "Полупрозрачная").ToString());
-		Cmb_SubtitleBackdrop->AddOption(NSLOCTEXT("XRU1.Menu", "SubBackSolid", "Плотная").ToString());
-	}
-	// Языки — родными именами («русский», «English»): игрок, случайно выбравший
-	// незнакомый язык, обязан найти свой обратно.
-	if (Cmb_Language && Cmb_Language->GetOptionCount() == 0)
-	{
-		for (const FString& Culture : GetAvailableLanguages())
-		{
-			Cmb_Language->AddOption(UXRU1SubtitleSettings::GetCultureDisplayName(Culture).ToString());
-		}
-	}
 
 	if (Chk_Subtitles) { Chk_Subtitles->OnCheckStateChanged.AddUniqueDynamic(this, &USettingsMenuWidget::HandleSubtitleCheckChanged); }
 	if (Chk_SubtitleSpeakers) { Chk_SubtitleSpeakers->OnCheckStateChanged.AddUniqueDynamic(this, &USettingsMenuWidget::HandleSubtitleCheckChanged); }
@@ -1027,8 +1027,58 @@ void USettingsMenuWidget::NativeOnActivated()
 	RefreshControlsFromSettings();
 }
 
+void USettingsMenuWidget::RebuildLocalizedComboOptions()
+{
+	// Перезаливка дёргает OnSelectionChanged (ClearOptions сбрасывает выбор) —
+	// обработчики обязаны видеть, что это программная операция, а не игрок.
+	TGuardValue<bool> RebuildGuard(bUpdatingControls, true);
+
+	// Качество: порядок 0..3 равен ScalabilityLevel.
+	if (Cmb_Quality)
+	{
+		Cmb_Quality->ClearOptions();
+		Cmb_Quality->AddOption(NSLOCTEXT("XRU1.Menu", "QualityLow", "Низкое").ToString());
+		Cmb_Quality->AddOption(NSLOCTEXT("XRU1.Menu", "QualityMedium", "Среднее").ToString());
+		Cmb_Quality->AddOption(NSLOCTEXT("XRU1.Menu", "QualityHigh", "Высокое").ToString());
+		Cmb_Quality->AddOption(NSLOCTEXT("XRU1.Menu", "QualityEpic", "Эпическое").ToString());
+	}
+
+	// Субтитры: порядок равен EXRU1SubtitleTextSize / EXRU1SubtitleBackdrop.
+	if (Cmb_SubtitleSize)
+	{
+		Cmb_SubtitleSize->ClearOptions();
+		Cmb_SubtitleSize->AddOption(NSLOCTEXT("XRU1.Menu", "SubSizeNormal", "Обычный").ToString());
+		Cmb_SubtitleSize->AddOption(NSLOCTEXT("XRU1.Menu", "SubSizeLarge", "Крупный").ToString());
+		Cmb_SubtitleSize->AddOption(NSLOCTEXT("XRU1.Menu", "SubSizeExtra", "Очень крупный").ToString());
+	}
+	if (Cmb_SubtitleBackdrop)
+	{
+		Cmb_SubtitleBackdrop->ClearOptions();
+		Cmb_SubtitleBackdrop->AddOption(NSLOCTEXT("XRU1.Menu", "SubBackNone", "Без подложки").ToString());
+		Cmb_SubtitleBackdrop->AddOption(NSLOCTEXT("XRU1.Menu", "SubBackSoft", "Полупрозрачная").ToString());
+		Cmb_SubtitleBackdrop->AddOption(NSLOCTEXT("XRU1.Menu", "SubBackSolid", "Плотная").ToString());
+	}
+
+	// Языки — родными именами («русский», «English»): игрок, случайно выбравший
+	// незнакомый язык, обязан найти свой обратно. От культуры UI не зависят,
+	// но перезаливаются той же процедурой — меньше особых случаев.
+	if (Cmb_Language)
+	{
+		Cmb_Language->ClearOptions();
+		for (const FString& Culture : GetAvailableLanguages())
+		{
+			Cmb_Language->AddOption(UXRU1SubtitleSettings::GetCultureDisplayName(Culture).ToString());
+		}
+	}
+}
+
 void USettingsMenuWidget::RefreshControlsFromSettings()
 {
+	// Списки перезаливаются ПЕРЕД выставлением значений: Refresh ниже сам
+	// восстановит выбранные индексы, а опции к этому моменту уже на текущем
+	// языке (смена языка применяется кнопкой «Применить» и зовёт этот Refresh).
+	RebuildLocalizedComboOptions();
+
 	const FTacticsAudioSettings Audio = GetAudioSettings();
 	{
 		const FTacticsVideoSettings Video = GetVideoSettings();

@@ -1,0 +1,1225 @@
+﻿# Game English translation.
+# Fill out your copyright notice in the Description page of Project Settings.
+# 
+msgid ""
+msgstr ""
+"Project-Id-Version: Game\n"
+"POT-Creation-Date: 2026-08-05 08:35\n"
+"PO-Revision-Date: 2026-08-05 08:35\n"
+"Language-Team: \n"
+"Language: en\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+#. Key:	4A25404C4522A164C4B339B90F5EBF7E
+#. SourceLocation:	/Game/MWLandscapeAutoMaterial/Maps/LandscapeAutoMaterial_MountainRange_Example.LandscapeAutoMaterial_MountainRange_Example:PersistentLevel.TextRenderActor_2.NewTextRenderComponent.Text
+#: /Game/MWLandscapeAutoMaterial/Maps/LandscapeAutoMaterial_MountainRange_Example.LandscapeAutoMaterial_MountainRange_Example:PersistentLevel.TextRenderActor_2.NewTextRenderComponent.Text
+msgctxt ",4A25404C4522A164C4B339B90F5EBF7E"
+msgid "Auto Landscape Material V1.5.4"
+msgstr "Auto Landscape Material V1.5.4"
+
+#. Key:	94497ACA4DE7F3B688CD5BBA14338F90
+#. SourceLocation:	/Game/XRU1Game/Audio/VO/Hub/VO_Hub_Arrival_Kupol.VO_Hub_Arrival_Kupol:SoundSubtitleData_0.Speaker
+#: /Game/XRU1Game/Audio/VO/Hub/VO_Hub_Arrival_Kupol.VO_Hub_Arrival_Kupol:SoundSubtitleData_0.Speaker
+msgctxt ",94497ACA4DE7F3B688CD5BBA14338F90"
+msgid "Купол"
+msgstr "Kupol"
+
+#. Key:	15D7D25A43BAACB435635AA7FE87DAAC
+#. SourceLocation:	/Game/XRU1Game/Audio/VO/Hub/VO_Hub_Arrival_Kupol.VO_Hub_Arrival_Kupol:SoundSubtitleData_0.Text
+#: /Game/XRU1Game/Audio/VO/Hub/VO_Hub_Arrival_Kupol.VO_Hub_Arrival_Kupol:SoundSubtitleData_0.Text
+msgctxt ",15D7D25A43BAACB435635AA7FE87DAAC"
+msgid "Оперативная карта сектора, где можно ознакомится с заданиями. Сразу скажу, на боевое задание, без подготовки, я вас не отправлю. Потребуется сдать зачет на полигоне. Как будете готовы,  пройдите Полигон Купол."
+msgstr "The sector operations map. You can review available assignments here. Let me be clear: I won't send you on a combat mission without preparation. You'll need to pass a qualification at the training ground first. When you're ready, complete the Kupol Training Ground."
+
+#. Key:	981618A04A05F984D12E9B90869B8EE4
+#. SourceLocation:	/Game/XRU1Game/Audio/VO/Mission01/VO_M01_Brief_Kupol.VO_M01_Brief_Kupol:SoundSubtitleData_0.Speaker
+#: /Game/XRU1Game/Audio/VO/Mission01/VO_M01_Brief_Kupol.VO_M01_Brief_Kupol:SoundSubtitleData_0.Speaker
+msgctxt ",981618A04A05F984D12E9B90869B8EE4"
+msgid "Купол"
+msgstr "Kupol"
+
+#. Key:	6E93E4AA4B3C50440E6DD1B2C4DCA6E1
+#. SourceLocation:	/Game/XRU1Game/Audio/VO/Mission01/VO_M01_Brief_Kupol.VO_M01_Brief_Kupol:SoundSubtitleData_0.Text
+#: /Game/XRU1Game/Audio/VO/Mission01/VO_M01_Brief_Kupol.VO_M01_Brief_Kupol:SoundSubtitleData_0.Text
+msgctxt ",6E93E4AA4B3C50440E6DD1B2C4DCA6E1"
+msgid "Слушай вводную. Узел-7 — двор ретрансляционной станции, заряд — у аппаратной, на севере. Сапёрная работа — два действия, любой боец справится. “Ржавых” — до шести стволов, и у них нет причин беречь станцию: не успеем — они просто дадут ей взлететь. Снять заряд. Забрать всех. Уйти. В таком порядке. Работаем, XRU 1 - один."
+msgstr "Listen up. Node-7 is the relay station yard. The charge is by the equipment room, to the north. Two-step EOD job—any operative can handle it. Up to six Rusties, and they have no reason to spare the station. If we're too slow, they'll blow it sky-high. Disarm the charge. Get everyone out. Withdraw. In that order. Move out, XRU 1."
+
+#. Key:	E568BC3A406DEA6E591A53A8CB28AE89
+#. SourceLocation:	/Game/XRU1Game/Audio/VO/Mission01/VO_M01_DefeatTimer_Kupol.VO_M01_DefeatTimer_Kupol:SoundSubtitleData_0.Speaker
+#: /Game/XRU1Game/Audio/VO/Mission01/VO_M01_DefeatTimer_Kupol.VO_M01_DefeatTimer_Kupol:SoundSubtitleData_0.Speaker
+msgctxt ",E568BC3A406DEA6E591A53A8CB28AE89"
+msgid "Купол"
+msgstr "Kupol"
+
+#. Key:	B36C9CD44B958919552AA38FFB123ACF
+#. SourceLocation:	/Game/XRU1Game/Audio/VO/Mission01/VO_M01_DefeatTimer_Kupol.VO_M01_DefeatTimer_Kupol:SoundSubtitleData_0.Text
+#: /Game/XRU1Game/Audio/VO/Mission01/VO_M01_DefeatTimer_Kupol.VO_M01_DefeatTimer_Kupol:SoundSubtitleData_0.Text
+msgctxt ",B36C9CD44B958919552AA38FFB123ACF"
+msgid "…Узел-7 потерян. Сектор остаётся глухим."
+msgstr "…Node-7 is lost. The sector remains cut off."
+
+#. Key:	B9895E934A67A333FB4CD09A8689C18F
+#. SourceLocation:	/Game/XRU1Game/Audio/VO/Mission01/VO_M01_DefeatWipe_Kupol.VO_M01_DefeatWipe_Kupol:SoundSubtitleData_0.Speaker
+#: /Game/XRU1Game/Audio/VO/Mission01/VO_M01_DefeatWipe_Kupol.VO_M01_DefeatWipe_Kupol:SoundSubtitleData_0.Speaker
+msgctxt ",B9895E934A67A333FB4CD09A8689C18F"
+msgid "Купол"
+msgstr "Kupol"
+
+#. Key:	DEA0CE404D5D1466227121B4FFCC50C0
+#. SourceLocation:	/Game/XRU1Game/Audio/VO/Mission01/VO_M01_DefeatWipe_Kupol.VO_M01_DefeatWipe_Kupol:SoundSubtitleData_0.Text
+#: /Game/XRU1Game/Audio/VO/Mission01/VO_M01_DefeatWipe_Kupol.VO_M01_DefeatWipe_Kupol:SoundSubtitleData_0.Text
+msgctxt ",DEA0CE404D5D1466227121B4FFCC50C0"
+msgid "XRU 1, ответьте . . . .  XRU 1?.."
+msgstr "XRU 1, respond... XRU 1?.."
+
+#. Key:	DA6473184509B74B344987A69DCD4C21
+#. SourceLocation:	/Game/XRU1Game/Audio/VO/Mission01/VO_M01_Epilogue_Kupol.VO_M01_Epilogue_Kupol:SoundSubtitleData_0.Speaker
+#: /Game/XRU1Game/Audio/VO/Mission01/VO_M01_Epilogue_Kupol.VO_M01_Epilogue_Kupol:SoundSubtitleData_0.Speaker
+msgctxt ",DA6473184509B74B344987A69DCD4C21"
+msgid "Купол"
+msgstr "Kupol"
+
+#. Key:	85BC1454488EC0B6452F15BB928FED2E
+#. SourceLocation:	/Game/XRU1Game/Audio/VO/Mission01/VO_M01_Epilogue_Kupol.VO_M01_Epilogue_Kupol:SoundSubtitleData_0.Text
+#: /Game/XRU1Game/Audio/VO/Mission01/VO_M01_Epilogue_Kupol.VO_M01_Epilogue_Kupol:SoundSubtitleData_0.Text
+msgctxt ",85BC1454488EC0B6452F15BB928FED2E"
+msgid "Узел-7 в сети. Хорошая работа, XRU 1. Отбой."
+msgstr "Node-7 is back online. Good work, XRU 1. Stand down."
+
+#. Key:	0705F6B7430E64C08EA8FA8A8D9D8A17
+#. SourceLocation:	/Game/XRU1Game/Audio/VO/Tutorial/VO_Tut_Brief_Kupol.VO_Tut_Brief_Kupol:SoundSubtitleData_0.Speaker
+#: /Game/XRU1Game/Audio/VO/Tutorial/VO_Tut_Brief_Kupol.VO_Tut_Brief_Kupol:SoundSubtitleData_0.Speaker
+msgctxt ",0705F6B7430E64C08EA8FA8A8D9D8A17"
+msgid "Купол"
+msgstr "Kupol"
+
+#. Key:	059AE91D430D34FBA37094A30F77DED5
+#. SourceLocation:	/Game/XRU1Game/Audio/VO/Tutorial/VO_Tut_Brief_Kupol.VO_Tut_Brief_Kupol:SoundSubtitleData_0.Text
+#: /Game/XRU1Game/Audio/VO/Tutorial/VO_Tut_Brief_Kupol.VO_Tut_Brief_Kupol:SoundSubtitleData_0.Text
+msgctxt ",059AE91D430D34FBA37094A30F77DED5"
+msgid "Полигон „Купол“. Прежде чем я выпущу группу к Узлу-7, отряд сдаёт зачёт: перемещение и укрытия, полевая медицина, работа парой, наблюдение, эвакуация и самое главное разминирование заряда. Внутри — цифровой макет станции и учебные враги."
+msgstr "The Kupol Training Ground. Before I clear the team for Node-7, the squad must pass its qualification: movement and cover, field medicine, working in pairs, overwatch, evacuation, and most importantly, disarming an explosive charge. Inside is a digital model of the station with simulated enemies."
+
+#. Key:	F42A6EE14DA8D5CE7F315689D5B60A67
+#. SourceLocation:	/Game/XRU1Game/Audio/VO/Tutorial/VO_Tut_Result_Kupol.VO_Tut_Result_Kupol:SoundSubtitleData_0.Speaker
+#: /Game/XRU1Game/Audio/VO/Tutorial/VO_Tut_Result_Kupol.VO_Tut_Result_Kupol:SoundSubtitleData_0.Speaker
+msgctxt ",F42A6EE14DA8D5CE7F315689D5B60A67"
+msgid "Купол"
+msgstr "Kupol"
+
+#. Key:	54D1E7674439D85F38425682B8A3A1F4
+#. SourceLocation:	/Game/XRU1Game/Audio/VO/Tutorial/VO_Tut_Result_Kupol.VO_Tut_Result_Kupol:SoundSubtitleData_0.Text
+#: /Game/XRU1Game/Audio/VO/Tutorial/VO_Tut_Result_Kupol.VO_Tut_Result_Kupol:SoundSubtitleData_0.Text
+msgctxt ",54D1E7674439D85F38425682B8A3A1F4"
+msgid "Зачёт! Отряд к вылету готов. Миссия Узел-7 ждёт."
+msgstr "Qualification passed! The squad is cleared for deployment. The Node-7 mission awaits."
+
+#. Key:	16102E4D4BB58AD156F6048AFE74BE16
+#. SourceLocation:	/Game/XRU1Game/Core/BP_TacticalScenarioDirector.BP_TacticalScenarioDirector_C:ExecuteUbergraph_BP_TacticalScenarioDirector [Script Bytecode]
+#: /Game/XRU1Game/Core/BP_TacticalScenarioDirector.BP_TacticalScenarioDirector_C:ExecuteUbergraph_BP_TacticalScenarioDirector [Script Bytecode]
+msgctxt ",16102E4D4BB58AD156F6048AFE74BE16"
+msgid "ERROR: Scenario is invalid"
+msgstr "ERROR: Scenario is invalid"
+
+#. Key:	26066B0749990CBDEF874999DBCA6CEB
+#. SourceLocation:	/Game/XRU1Game/Core/BP_TacticalScenarioDirector.BP_TacticalScenarioDirector_C:ExecuteUbergraph_BP_TacticalScenarioDirector [Script Bytecode]
+#: /Game/XRU1Game/Core/BP_TacticalScenarioDirector.BP_TacticalScenarioDirector_C:ExecuteUbergraph_BP_TacticalScenarioDirector [Script Bytecode]
+msgctxt ",26066B0749990CBDEF874999DBCA6CEB"
+msgid "ERROR: ScenarioSublevel is not set"
+msgstr "ERROR: ScenarioSublevel is not set"
+
+#. Key:	4BCF90D94B564CA762DA6FA0C89C7C33
+#. SourceLocation:	/Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(0).Cues.Speaker
+#: /Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(0).Cues.Speaker
+msgctxt ",4BCF90D94B564CA762DA6FA0C89C7C33"
+msgid "Купол"
+msgstr "Kupol"
+
+#. Key:	8D1733644D50A902D0396FB63CCFD458
+#. SourceLocation:	/Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(0).Cues.Text
+#: /Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(0).Cues.Text
+msgctxt ",8D1733644D50A902D0396FB63CCFD458"
+msgid "Однажды ночью, спутники замолчали. Мы назвали это - «Тихим ударом»."
+msgstr "One night, the satellites went silent. We called it the Silent Strike."
+
+#. Key:	91B0FAC84AAD032D317833BE54FDD0F8
+#. SourceLocation:	/Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(1).Cues.Speaker
+#: /Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(1).Cues.Speaker
+msgctxt ",91B0FAC84AAD032D317833BE54FDD0F8"
+msgid "Купол"
+msgstr "Kupol"
+
+#. Key:	D7C6FF9643B6068FD336098091559C33
+#. SourceLocation:	/Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(1).Cues.Text
+#: /Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(1).Cues.Text
+msgctxt ",D7C6FF9643B6068FD336098091559C33"
+msgid "Там, где не слышно соседей. быстро становится слышно выстрелы."
+msgstr "Where no one can hear their neighbors, gunfire is soon all anyone hears."
+
+#. Key:	6C1873FD402BAB7C47F2CF92E98332A0
+#. SourceLocation:	/Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(2).Cues.Speaker
+#: /Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(2).Cues.Speaker
+msgctxt ",6C1873FD402BAB7C47F2CF92E98332A0"
+msgid "Купол"
+msgstr "Kupol"
+
+#. Key:	8B94E35B423845EE0FCAAFB1AAEB4A93
+#. SourceLocation:	/Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(2).Cues.Text
+#: /Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(2).Cues.Text
+msgctxt ",8B94E35B423845EE0FCAAFB1AAEB4A93"
+msgid "Мародёры — Ржавые! Им выгодна тишина, — в тишине их никто не ждёт."
+msgstr "The marauders—the Rusties—thrive on silence. In silence, no one sees them coming."
+
+#. Key:	403D2C36494409D9801B81A2C75212CE
+#. SourceLocation:	/Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(3).Cues.Speaker
+#: /Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(3).Cues.Speaker
+msgctxt ",403D2C36494409D9801B81A2C75212CE"
+msgid "Купол"
+msgstr "Kupol"
+
+#. Key:	91C8DCE74748C387BBFEA6A73B99E410
+#. SourceLocation:	/Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(3).Cues.Text
+#: /Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(3).Cues.Text
+msgctxt ",91C8DCE74748C387BBFEA6A73B99E410"
+msgid "Против них — мы. Четверо... Экспедиционная разведгруппа узла - XRU 1."
+msgstr "Standing against them: us. Four operatives... Node Expeditionary Recon Unit—XRU 1."
+
+#. Key:	000F5E8F42410B1559D7B0902FAD695B
+#. SourceLocation:	/Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(4).Cues.Speaker
+#: /Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(4).Cues.Speaker
+msgctxt ",000F5E8F42410B1559D7B0902FAD695B"
+msgid "Купол"
+msgstr "Kupol"
+
+#. Key:	1240870743868F47D51D978041857297
+#. SourceLocation:	/Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(4).Cues.Text
+#: /Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(4).Cues.Text
+msgctxt ",1240870743868F47D51D978041857297"
+msgid "Узел семь. Последний ретранслятор сектора. Они не будут его удерживать — они его взорвут. Таймер уже идёт."
+msgstr "Node Seven. The sector's last relay. They won't hold it—they'll blow it up. The timer is already running."
+
+#. Key:	4A67A8734B0913E17B29B081D7842817
+#. SourceLocation:	/Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(5).Cues.Speaker
+#: /Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(5).Cues.Speaker
+msgctxt ",4A67A8734B0913E17B29B081D7842817"
+msgid "Купол"
+msgstr "Kupol"
+
+#. Key:	A93FFC344C63B38153A8B79FA527EA5A
+#. SourceLocation:	/Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(5).Cues.Text
+#: /Game/XRU1Game/Data/Intro/DA_Subtitles_Intro.DA_Subtitles_Intro.Cues(5).Cues.Text
+msgctxt ",A93FFC344C63B38153A8B79FA527EA5A"
+msgid "Снять заряд. Забрать всех. Уйти. XRU 1, Работаем."
+msgstr "Disarm the charge. Get everyone out. Withdraw. XRU 1, move out."
+
+#. Key:	45CBC9304B565E82A2F2558E57F864A3
+#. SourceLocation:	/Game/XRU1Game/Data/Missions/DA_Quest_Mission01.DA_Quest_Mission01.DisplayName
+#: /Game/XRU1Game/Data/Missions/DA_Quest_Mission01.DA_Quest_Mission01.DisplayName
+msgctxt ",45CBC9304B565E82A2F2558E57F864A3"
+msgid "Операция: Узел-7"
+msgstr "Operation: Node-7"
+
+#. Key:	7447D6B943DB50CFF3318A80C7C86A12
+#. SourceLocation:	/Game/XRU1Game/Data/Missions/DA_Quest_Tutorial.DA_Quest_Tutorial.DisplayName
+#: /Game/XRU1Game/Data/Missions/DA_Quest_Tutorial.DA_Quest_Tutorial.DisplayName
+msgctxt ",7447D6B943DB50CFF3318A80C7C86A12"
+msgid "Аттестация: Полигон «Купол»"
+msgstr "Qualification: Kupol Training Ground"
+
+#. Key:	AboutTitle
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_AboutMenuWidget.WBP_AboutMenuWidget_C:WidgetTree.Txt_Title.Text
+#: /Game/XRU1Game/UI/Menus/WBP_AboutMenuWidget.WBP_AboutMenuWidget_C:WidgetTree.Txt_Title.Text
+msgctxt "XRU1.Menu,AboutTitle"
+msgid "ОБ АВТОРЕ"
+msgstr "ABOUT THE AUTHOR"
+
+#. Key:	C1F5F62A4D88DAEC2AAD2ABE21FD1AA4
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_DifficultySelect.WBP_DifficultySelect_C:WidgetTree.CommonTextBlock_52.Text
+#: /Game/XRU1Game/UI/Menus/WBP_DifficultySelect.WBP_DifficultySelect_C:WidgetTree.CommonTextBlock_52.Text
+msgctxt ",C1F5F62A4D88DAEC2AAD2ABE21FD1AA4"
+msgid "Выбор сложности"
+msgstr "Select Difficulty"
+
+#. Key:	FB9D75124B19EED978D2488D9D8F1711
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_DifficultySelect.WBP_DifficultySelect_C:WidgetTree.TextBlock.Text
+#: /Game/XRU1Game/UI/Menus/WBP_DifficultySelect.WBP_DifficultySelect_C:WidgetTree.TextBlock.Text
+msgctxt ",FB9D75124B19EED978D2488D9D8F1711"
+msgid "Средний"
+msgstr "Medium"
+
+#. Key:	8EB5334345E4A7DB00D8EF8CB571E463
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_DifficultySelect.WBP_DifficultySelect_C:WidgetTree.TextBlock_1.Text
+#: /Game/XRU1Game/UI/Menus/WBP_DifficultySelect.WBP_DifficultySelect_C:WidgetTree.TextBlock_1.Text
+msgctxt ",8EB5334345E4A7DB00D8EF8CB571E463"
+msgid "Сложный"
+msgstr "Hard"
+
+#. Key:	2BA008DC437F4CD9A39FE5B4F0AAF8CF
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_DifficultySelect.WBP_DifficultySelect_C:WidgetTree.TextBlock_2.Text
+#: /Game/XRU1Game/UI/Menus/WBP_DifficultySelect.WBP_DifficultySelect_C:WidgetTree.TextBlock_2.Text
+msgctxt ",2BA008DC437F4CD9A39FE5B4F0AAF8CF"
+msgid "Назад"
+msgstr "Back"
+
+#. Key:	D966C97C461792C98823D19DC3256C6B
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_DifficultySelect.WBP_DifficultySelect_C:WidgetTree.TextBlock_55.Text
+#: /Game/XRU1Game/UI/Menus/WBP_DifficultySelect.WBP_DifficultySelect_C:WidgetTree.TextBlock_55.Text
+msgctxt ",D966C97C461792C98823D19DC3256C6B"
+msgid "Легкий"
+msgstr "Easy"
+
+#. Key:	OpenBriefing
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_HubHUD.WBP_HubHUD_C:WidgetTree.Btn_Start_Label.Text
+#: /Game/XRU1Game/UI/Menus/WBP_HubHUD.WBP_HubHUD_C:WidgetTree.Btn_Start_Label.Text
+msgctxt "XRU1.Hub,OpenBriefing"
+msgid "Перейти к брифингу"
+msgstr "Proceed to Briefing"
+
+#. Key:	ToMenu
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_HubHUD.WBP_HubHUD_C:WidgetTree.Btn_ToMenu_Label.Text
+#: /Game/XRU1Game/UI/Menus/WBP_HubHUD.WBP_HubHUD_C:WidgetTree.Btn_ToMenu_Label.Text
+msgctxt "XRU1.Menu,ToMenu"
+msgid "В меню"
+msgstr "Main Menu"
+
+#. Key:	512BAAED4FF09568F22A8FBF45A1854D
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_MainMenu.WBP_MainMenu_C:WidgetTree.TextBlock.Text
+#: /Game/XRU1Game/UI/Menus/WBP_MainMenu.WBP_MainMenu_C:WidgetTree.TextBlock.Text
+msgctxt ",512BAAED4FF09568F22A8FBF45A1854D"
+msgid "Новая игра"
+msgstr "New Game"
+
+#. Key:	B8009C3A49D8B52E20300B9EFA0773C3
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_MainMenu.WBP_MainMenu_C:WidgetTree.TextBlock_1.Text
+#: /Game/XRU1Game/UI/Menus/WBP_MainMenu.WBP_MainMenu_C:WidgetTree.TextBlock_1.Text
+msgctxt ",B8009C3A49D8B52E20300B9EFA0773C3"
+msgid "Настройки"
+msgstr "Settings"
+
+#. Key:	716FB8B041984774C8CB5396AFC65C6F
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_MainMenu.WBP_MainMenu_C:WidgetTree.TextBlock_2.Text
+#: /Game/XRU1Game/UI/Menus/WBP_MainMenu.WBP_MainMenu_C:WidgetTree.TextBlock_2.Text
+msgctxt ",716FB8B041984774C8CB5396AFC65C6F"
+msgid "Об авторе"
+msgstr "About the Author"
+
+#. Key:	9672522D4F4B14812ED6538A823FDB4B
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_MainMenu.WBP_MainMenu_C:WidgetTree.TextBlock_3.Text
+#: /Game/XRU1Game/UI/Menus/WBP_MainMenu.WBP_MainMenu_C:WidgetTree.TextBlock_3.Text
+msgctxt ",9672522D4F4B14812ED6538A823FDB4B"
+msgid "Выход"
+msgstr "Quit"
+
+#. Key:	C4FDC9DA40FC8FEA4329C69BBEBA9D6C
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_MainMenu.WBP_MainMenu_C:WidgetTree.TextBlock_55.Text
+#: /Game/XRU1Game/UI/Menus/WBP_MainMenu.WBP_MainMenu_C:WidgetTree.TextBlock_55.Text
+msgctxt ",C4FDC9DA40FC8FEA4329C69BBEBA9D6C"
+msgid "Продолжить"
+msgstr "Continue"
+
+#. Key:	BD7127244186D3F8086F78B1E07F00F5
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_MainMenu.WBP_MainMenu_C:WidgetTree.Txt_Subtitle.Text
+#: /Game/XRU1Game/UI/Menus/WBP_MainMenu.WBP_MainMenu_C:WidgetTree.Txt_Subtitle.Text
+msgctxt ",BD7127244186D3F8086F78B1E07F00F5"
+msgid "тактическая операция XRU-1"
+msgstr "XRU-1 tactical operation"
+
+#. Key:	48B662C442E957E9E40D17A67F114D89
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_MainMenu.WBP_MainMenu_C:WidgetTree.Txt_Title.Text
+#: /Game/XRU1Game/UI/Menus/WBP_MainMenu.WBP_MainMenu_C:WidgetTree.Txt_Title.Text
+msgctxt ",48B662C442E957E9E40D17A67F114D89"
+msgid "ТИХИЙ УЗЕЛ"
+msgstr "SILENT NODE"
+
+#. Key:	Start
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_MissionBriefing.WBP_MissionBriefing_C:WidgetTree.Btn_Start_Label.Text
+#: /Game/XRU1Game/UI/Menus/WBP_MissionBriefing.WBP_MissionBriefing_C:WidgetTree.Btn_Start_Label.Text
+msgctxt "XRU1.Briefing,Start"
+msgid "Начать миссию"
+msgstr "Start Mission"
+
+#. Key:	TitlePlaceholder
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_MissionBriefing.WBP_MissionBriefing_C:WidgetTree.Txt_BriefTitle.Text
+#: /Game/XRU1Game/UI/Menus/WBP_MissionBriefing.WBP_MissionBriefing_C:WidgetTree.Txt_BriefTitle.Text
+msgctxt "XRU1.Briefing,TitlePlaceholder"
+msgid "БРИФИНГ"
+msgstr "BRIEFING"
+
+#. Key:	Retry
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_MissionResult.WBP_MissionResult_C:WidgetTree.Btn_Retry_Label.Text
+#: /Game/XRU1Game/UI/Menus/WBP_MissionResult.WBP_MissionResult_C:WidgetTree.Btn_Retry_Label.Text
+msgctxt "XRU1.Menu,Retry"
+msgid "Повторить"
+msgstr "Retry"
+
+#. Key:	ToHub
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_MissionResult.WBP_MissionResult_C:WidgetTree.Btn_ToHub_Label.Text
+#: /Game/XRU1Game/UI/Menus/WBP_MissionResult.WBP_MissionResult_C:WidgetTree.Btn_ToHub_Label.Text
+msgctxt "XRU1.Menu,ToHub"
+msgid "На базу"
+msgstr "Return to Base"
+
+#. Key:	Resume
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_PauseMenuWidget.WBP_PauseMenuWidget_C:WidgetTree.Btn_Resume_Label.Text
+#: /Game/XRU1Game/UI/Menus/WBP_PauseMenuWidget.WBP_PauseMenuWidget_C:WidgetTree.Btn_Resume_Label.Text
+msgctxt "XRU1.Menu,Resume"
+msgid "Продолжить"
+msgstr "Continue"
+
+#. Key:	ToMainMenu
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_PauseMenuWidget.WBP_PauseMenuWidget_C:WidgetTree.Btn_ReturnToMenu_Label.Text
+#: /Game/XRU1Game/UI/Menus/WBP_PauseMenuWidget.WBP_PauseMenuWidget_C:WidgetTree.Btn_ReturnToMenu_Label.Text
+msgctxt "XRU1.Menu,ToMainMenu"
+msgid "В главное меню"
+msgstr "Main Menu"
+
+#. Key:	Settings
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_PauseMenuWidget.WBP_PauseMenuWidget_C:WidgetTree.Btn_Settings_Label.Text
+#: /Game/XRU1Game/UI/Menus/WBP_PauseMenuWidget.WBP_PauseMenuWidget_C:WidgetTree.Btn_Settings_Label.Text
+msgctxt "XRU1.Menu,Settings"
+msgid "Настройки"
+msgstr "Settings"
+
+#. Key:	PauseTitle
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_PauseMenuWidget.WBP_PauseMenuWidget_C:WidgetTree.Txt_Title.Text
+#: /Game/XRU1Game/UI/Menus/WBP_PauseMenuWidget.WBP_PauseMenuWidget_C:WidgetTree.Txt_Title.Text
+msgctxt "XRU1.Menu,PauseTitle"
+msgid "ПАУЗА"
+msgstr "PAUSED"
+
+#. Key:	Apply
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Btn_Apply_Label.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Btn_Apply_Label.Text
+msgctxt "XRU1.Menu,Apply"
+msgid "Применить"
+msgstr "Apply"
+
+#. Key:	Back
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Btn_Back_Label.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Btn_Back_Label.Text
+msgctxt "XRU1.Menu,Back"
+msgid "Назад"
+msgstr "Back"
+
+#. Key:	Reset
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Btn_Reset_Label.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Btn_Reset_Label.Text
+msgctxt "XRU1.Menu,Reset"
+msgid "Сбросить"
+msgstr "Reset"
+
+#. Key:	SettingsAudio
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_1.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_1.Text
+msgctxt "XRU1.Menu,SettingsAudio"
+msgid "ЗВУК"
+msgstr "AUDIO"
+
+#. Key:	VolUI
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_12.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_12.Text
+msgctxt "XRU1.Menu,VolUI"
+msgid "Интерфейс"
+msgstr "UI"
+
+#. Key:	VolVoice
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_15.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_15.Text
+msgctxt "XRU1.Menu,VolVoice"
+msgid "Голос"
+msgstr "Voice"
+
+#. Key:	SettingsVideo
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_17.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_17.Text
+msgctxt "XRU1.Menu,SettingsVideo"
+msgid "ИЗОБРАЖЕНИЕ"
+msgstr "VIDEO"
+
+#. Key:	VideoQuality
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_19.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_19.Text
+msgctxt "XRU1.Menu,VideoQuality"
+msgid "Качество"
+msgstr "Quality"
+
+#. Key:	VideoResScale
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_22.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_22.Text
+msgctxt "XRU1.Menu,VideoResScale"
+msgid "Масштаб разрешения"
+msgstr "Resolution Scale"
+
+#. Key:	VideoFullscreen
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_25.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_25.Text
+msgctxt "XRU1.Menu,VideoFullscreen"
+msgid "Полноэкранный режим"
+msgstr "Fullscreen Mode"
+
+#. Key:	VideoVSync
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_28.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_28.Text
+msgctxt "XRU1.Menu,VideoVSync"
+msgid "Вертикальная синхронизация"
+msgstr "V-Sync"
+
+#. Key:	VolMaster
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_3.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_3.Text
+msgctxt "XRU1.Menu,VolMaster"
+msgid "Общая"
+msgstr "Master"
+
+#. Key:	SettingsCamera
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_30.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_30.Text
+msgctxt "XRU1.Menu,SettingsCamera"
+msgid "КАМЕРА"
+msgstr "CAMERA"
+
+#. Key:	CamFov
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_32.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_32.Text
+msgctxt "XRU1.Menu,CamFov"
+msgid "Угол обзора"
+msgstr "Field of View"
+
+#. Key:	CamSens
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_35.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_35.Text
+msgctxt "XRU1.Menu,CamSens"
+msgid "Чувствительность поворота"
+msgstr "Horizontal Sensitivity"
+
+#. Key:	CamPitchSens
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_38.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_38.Text
+msgctxt "XRU1.Menu,CamPitchSens"
+msgid "Чувствительность наклона"
+msgstr "Vertical Sensitivity"
+
+#. Key:	CamInvert
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_41.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_41.Text
+msgctxt "XRU1.Menu,CamInvert"
+msgid "Инверсия вертикали (Alt+мышь)"
+msgstr "Invert Vertical Axis (Alt+Mouse)"
+
+#. Key:	CamEdgeScroll
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_44.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_44.Text
+msgctxt "XRU1.Menu,CamEdgeScroll"
+msgid "Панорама у края экрана"
+msgstr "Edge Scrolling"
+
+#. Key:	SettingsSubtitles
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_46.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_46.Text
+msgctxt "XRU1.Menu,SettingsSubtitles"
+msgid "СУБТИТРЫ И ЯЗЫК"
+msgstr "SUBTITLES & LANGUAGE"
+
+#. Key:	SubOn
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_48.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_48.Text
+msgctxt "XRU1.Menu,SubOn"
+msgid "Субтитры"
+msgstr "Subtitles"
+
+#. Key:	SubSpeakers
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_51.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_51.Text
+msgctxt "XRU1.Menu,SubSpeakers"
+msgid "Показывать имена говорящих"
+msgstr "Show Speaker Names"
+
+#. Key:	SubSize
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_54.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_54.Text
+msgctxt "XRU1.Menu,SubSize"
+msgid "Размер текста"
+msgstr "Text Size"
+
+#. Key:	SubBackdrop
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_57.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_57.Text
+msgctxt "XRU1.Menu,SubBackdrop"
+msgid "Подложка"
+msgstr "Background"
+
+#. Key:	VolMusic
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_6.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_6.Text
+msgctxt "XRU1.Menu,VolMusic"
+msgid "Музыка"
+msgstr "Music"
+
+#. Key:	SubLanguage
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_60.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_60.Text
+msgctxt "XRU1.Menu,SubLanguage"
+msgid "Язык"
+msgstr "Language"
+
+#. Key:	VolSfx
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_9.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Auto_9.Text
+msgctxt "XRU1.Menu,VolSfx"
+msgid "Эффекты"
+msgstr "Effects"
+
+#. Key:	SettingsTitle
+#. SourceLocation:	/Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Title.Text
+#: /Game/XRU1Game/UI/Menus/WBP_Settings.WBP_Settings_C:WidgetTree.Txt_Title.Text
+msgctxt "XRU1.Menu,SettingsTitle"
+msgid "НАСТРОЙКИ"
+msgstr "SETTINGS"
+
+#. Key:	02B17CAC45685002D6E25191E6E85F65
+#. SourceLocation:	/Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:ExecuteUbergraph_WBP_TacticalHUD [Script Bytecode]
+#: /Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:ExecuteUbergraph_WBP_TacticalHUD [Script Bytecode]
+msgctxt ",02B17CAC45685002D6E25191E6E85F65"
+msgid "Эвакуировать отряд"
+msgstr "Evacuate Squad"
+
+#. Key:	03FCC65E465EA85ABE5CF38ABA3094E8
+#. SourceLocation:	/Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:ExecuteUbergraph_WBP_TacticalHUD [Script Bytecode]
+#: /Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:ExecuteUbergraph_WBP_TacticalHUD [Script Bytecode]
+msgctxt ",03FCC65E465EA85ABE5CF38ABA3094E8"
+msgid "ХОД ПРОТИВНИКА"
+msgstr "ENEMY TURN"
+
+#. Key:	1A71B0F04FBAA2440145FF9F81598519
+#. SourceLocation:	/Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:ExecuteUbergraph_WBP_TacticalHUD [Script Bytecode]
+#: /Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:ExecuteUbergraph_WBP_TacticalHUD [Script Bytecode]
+msgctxt ",1A71B0F04FBAA2440145FF9F81598519"
+msgid "Ход {TurnNumber}"
+msgstr "Turn {TurnNumber}"
+
+#. Key:	1E6C682042E274886C2773A8DD1E0E94
+#. SourceLocation:	/Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:ExecuteUbergraph_WBP_TacticalHUD [Script Bytecode]
+#: /Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:ExecuteUbergraph_WBP_TacticalHUD [Script Bytecode]
+msgctxt ",1E6C682042E274886C2773A8DD1E0E94"
+msgid "До подрыва: {TurnsRemaining} ходов"
+msgstr "Turns until detonation: {TurnsRemaining}"
+
+#. Key:	B5ED198749D3B308B0A57E8545A14FB0
+#. SourceLocation:	/Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:ExecuteUbergraph_WBP_TacticalHUD [Script Bytecode]
+#: /Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:ExecuteUbergraph_WBP_TacticalHUD [Script Bytecode]
+msgctxt ",B5ED198749D3B308B0A57E8545A14FB0"
+msgid "Обезвреживание: {Current}/{Required}"
+msgstr "Disarming: {Current}/{Required}"
+
+#. Key:	D910FC784D2689AFC58EBD924336BB28
+#. SourceLocation:	/Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:ExecuteUbergraph_WBP_TacticalHUD [Script Bytecode]
+#: /Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:ExecuteUbergraph_WBP_TacticalHUD [Script Bytecode]
+msgctxt ",D910FC784D2689AFC58EBD924336BB28"
+msgid "ВАШ ХОД"
+msgstr "YOUR TURN"
+
+#. Key:	3B6335C64FB73B70FACB23979CD42D36
+#. SourceLocation:	/Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.BombTimerText.Text
+#: /Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.BombTimerText.Text
+msgctxt ",3B6335C64FB73B70FACB23979CD42D36"
+msgid "До подрыва: 8 ходов"
+msgstr "Turns until detonation: 8"
+
+#. Key:	EEF533EA470D60CABAE2C38683D32273
+#. SourceLocation:	/Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.CommonTextBlock_99.Text
+#: /Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.CommonTextBlock_99.Text
+msgctxt ",EEF533EA470D60CABAE2C38683D32273"
+msgid "Завершить ход"
+msgstr "End Turn"
+
+#. Key:	66658E9E4B79CBE9A4B07894A7691255
+#. SourceLocation:	/Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.CommonTextBlock_99.ToolTipText
+#: /Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.CommonTextBlock_99.ToolTipText
+msgctxt ",66658E9E4B79CBE9A4B07894A7691255"
+msgid "Завершить ход (Enter)"
+msgstr "End Turn (Enter)"
+
+#. Key:	766FF96449047D6F1E62F7AAB0C1049F
+#. SourceLocation:	/Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.EnemyCountText.Text
+#: /Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.EnemyCountText.Text
+msgctxt ",766FF96449047D6F1E62F7AAB0C1049F"
+msgid "4"
+msgstr "4"
+
+#. Key:	DC216D044C85943CAD9840982C3A61BA
+#. SourceLocation:	/Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.EnemyPhaseHint.Text
+#: /Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.EnemyPhaseHint.Text
+msgctxt ",DC216D044C85943CAD9840982C3A61BA"
+msgid "«Ход противника — ждите»"
+msgstr "“Enemy turn—please wait”"
+
+#. Key:	53C555FC4A278DEC0D3745970E88E3EA
+#. SourceLocation:	/Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.HitChanceText.Text
+#: /Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.HitChanceText.Text
+msgctxt ",53C555FC4A278DEC0D3745970E88E3EA"
+msgid "Попадание: 65%"
+msgstr "Hit Chance: 65%"
+
+#. Key:	BF0CE4C04FF3C7D6D267198BA1420D17
+#. SourceLocation:	/Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.Image.ToolTipText
+#: /Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.Image.ToolTipText
+msgctxt ",BF0CE4C04FF3C7D6D267198BA1420D17"
+msgid "Глухая оборона (X)"
+msgstr "Hunker Down (X)"
+
+#. Key:	A2A8CF7A4EE28602ADE91B89783E353D
+#. SourceLocation:	/Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.Image_3.ToolTipText
+#: /Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.Image_3.ToolTipText
+msgctxt ",A2A8CF7A4EE28602ADE91B89783E353D"
+msgid "Пропустить ход (Backspace)"
+msgstr "Skip Turn (Backspace)"
+
+#. Key:	5F6CC4394033EBF26F9D16938F01C5FF
+#. SourceLocation:	/Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.Image_96.ToolTipText
+#: /Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.Image_96.ToolTipText
+msgctxt ",5F6CC4394033EBF26F9D16938F01C5FF"
+msgid "Наблюдение (Y)"
+msgstr "Overwatch (Y)"
+
+#. Key:	152C70964191846215B059B11FD20867
+#. SourceLocation:	/Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.InteractIcon.ToolTipText
+#: /Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.InteractIcon.ToolTipText
+msgctxt ",152C70964191846215B059B11FD20867"
+msgid "Обезвредить / Эвакуация (F)"
+msgstr "Disarm / Evacuate (F)"
+
+#. Key:	06010EF243FF3771F3343E8528B662FB
+#. SourceLocation:	/Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.ObjectiveText.Text
+#: /Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.ObjectiveText.Text
+msgctxt ",06010EF243FF3771F3343E8528B662FB"
+msgid "Обезвреживание: 0/2"
+msgstr "Disarming: 0/2"
+
+#. Key:	C97A1F55477147BD10816A832A811601
+#. SourceLocation:	/Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.PhaseText.Text
+#: /Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.PhaseText.Text
+msgctxt ",C97A1F55477147BD10816A832A811601"
+msgid "Ваш ход"
+msgstr "Your Turn"
+
+#. Key:	04E92AA44E8DF7EB23C448999A1677FC
+#. SourceLocation:	/Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.TargetNameText.Text
+#: /Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.TargetNameText.Text
+msgctxt ",04E92AA44E8DF7EB23C448999A1677FC"
+msgid "Мародёр"
+msgstr "Marauder"
+
+#. Key:	D690F4C441786B47DF142FA9B4A31E0B
+#. SourceLocation:	/Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.TurnText.Text
+#: /Game/XRU1Game/UI/WBP_TacticalHUD.WBP_TacticalHUD_C:WidgetTree.TurnText.Text
+msgctxt ",D690F4C441786B47DF142FA9B4A31E0B"
+msgid "Ход 1"
+msgstr "Turn 1"
+
+#. Key:	533ACBF54FBE1188357387B857A481AB
+#. SourceLocation:	/Game/XRU1Game/UI/WBP_UnitPortrait.WBP_UnitPortrait_C:WidgetTree.NameText.Text
+#: /Game/XRU1Game/UI/WBP_UnitPortrait.WBP_UnitPortrait_C:WidgetTree.NameText.Text
+msgctxt ",533ACBF54FBE1188357387B857A481AB"
+msgid "UNIT NAME"
+msgstr "UNIT NAME"
+
+#. Key:	GenerationInfo
+#. SourceLocation:	Source/XRU1/PCG/PCGScatterJitter.cpp(122)
+#: Source/XRU1/PCG/PCGScatterJitter.cpp(122)
+msgctxt "PCGScatterJitterElement,GenerationInfo"
+msgid "Jittered {0} points"
+msgstr "Jittered {0} points"
+
+#. Key:	InvalidInputData
+#. SourceLocation:	Source/XRU1/PCG/PCGScatterJitter.cpp(47)
+#: Source/XRU1/PCG/PCGScatterJitter.cpp(47)
+msgctxt "PCGScatterJitterElement,InvalidInputData"
+msgid "Invalid input data"
+msgstr "Invalid input data"
+
+#. Key:	NoPointDataInInput
+#. SourceLocation:	Source/XRU1/PCG/PCGScatterJitter.cpp(54)
+#: Source/XRU1/PCG/PCGScatterJitter.cpp(54)
+msgctxt "PCGScatterJitterElement,NoPointDataInInput"
+msgid "Unable to get point data from input"
+msgstr "Unable to get point data from input"
+
+#. Key:	GenerationInfo
+#. SourceLocation:	Source/XRU1/PCG/PCGSlopeHeightFilter.cpp(125)
+#: Source/XRU1/PCG/PCGSlopeHeightFilter.cpp(125)
+msgctxt "PCGSlopeHeightFilterElement,GenerationInfo"
+msgid "Generated {0} points out of {1} source points"
+msgstr "Generated {0} points out of {1} source points"
+
+#. Key:	InvalidInputData
+#. SourceLocation:	Source/XRU1/PCG/PCGSlopeHeightFilter.cpp(46)
+#: Source/XRU1/PCG/PCGSlopeHeightFilter.cpp(46)
+msgctxt "PCGSlopeHeightFilterElement,InvalidInputData"
+msgid "Invalid input data"
+msgstr "Invalid input data"
+
+#. Key:	NoPointDataInInput
+#. SourceLocation:	Source/XRU1/PCG/PCGSlopeHeightFilter.cpp(53)
+#: Source/XRU1/PCG/PCGSlopeHeightFilter.cpp(53)
+msgctxt "PCGSlopeHeightFilterElement,NoPointDataInInput"
+msgid "Unable to get point data from input"
+msgstr "Unable to get point data from input"
+
+#. Key:	SkipHint
+#. SourceLocation:	Source/XRU1/Subtitles/SubtitleOverlay.cpp(101)
+#: Source/XRU1/Subtitles/SubtitleOverlay.cpp(101)
+msgctxt "XRU1.Subtitles,SkipHint"
+msgid "[Пробел — пропустить]"
+msgstr "[Space — Skip]"
+
+#. Key:	OverwatchArmed
+#. SourceLocation:	Source/XRU1/Tactics/GA_Overwatch.cpp(134)
+#: Source/XRU1/Tactics/GA_Overwatch.cpp(134)
+msgctxt "XRU1.Feedback,OverwatchArmed"
+msgid "НАБЛЮДЕНИЕ"
+msgstr "OVERWATCH"
+
+#. Key:	AbilityOverwatchName
+#. SourceLocation:	Source/XRU1/Tactics/GA_Overwatch.cpp(71)
+#: Source/XRU1/Tactics/GA_Overwatch.cpp(71)
+msgctxt "XRU1,AbilityOverwatchName"
+msgid "Наблюдение"
+msgstr "Overwatch"
+
+#. Key:	AbilityOverwatchDesc
+#. SourceLocation:	Source/XRU1/Tactics/GA_Overwatch.cpp(72)
+#: Source/XRU1/Tactics/GA_Overwatch.cpp(72)
+msgctxt "XRU1,AbilityOverwatchDesc"
+msgid "Боец берёт сектор под прицел и стреляет по первому, кто войдёт в его линию огня."
+msgstr "The operative watches a sector and fires at the first enemy to enter their line of fire."
+
+#. Key:	LockedLegacy
+#. SourceLocation:	Source/XRU1/Tactics/MissionPointOfInterest.cpp(148)
+#: Source/XRU1/Tactics/MissionPointOfInterest.cpp(148)
+msgctxt "XRU1.POI,LockedLegacy"
+msgid "Недоступно: сначала пройдите «{0}»"
+msgstr "Unavailable: complete “{0}” first"
+
+#. Key:	AbilityUses
+#. SourceLocation:	Source/XRU1/Tactics/TacticalAbility.cpp(228)
+#: Source/XRU1/Tactics/TacticalAbility.cpp(228)
+msgctxt "XRU1,AbilityUses"
+msgid "Осталось применений: {0} из {1}"
+msgstr "Uses remaining: {0} of {1}"
+
+#. Key:	AbilityCostEnds
+#. SourceLocation:	Source/XRU1/Tactics/TacticalAbility.cpp(232)
+#: Source/XRU1/Tactics/TacticalAbility.cpp(232)
+msgctxt "XRU1,AbilityCostEnds"
+msgid "Стоимость: {0} ОД, завершает ход бойца"
+msgstr "Cost: {0} AP; ends the operative's turn"
+
+#. Key:	AbilityCost
+#. SourceLocation:	Source/XRU1/Tactics/TacticalAbility.cpp(234)
+#: Source/XRU1/Tactics/TacticalAbility.cpp(234)
+msgctxt "XRU1,AbilityCost"
+msgid "Стоимость: {0} ОД"
+msgstr "Cost: {0} AP"
+
+#. Key:	AbilityHunkerName
+#. SourceLocation:	Source/XRU1/Tactics/TacticalClassAbilities.cpp(119)
+#: Source/XRU1/Tactics/TacticalClassAbilities.cpp(119)
+msgctxt "XRU1,AbilityHunkerName"
+msgid "Глухая оборона"
+msgstr "Hunker Down"
+
+#. Key:	AbilityHunkerDesc
+#. SourceLocation:	Source/XRU1/Tactics/TacticalClassAbilities.cpp(120)
+#: Source/XRU1/Tactics/TacticalClassAbilities.cpp(120)
+msgctxt "XRU1,AbilityHunkerDesc"
+msgid "Боец вжимается в укрытие: защита укрытия удваивается до начала его следующего хода."
+msgstr "The operative hunkers down, doubling cover protection until the start of their next turn."
+
+#. Key:	AbilityTauntName
+#. SourceLocation:	Source/XRU1/Tactics/TacticalClassAbilities.cpp(167)
+#: Source/XRU1/Tactics/TacticalClassAbilities.cpp(167)
+msgctxt "XRU1,AbilityTauntName"
+msgid "Провокация"
+msgstr "Taunt"
+
+#. Key:	AbilityTauntDesc
+#. SourceLocation:	Source/XRU1/Tactics/TacticalClassAbilities.cpp(168)
+#: Source/XRU1/Tactics/TacticalClassAbilities.cpp(168)
+msgctxt "XRU1,AbilityTauntDesc"
+msgid "Штурмовик вызывает огонь на себя и получает щит: враги предпочтут его остальным."
+msgstr "The assault operative draws enemy fire and gains a shield; enemies will prioritize them over other targets."
+
+#. Key:	AbilityHealName
+#. SourceLocation:	Source/XRU1/Tactics/TacticalClassAbilities.cpp(197)
+#: Source/XRU1/Tactics/TacticalClassAbilities.cpp(197)
+msgctxt "XRU1,AbilityHealName"
+msgid "Полевая медицина"
+msgstr "Field Medicine"
+
+#. Key:	AbilityHealDesc
+#. SourceLocation:	Source/XRU1/Tactics/TacticalClassAbilities.cpp(198)
+#: Source/XRU1/Tactics/TacticalClassAbilities.cpp(198)
+msgctxt "XRU1,AbilityHealDesc"
+msgid "Лечит союзника вплотную или поднимает тяжело раненого. Ход бойца не завершает."
+msgstr "Heals an adjacent ally or revives a critically wounded operative. Does not end the operative's turn."
+
+#. Key:	AbilityRunGunName
+#. SourceLocation:	Source/XRU1/Tactics/TacticalClassAbilities.cpp(344)
+#: Source/XRU1/Tactics/TacticalClassAbilities.cpp(344)
+msgctxt "XRU1,AbilityRunGunName"
+msgid "Рывок"
+msgstr "Dash"
+
+#. Key:	AbilityRunGunDesc
+#. SourceLocation:	Source/XRU1/Tactics/TacticalClassAbilities.cpp(345)
+#: Source/XRU1/Tactics/TacticalClassAbilities.cpp(345)
+msgctxt "XRU1,AbilityRunGunDesc"
+msgid "Бесплатное действие: боец получает дополнительное очко действия."
+msgstr "Free action: the operative gains one additional action point."
+
+#. Key:	BeatSubtitle
+#. SourceLocation:	Source/XRU1/Tactics/TacticalPlayerController.cpp(740)
+#: Source/XRU1/Tactics/TacticalPlayerController.cpp(740)
+msgctxt "XRU1.Tutorial,BeatSubtitle"
+msgid "{0}: {1}"
+msgstr "{0}: {1}"
+
+#. Key:	BeatSubtitleWithSkip
+#. SourceLocation:	Source/XRU1/Tactics/TacticalPlayerController.cpp(745)
+#: Source/XRU1/Tactics/TacticalPlayerController.cpp(745)
+msgctxt "XRU1.Tutorial,BeatSubtitleWithSkip"
+msgid "{0}\n\n[Пробел — пропустить]"
+msgstr "{0}\n\n[Space — Skip]"
+
+#. Key:	LockedGeneric
+#. SourceLocation:	Source/XRU1/Tactics/TacticalScenarioDataAsset.cpp(64)
+#: Source/XRU1/Tactics/TacticalScenarioDataAsset.cpp(64)
+msgctxt "XRU1.Scenario,LockedGeneric"
+msgid "Операция пока недоступна"
+msgstr "Operation Unavailable"
+
+#. Key:	LockedRequires
+#. SourceLocation:	Source/XRU1/Tactics/TacticalScenarioDataAsset.cpp(70)
+#: Source/XRU1/Tactics/TacticalScenarioDataAsset.cpp(70)
+msgctxt "XRU1.Scenario,LockedRequires"
+msgid "Недоступно: сначала пройдите {0}"
+msgstr "Unavailable: complete {0} first"
+
+#. Key:	LockedJoin
+#. SourceLocation:	Source/XRU1/Tactics/TacticalScenarioDataAsset.cpp(71)
+#: Source/XRU1/Tactics/TacticalScenarioDataAsset.cpp(71)
+msgctxt "XRU1.Scenario,LockedJoin"
+msgid ", "
+msgstr ", "
+
+#. Key:	PointerBomb
+#. SourceLocation:	Source/XRU1/Tactics/TacticsGameMode.cpp(319)
+#: Source/XRU1/Tactics/TacticsGameMode.cpp(319)
+msgctxt "XRU1.Objective,PointerBomb"
+msgid "ЗАРЯД"
+msgstr "CHARGE"
+
+#. Key:	PointerEvac
+#. SourceLocation:	Source/XRU1/Tactics/TacticsGameMode.cpp(332)
+#: Source/XRU1/Tactics/TacticsGameMode.cpp(332)
+msgctxt "XRU1.Objective,PointerEvac"
+msgid "ЭВАКУАЦИЯ"
+msgstr "EVACUATION"
+
+#. Key:	SniperName
+#. SourceLocation:	Source/XRU1/Tactics/UnitBase.cpp(1160)
+#: Source/XRU1/Tactics/UnitBase.cpp(1160)
+msgctxt "XRU1Units,SniperName"
+msgid "Оса"
+msgstr "Osa"
+
+#. Key:	HealerName
+#. SourceLocation:	Source/XRU1/Tactics/UnitBase.cpp(1168)
+#: Source/XRU1/Tactics/UnitBase.cpp(1168)
+msgctxt "XRU1Units,HealerName"
+msgid "Шприц"
+msgstr "Shprits"
+
+#. Key:	TankName
+#. SourceLocation:	Source/XRU1/Tactics/UnitBase.cpp(1176)
+#: Source/XRU1/Tactics/UnitBase.cpp(1176)
+msgctxt "XRU1Units,TankName"
+msgid "Молот"
+msgstr "Molot"
+
+#. Key:	AssaultName
+#. SourceLocation:	Source/XRU1/Tactics/UnitBase.cpp(1184)
+#: Source/XRU1/Tactics/UnitBase.cpp(1184)
+msgctxt "XRU1Units,AssaultName"
+msgid "Клин"
+msgstr "Klin"
+
+#. Key:	PercentFormat_Default
+#. SourceLocation:	Source/XRU1/UI/AttributeBarWidget.cpp(21)
+#: Source/XRU1/UI/AttributeBarWidget.cpp(21)
+msgctxt "AttributeBarWidget,PercentFormat_Default"
+msgid "{Percent}%"
+msgstr "{Percent}%"
+
+#. Key:	HealFmt
+#. SourceLocation:	Source/XRU1/UI/CombatFeedbackSubsystem.cpp(45)
+#: Source/XRU1/UI/CombatFeedbackSubsystem.cpp(45)
+msgctxt "XRU1.Feedback,HealFmt"
+msgid "+{0}"
+msgstr "+{0}"
+
+#. Key:	Miss
+#. SourceLocation:	Source/XRU1/UI/CombatFeedbackSubsystem.cpp(51)
+#: Source/XRU1/UI/CombatFeedbackSubsystem.cpp(51)
+msgctxt "XRU1.Feedback,Miss"
+msgid "ПРОМАХ"
+msgstr "MISS"
+
+#. Key:	NoSelection
+#. SourceLocation:	Source/XRU1/UI/Menus/HubHUDWidget.cpp(42)
+#: Source/XRU1/UI/Menus/HubHUDWidget.cpp(42)
+msgctxt "XRU1.Hub,NoSelection"
+msgid "ВЫБЕРИТЕ ТОЧКУ НА КАРТЕ"
+msgstr "SELECT A POINT ON THE MAP"
+
+#. Key:	NoSelectionHint
+#. SourceLocation:	Source/XRU1/UI/Menus/HubHUDWidget.cpp(48)
+#: Source/XRU1/UI/Menus/HubHUDWidget.cpp(48)
+msgctxt "XRU1.Hub,NoSelectionHint"
+msgid "ПКМ — вращение карты, колесо — приближение, ЛКМ — выбор точки."
+msgstr "RMB — rotate map, mouse wheel — zoom, LMB — select point."
+
+#. Key:	ReadyStatus
+#. SourceLocation:	Source/XRU1/UI/Menus/HubHUDWidget.cpp(65)
+#: Source/XRU1/UI/Menus/HubHUDWidget.cpp(65)
+msgctxt "XRU1.Hub,ReadyStatus"
+msgid "Отряд готов к переброске"
+msgstr "Squad Ready for Deployment"
+
+#. Key:	SkipHolding
+#. SourceLocation:	Source/XRU1/UI/Menus/MenuWidgets.cpp(428)
+#: Source/XRU1/UI/Menus/MenuWidgets.cpp(428)
+msgctxt "XRU1.Menu,SkipHolding"
+msgid "Отпустите, чтобы продолжить просмотр"
+msgstr "Release to continue watching"
+
+#. Key:	SkipHint
+#. SourceLocation:	Source/XRU1/UI/Menus/MenuWidgets.cpp(485)
+#: Source/XRU1/UI/Menus/MenuWidgets.cpp(485)
+msgctxt "XRU1.Menu,SkipHint"
+msgid "Удерживайте ЛКМ, ПРОБЕЛ или ENTER, чтобы пропустить"
+msgstr "Hold LMB, SPACE, or ENTER to skip"
+
+#. Key:	DiffStyleEasy
+#. SourceLocation:	Source/XRU1/UI/Menus/MenuWidgets.cpp(761)
+#: Source/XRU1/UI/Menus/MenuWidgets.cpp(761)
+msgctxt "XRU1.Menu,DiffStyleEasy"
+msgid "Держатся укрытий и отсиживаются в них, идут в лоб, обходят с фланга редко."
+msgstr "They stay in cover and hold position, attack head-on, and rarely flank."
+
+#. Key:	DiffStyleHard
+#. SourceLocation:	Source/XRU1/UI/Menus/MenuWidgets.cpp(765)
+#: Source/XRU1/UI/Menus/MenuWidgets.cpp(765)
+msgctxt "XRU1.Menu,DiffStyleHard"
+msgid "Обходят с фланга, сводят огонь на одном бойце, добивают раненых и держат подходы наблюдением."
+msgstr "They flank, focus fire on one operative, finish off the wounded, and cover approaches with overwatch."
+
+#. Key:	DiffStyleMedium
+#. SourceLocation:	Source/XRU1/UI/Menus/MenuWidgets.cpp(770)
+#: Source/XRU1/UI/Menus/MenuWidgets.cpp(770)
+msgctxt "XRU1.Menu,DiffStyleMedium"
+msgid "Занимают укрытия, обходят, когда это выгодно, иногда держат направление наблюдением."
+msgstr "They take cover, flank when advantageous, and sometimes watch an approach with overwatch."
+
+#. Key:	DiffNoAttackLimit
+#. SourceLocation:	Source/XRU1/UI/Menus/MenuWidgets.cpp(782)
+#: Source/XRU1/UI/Menus/MenuWidgets.cpp(782)
+msgctxt "XRU1.Menu,DiffNoAttackLimit"
+msgid "без ограничения"
+msgstr "unlimited"
+
+#. Key:	DiffTooltip
+#. SourceLocation:	Source/XRU1/UI/Menus/MenuWidgets.cpp(794)
+#: Source/XRU1/UI/Menus/MenuWidgets.cpp(794)
+msgctxt "XRU1.Menu,DiffTooltip"
+msgid "Враг: {0} HP, меткость {1}.\nОдновременно атакуют: {2}.\n{3}\nХодов до взрыва заряда: {4}."
+msgstr "Enemy: {0} HP, accuracy {1}.\nAttack simultaneously: {2}.\n{3}\nTurns until charge detonation: {4}."
+
+#. Key:	DiffTipBack
+#. SourceLocation:	Source/XRU1/UI/Menus/MenuWidgets.cpp(822)
+#: Source/XRU1/UI/Menus/MenuWidgets.cpp(822)
+msgctxt "XRU1.Menu,DiffTipBack"
+msgid "Назад\nВернуться в главное меню, не начиная кампанию."
+msgstr "Back\nReturn to the main menu without starting the campaign."
+
+#. Key:	SubSizeNormal
+#. SourceLocation:	Source/XRU1/UI/Menus/MenuWidgets.cpp(980)
+#: Source/XRU1/UI/Menus/MenuWidgets.cpp(980)
+msgctxt "XRU1.Menu,SubSizeNormal"
+msgid "Обычный"
+msgstr "Normal"
+
+#. Key:	SubSizeLarge
+#. SourceLocation:	Source/XRU1/UI/Menus/MenuWidgets.cpp(981)
+#: Source/XRU1/UI/Menus/MenuWidgets.cpp(981)
+msgctxt "XRU1.Menu,SubSizeLarge"
+msgid "Крупный"
+msgstr "Large"
+
+#. Key:	SubSizeExtra
+#. SourceLocation:	Source/XRU1/UI/Menus/MenuWidgets.cpp(982)
+#: Source/XRU1/UI/Menus/MenuWidgets.cpp(982)
+msgctxt "XRU1.Menu,SubSizeExtra"
+msgid "Очень крупный"
+msgstr "Extra Large"
+
+#. Key:	SubBackNone
+#. SourceLocation:	Source/XRU1/UI/Menus/MenuWidgets.cpp(986)
+#: Source/XRU1/UI/Menus/MenuWidgets.cpp(986)
+msgctxt "XRU1.Menu,SubBackNone"
+msgid "Без подложки"
+msgstr "None"
+
+#. Key:	SubBackSoft
+#. SourceLocation:	Source/XRU1/UI/Menus/MenuWidgets.cpp(987)
+#: Source/XRU1/UI/Menus/MenuWidgets.cpp(987)
+msgctxt "XRU1.Menu,SubBackSoft"
+msgid "Полупрозрачная"
+msgstr "Translucent"
+
+#. Key:	SubBackSolid
+#. SourceLocation:	Source/XRU1/UI/Menus/MenuWidgets.cpp(988)
+#: Source/XRU1/UI/Menus/MenuWidgets.cpp(988)
+msgctxt "XRU1.Menu,SubBackSolid"
+msgid "Плотная"
+msgstr "Opaque"
+
+#. Key:	NoMission
+#. SourceLocation:	Source/XRU1/UI/Menus/MissionBriefingWidget.cpp(63)
+#: Source/XRU1/UI/Menus/MissionBriefingWidget.cpp(63)
+msgctxt "XRU1.Briefing,NoMission"
+msgid "МИССИЯ НЕ ВЫБРАНА"
+msgstr "NO MISSION SELECTED"
+
+#. Key:	Ready
+#. SourceLocation:	Source/XRU1/UI/Menus/MissionBriefingWidget.cpp(78)
+#: Source/XRU1/UI/Menus/MissionBriefingWidget.cpp(78)
+msgctxt "XRU1.Briefing,Ready"
+msgid "Отряд готов к переброске"
+msgstr "Squad Ready for Deployment"
+
+#. Key:	DefeatTimeout
+#. SourceLocation:	Source/XRU1/UI/Menus/MissionResultWidget.cpp(103)
+#: Source/XRU1/UI/Menus/MissionResultWidget.cpp(103)
+msgctxt "XRU1.Result,DefeatTimeout"
+msgid "ВРЕМЯ ВЫШЛО"
+msgstr "TIME EXPIRED"
+
+#. Key:	Defeat
+#. SourceLocation:	Source/XRU1/UI/Menus/MissionResultWidget.cpp(107)
+#: Source/XRU1/UI/Menus/MissionResultWidget.cpp(107)
+msgctxt "XRU1.Result,Defeat"
+msgid "ПОРАЖЕНИЕ"
+msgstr "DEFEAT"
+
+#. Key:	TutorialPassedSub
+#. SourceLocation:	Source/XRU1/UI/Menus/MissionResultWidget.cpp(117)
+#: Source/XRU1/UI/Menus/MissionResultWidget.cpp(117)
+msgctxt "XRU1.Result,TutorialPassedSub"
+msgid "Полигон пройден. Отряд допущен к боевой операции."
+msgstr "Training complete. The squad is cleared for combat operations."
+
+#. Key:	DemoCompleteSub
+#. SourceLocation:	Source/XRU1/UI/Menus/MissionResultWidget.cpp(122)
+#: Source/XRU1/UI/Menus/MissionResultWidget.cpp(122)
+msgctxt "XRU1.Result,DemoCompleteSub"
+msgid "Спасибо за игру! Демонстрационный сценарий завершён."
+msgstr "Thank you for playing! The demo scenario is complete."
+
+#. Key:	VictorySub
+#. SourceLocation:	Source/XRU1/UI/Menus/MissionResultWidget.cpp(127)
+#: Source/XRU1/UI/Menus/MissionResultWidget.cpp(127)
+msgctxt "XRU1.Result,VictorySub"
+msgid "Задача выполнена. Отряд возвращается на базу."
+msgstr "Objective complete. The squad is returning to base."
+
+#. Key:	DefeatTimeoutSub
+#. SourceLocation:	Source/XRU1/UI/Menus/MissionResultWidget.cpp(131)
+#: Source/XRU1/UI/Menus/MissionResultWidget.cpp(131)
+msgctxt "XRU1.Result,DefeatTimeoutSub"
+msgid "Заряд сдетонировал. Попробуйте действовать быстрее."
+msgstr "The charge detonated. Try moving faster."
+
+#. Key:	DefeatSub
+#. SourceLocation:	Source/XRU1/UI/Menus/MissionResultWidget.cpp(135)
+#: Source/XRU1/UI/Menus/MissionResultWidget.cpp(135)
+msgctxt "XRU1.Result,DefeatSub"
+msgid "Отряд потерян. Попробуйте другой план."
+msgstr "Squad lost. Try a different plan."
+
+#. Key:	TutorialPassed
+#. SourceLocation:	Source/XRU1/UI/Menus/MissionResultWidget.cpp(91)
+#: Source/XRU1/UI/Menus/MissionResultWidget.cpp(91)
+msgctxt "XRU1.Result,TutorialPassed"
+msgid "ЗАЧЁТ СДАН"
+msgstr "QUALIFICATION PASSED"
+
+#. Key:	DemoComplete
+#. SourceLocation:	Source/XRU1/UI/Menus/MissionResultWidget.cpp(95)
+#: Source/XRU1/UI/Menus/MissionResultWidget.cpp(95)
+msgctxt "XRU1.Result,DemoComplete"
+msgid "ДЕМО ПРОЙДЕНО"
+msgstr "DEMO COMPLETE"
+
+#. Key:	Victory
+#. SourceLocation:	Source/XRU1/UI/Menus/MissionResultWidget.cpp(99)
+#: Source/XRU1/UI/Menus/MissionResultWidget.cpp(99)
+msgctxt "XRU1.Result,Victory"
+msgid "ПОБЕДА"
+msgstr "VICTORY"
+
+#. Key:	PointerWithTurns
+#. SourceLocation:	Source/XRU1/UI/ObjectivePointerSubsystem.cpp(339)
+#: Source/XRU1/UI/ObjectivePointerSubsystem.cpp(339)
+msgctxt "XRU1.Objective,PointerWithTurns"
+msgid "{0} · {1}"
+msgstr "{0} · {1}"
+
+#. Key:	AbilitySquadsight
+#. SourceLocation:	Source/XRU1/UI/TacticalHUDWidget.cpp(475)
+#: Source/XRU1/UI/TacticalHUDWidget.cpp(475)
+msgctxt "XRU1,AbilitySquadsight"
+msgid "Прицел отряда\nСнайпер стреляет по цели, которую видит союзник.\nИндикатор загорается, когда такая цель есть."
+msgstr "Squad Sight\nThe sniper can fire at a target visible to an ally.\nThe indicator lights up when such a target is available."
+
+#. Key:	TipSkip
+#. SourceLocation:	Source/XRU1/UI/TacticalHUDWidget.cpp(502)
+#: Source/XRU1/UI/TacticalHUDWidget.cpp(502)
+msgctxt "XRU1,TipSkip"
+msgid "Пропустить бойца\nХод переходит следующему, очки действия сгорают."
+msgstr "Skip Operative\nControl passes to the next operative; remaining action points are lost."
+
+#. Key:	TipEvac
+#. SourceLocation:	Source/XRU1/UI/TacticalHUDWidget.cpp(517)
+#: Source/XRU1/UI/TacticalHUDWidget.cpp(517)
+msgctxt "XRU1,TipEvac"
+msgid "Эвакуация\nБоец покидает поле боя из зоны эвакуации."
+msgstr "Evacuation\nThe operative leaves the battlefield from the evacuation zone."
+
+#. Key:	TipDefuse
+#. SourceLocation:	Source/XRU1/UI/TacticalHUDWidget.cpp(519)
+#: Source/XRU1/UI/TacticalHUDWidget.cpp(519)
+msgctxt "XRU1,TipDefuse"
+msgid "Обезвредить заряд\nТребуется несколько ходов рядом с зарядом."
+msgstr "Disarm Charge\nRequires several turns adjacent to the charge."
+
+#. Key:	TipInteractNone
+#. SourceLocation:	Source/XRU1/UI/TacticalHUDWidget.cpp(520)
+#: Source/XRU1/UI/TacticalHUDWidget.cpp(520)
+msgctxt "XRU1,TipInteractNone"
+msgid "Взаимодействие\nПодойдите к цели миссии."
+msgstr "Interact\nMove next to the mission objective."

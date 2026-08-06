@@ -633,6 +633,7 @@ void ATacticalCameraPawn::FocusOnLocationDirected(const FVector& Location, float
 	// Кадр выстрела при этом не рвём: если он ещё живёт, фокус такта исполнится
 	// сразу после него (как отложенный, но с пометкой «режиссёрский»).
 	bDirectorHold = false;
+	bDirectorHoldBrokenByPlayer = false; // новое удержание — новая история
 	UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] РЕЖИССУРА: взгляд удержан на %s (%.1f с)"),
 		*Location.ToCompactString(), HoldDuration);
 	{
@@ -663,6 +664,7 @@ void ATacticalCameraPawn::BreakDirectorHold()
 	}
 	UE_LOG(LogXRU1Camera, Display, TEXT("[Camera] РЕЖИССУРА: прервана игроком"));
 	bDirectorHold = false;
+	bDirectorHoldBrokenByPlayer = true; // возврат после акцента обязан уступить руке игрока
 	DirectorHoldTimeLeft = -1.f;
 	bHasPendingCameraIntent = false;
 	PendingFollowTarget = nullptr;

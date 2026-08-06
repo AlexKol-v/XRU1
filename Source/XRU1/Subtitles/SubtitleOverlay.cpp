@@ -103,7 +103,11 @@ FText SXRU1SubtitleOverlay::GetHintText() const
 
 EVisibility SXRU1SubtitleOverlay::GetContentVisibility() const
 {
-	const bool bHasLine = Owner.IsValid() && !Owner->GetActiveLine().IsEmpty();
+	// Оверлей живёт в viewport и рисуется даже когда мир остановлен — Slate про
+	// паузу не знает. Поэтому спрашиваем подсистему: на паузе реплика не звучит
+	// и её часы стоят, значит строке на экране делать нечего. Строка при этом
+	// НЕ снята и вернётся вместе с голосом (`IsDisplaySuppressed`).
+	const bool bHasLine = Owner.IsValid() && !Owner->GetVisibleLine().IsEmpty();
 	return bHasLine ? EVisibility::HitTestInvisible : EVisibility::Collapsed;
 }
 

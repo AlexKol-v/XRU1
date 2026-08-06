@@ -10,6 +10,7 @@
 #include "TimerManager.h"
 #include "UObject/UObjectGlobals.h"
 
+#include "GamePauseSubsystem.h"
 #include "GameUIManagerSubsystem.h"
 #include "PrimaryGameLayout.h"
 #include "SoundSubtitleData.h"
@@ -43,6 +44,20 @@ void UXRU1SubtitleSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
 
+	// Пауза — владелец состояния «игра идёт»; слой субтитров у неё только
+	// СПРАШИВАЕТ (IsDisplaySuppressed, живой запрос без кеша). Подписка нужна
+	// лишь затем, чтобы внешний дисплей (WBP) узнал о смене видимости через
+	// OnLineChanged. Зависимость объявлена явно: подписываться на подсистему,
+	// которую коллекция ещё не создала, — это молча пропущенная подписка.
+	Collection.InitializeDependency(UGamePauseSubsystem::StaticClass());
+	if (UGameInstance* GameInstance = GetGameInstance())
+	{
+		if (UGamePauseSubsystem* Pause = GameInstance->GetSubsystem<UGamePauseSubsystem>())
+		{
+			Pause->OnPauseChanged.AddDynamic(this, &UXRU1SubtitleSubsystem::HandlePauseChanged);
+		}
+	}
+
 	// Смена уровня чистит виджеты viewport (`UWorld::CleanupWorld`), поэтому
 	// оверлей после travel обязан ставиться заново, а строка прошлого мира —
 	// сниматься: её владелец остался в мире, которого больше нет.
@@ -59,6 +74,14 @@ void UXRU1SubtitleSubsystem::Deinitialize()
 	StopTracking();
 	ClearActiveLine();
 	RemoveDisplay();
+
+	if (UGameInstance* GameInstance = GetGameInstance())
+	{
+		if (UGamePauseSubsystem* Pause = GameInstance->GetSubsystem<UGamePauseSubsystem>())
+		{
+			Pause->OnPauseChanged.RemoveDynamic(this, &UXRU1SubtitleSubsystem::HandlePauseChanged);
+		}
+	}
 
 	if (PostLoadMapHandle.IsValid())
 	{
@@ -212,7 +235,7 @@ FXRU1SubtitleHandle UXRU1SubtitleSubsystem::BeginLine(const FXRU1SubtitleLine& L
 	}
 
 	EnsureDisplay();
-	OnLineChanged.Broadcast(ActiveLine);
+	OnLineChanged.Broadcast(GetVisibleLine());
 
 	// Display, а не Verbose: строк мало (одна на реплику), а вопрос «показался
 	// ли субтитр и от какого источника» возникает постоянно.
@@ -254,7 +277,7 @@ void UXRU1SubtitleSubsystem::ClearActiveLine()
 
 	ActiveLine = FXRU1SubtitleLine();
 	ActiveHandle = FXRU1SubtitleHandle();
-	OnLineChanged.Broadcast(ActiveLine);
+	OnLineChanged.Broadcast(GetVisibleLine());
 }
 
 void UXRU1SubtitleSubsystem::StartDurationTimer(int32 HandleId, float Seconds)
@@ -304,8 +327,34 @@ void UXRU1SubtitleSubsystem::HandleDurationElapsed(int32 HandleId)
 	ClearActiveLine();
 }
 
+bool UXRU1SubtitleSubsystem::IsDisplaySuppressed() const
+{
+	const UGameInstance* GameInstance = GetGameInstance();
+	const UGamePauseSubsystem* Pause = GameInstance
+		? GameInstance->GetSubsystem<UGamePauseSubsystem>() : nullptr;
+	return Pause && Pause->IsPaused();
+}
+
+FXRU1SubtitleLine UXRU1SubtitleSubsystem::GetVisibleLine() const
+{
+	return IsDisplaySuppressed() ? FXRU1SubtitleLine() : ActiveLine;
+}
+
+void UXRU1SubtitleSubsystem::HandlePauseChanged(bool bPaused)
+{
+	// Встроенный Slate-оверлей спрашивает GetVisibleLine сам каждый кадр;
+	// внешнему дисплею (WBP) смена видимости приходит тем же событием, что и
+	// смена строки, — второго канала оповещения у него нет.
+	OnLineChanged.Broadcast(GetVisibleLine());
+
+	UE_LOG(LogXRU1UI, Verbose, TEXT("[Субтитры] показ %s паузой (строка %s)"),
+		bPaused ? TEXT("подавлен") : TEXT("возвращён"),
+		ActiveHandle.IsValid() ? TEXT("жива") : TEXT("отсутствует"));
+}
+
 void UXRU1SubtitleSubsystem::HandlePostLoadMap(UWorld* LoadedWorld)
 {
+
 	// ⚠️ Событие приходит ПОЗЖЕ, чем BeginPlay акторов нового мира. Реплика,
 	// начатая в BeginPlay (вводная хаба — `AHubGameMode::BeginPlay`), к этому
 	// моменту уже показана, и слепая уборка гасила её на месте: субтитр не
@@ -346,7 +395,7 @@ void UXRU1SubtitleSubsystem::RefreshDisplay()
 	{
 		EnsureDisplay();
 	}
-	OnLineChanged.Broadcast(ActiveLine);
+	OnLineChanged.Broadcast(GetVisibleLine());
 }
 
 // --- Дисплей -------------------------------------------------------------------

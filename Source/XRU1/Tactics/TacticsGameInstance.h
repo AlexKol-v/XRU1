@@ -8,6 +8,7 @@
 class UTacticsSaveGame;
 class UTacticalHUDStyleData;
 class UCoverTuningDataAsset;
+class UMissionVfxDataAsset;
 class UFogOfWarConfigDataAsset;
 class UTacticalScenarioDataAsset;
 class UTutorialStyleData;
@@ -57,6 +58,14 @@ public:
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Cover")
 	TObjectPtr<UCoverTuningDataAsset> CoverTuning;
+
+	/**
+	 * Niagara-эффекты событий миссии (DA_MissionVfx): лечение, обезвреживание,
+	 * эвакуация. Не назначен — `UMissionVfxDataAsset::Get` отдаёт пустой CDO,
+	 * события идут без эффектов (штатная деградация, не ошибка).
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|VFX")
+	TObjectPtr<UMissionVfxDataAsset> MissionVfx;
 
 	/**
 	 * Тюнинг ВИЗУАЛЬНОГО слоя тумана — сетки затемнения местности (DA_Fog_Showreel).
@@ -125,6 +134,16 @@ public:
 	/** Пишет CurrentSave в слот. Возвращает успех. */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Save")
 	bool SaveCampaign();
+
+	/**
+	 * Зачитывает ВСЕ обучающие сценарии (Kind == Tutorial) в текущем сейве —
+	 * галочка «Пропустить обучение» на экране сложности. Сценарии находятся по
+	 * классу через AssetRegistry: жёсткого списка ID нет, новый туториал
+	 * подхватится сам. Прогрессию по-прежнему решает единственный механизм —
+	 * RequiredMissions ↔ CompletedMissions, здесь только запись зачёта.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Tactics|Save")
+	void MarkTutorialScenariosCompleted();
 
 	/** Загружает слот в CurrentSave. Возвращает загруженный объект или nullptr. */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Save")

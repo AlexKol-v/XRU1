@@ -114,6 +114,48 @@ Fix Up Redirectors и сохранением ссылающихся карт (п
    отсутствия: дизайнер крутит значение и не понимает, почему тихо. `IsDataValid`
    пишется только для полей, которые реально применяются.
 
+### 3.1.1 Текст в ассетах обязан быть локализуемым
+
+⚠️ **Правило: текст, залитый в ассет скриптом, для локализации не существует.**
+`FText` из голой строки — culture-invariant: ни namespace, ни ключа, Gather его не
+видит. Именно так текст попадает в ассет при T3D-импорте
+(`XRU1StateTreeAuthoringLibrary::AddTaskToState`, `XRU1WidgetAuthoringLibrary`,
+Python `unreal.Text`) — а именно этим способом собраны дерево обучения, реплики боя
+и витрины миссий.
+
+Поэтому после **любой** скриптовой заливки текста:
+
+1. `UXRU1LocalizationAuthoringLibrary::AuditAssetTexts(path)` — строки `[RAW]` и есть
+   невидимые для Gather;
+2. `MakeAssetTextsLocalizable(path, namespace)` — назначает ключи (детерминированные,
+   повторный прогон безопасен; StateTree перекомпилируется сам);
+3. сохранить пакеты, затем Gather.
+
+Заливая текст вручную в редакторе, ничего этого не нужно: редактор создаёт
+локализуемый `FText` сам.
+
+### 3.1.2 Порядок локализации (цель `Game`)
+
+Из редактора: Localization Dashboard → цель `Game` → Gather → перевод → Compile.
+Из командной строки (редактор ДОЛЖЕН быть закрыт), пути от корня проекта:
+
+```
+& "<ENGINE>/Engine/Binaries/Win64/UnrealEditor-Cmd.exe" "<PROJECT>/XRU1.uproject" `
+  -run=GatherText -config="Config/Localization/Game_Gather.ini" `
+  -EnableSCC=false -DisableSCCSubmit -Unattended -NoShaderCompile
+```
+
+затем то же с `Game_Compile.ini` (генерирует `.locres`, который и читает игра).
+Проверка охвата — `Content/Localization/Game/Game.csv`: колонка `Word Count` и
+сколько слов переведено на культуру.
+
+⚠️ **Две машины.** `Config/Localization/Game_Gather.ini` — файл ГЕНЕРИРУЕМЫЙ, и
+`ManifestDependencies` в нём указывает на движок путём, относительным от корня
+проекта (`../../UE_5.7/Engine/…`). На второй машине движок лежит иначе, и путь не
+сойдётся. Лечится открытием Localization Dashboard (он перезапишет пути под свою
+машину) до запуска Gather. Правки в этот ini руками бессмысленны — дашборд их
+затрёт.
+
 ### 3.2 Перенос и переименование
 
 Только средствами редактора: Move/Rename (создаёт редиректор) → **Fix Up

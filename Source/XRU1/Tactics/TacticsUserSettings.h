@@ -138,6 +138,14 @@ public:
 
 	virtual void ApplySettings(bool bCheckForCommandLineOverrides) override;
 	virtual void SetToDefaults() override;
+	virtual void LoadSettings(bool bForceReload = false) override;
+
+	/**
+	 * Нижний предел масштаба разрешения (нормализованный, движок мапит в
+	 * 0..100% экрана). 0.5 = 50% разрешения — ниже уже не «экономия», а мыло
+	 * и пиксельная обводка юнитов (стенсил рендерится во внутреннем разрешении).
+	 */
+	static constexpr float MinScreenScale = 0.5f;
 
 protected:
 	UPROPERTY(config) float MasterVolume = 1.f;

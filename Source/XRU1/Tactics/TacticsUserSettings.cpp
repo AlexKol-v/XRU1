@@ -41,7 +41,7 @@ FTacticsVideoSettings UTacticsUserSettings::GetVideoSettings() const
 {
 	FTacticsVideoSettings Settings;
 	Settings.ScalabilityLevel = FMath::Clamp(QualityLevel, 0, 3);
-	Settings.ResolutionScale = FMath::Clamp(ScreenScale, 0.25f, 1.f);
+	Settings.ResolutionScale = FMath::Clamp(ScreenScale, MinScreenScale, 1.f);
 	Settings.bFullscreen = bFullscreenMode;
 	Settings.bVSync = bVerticalSync;
 	return Settings;
@@ -50,7 +50,13 @@ FTacticsVideoSettings UTacticsUserSettings::GetVideoSettings() const
 void UTacticsUserSettings::SetVideoSettings(const FTacticsVideoSettings& NewSettings)
 {
 	QualityLevel = FMath::Clamp(NewSettings.ScalabilityLevel, 0, 3);
-	ScreenScale = FMath::Clamp(NewSettings.ResolutionScale, 0.25f, 1.f);
+	// ⚠️ ScreenScale — НОРМАЛИЗОВАННОЕ значение: движок мапит его в проценты
+	// разрешения как Lerp(Scalability::MinResolutionScale=0, Max=100, X).
+	// То есть 0.25 — это НЕ «四分三 экрана», а 25% разрешения, мыло в четверть
+	// кадра. Ниже MinScreenScale (50%) не пускаем: такой масштаб не нужен ни
+	// одной машине, которая тянет проект в принципе, а игроку он показывался
+	// как лёгкая экономия.
+	ScreenScale = FMath::Clamp(NewSettings.ResolutionScale, MinScreenScale, 1.f);
 	bFullscreenMode = NewSettings.bFullscreen;
 	bVerticalSync = NewSettings.bVSync;
 
@@ -249,7 +255,12 @@ void UTacticsUserSettings::InitializeFromProjectIfNeeded(const UObject* WorldCon
 	// экран настроек с первого открытия предлагает применить полноэкранный
 	// режим, в котором игра не запускалась.
 	QualityLevel = FMath::Clamp(GetOverallScalabilityLevel() >= 0 ? GetOverallScalabilityLevel() : 2, 0, 3);
-	ScreenScale = FMath::Clamp(GetResolutionScaleNormalized(), 0.25f, 1.f);
+	// Масштаб разрешения НЕ читаем из GetResolutionScaleNormalized(): в PIE он
+	// отдаёт значение окна редактора (см. комментарий класса), и первый запуск
+	// записывал в конфиг мусор — прижатый клампом 0.25 он давал рендер в 25%
+	// разрешения: мыльную картинку и пиксельную обводку юнитов (2026-08-05).
+	// Стартовое состояние игры — всегда полное разрешение.
+	ScreenScale = 1.f;
 	// Галочка обязана показывать РЕАЛЬНОСТЬ, в том числе в редакторе: там игра
 	// всегда идёт в окне, и «включённый полноэкранный режим» на первом же
 	// открытии настроек — прямая ложь экрана.
@@ -263,6 +274,24 @@ void UTacticsUserSettings::InitializeFromProjectIfNeeded(const UObject* WorldCon
 		QualityLevel, ScreenScale, bFullscreenMode ? 1 : 0, bVerticalSync ? 1 : 0);
 
 	SaveSettings();
+}
+
+void UTacticsUserSettings::LoadSettings(bool bForceReload)
+{
+	Super::LoadSettings(bForceReload);
+
+	// Миграция мусорного значения: первые сборки записывали в конфиг
+	// GetResolutionScaleNormalized() из PIE (значение окна редактора), клампом
+	// прижатое к 0.25 — т.е. 25% разрешения. Игрок такого не выбирал; всё ниже
+	// нового предела считаем испорченным и возвращаем полное разрешение.
+	if (ScreenScale < MinScreenScale)
+	{
+		UE_LOG(LogXRU1UI, Warning,
+			TEXT("[Settings] ScreenScale=%.2f в конфиге ниже предела %.2f — испорченное значение, возвращаю 1.0"),
+			ScreenScale, MinScreenScale);
+		ScreenScale = 1.f;
+		SetResolutionScaleNormalized(ScreenScale);
+	}
 }
 
 void UTacticsUserSettings::SetToDefaults()

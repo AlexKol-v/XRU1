@@ -2975,6 +2975,16 @@ void ATacticalPlayerController::HandleFogVisibilityChanged(AActor* Actor, bool b
 			Camera->FocusOnLocationDirected(Actor->GetActorLocation(), FirstSightedDelay);
 			UE_LOG(LogXRU1Fog, Log, TEXT("[Fog] первое обнаружение %s: камера держит кадр %.2f с"),
 				*GetNameSafe(Actor), FirstSightedDelay);
+
+			// Акцент показан — взгляд обязан ВЕРНУТЬСЯ: снятие удержания само по
+			// себе камеру не возвращает (оно лишь применяет отложенный интент,
+			// которого при обнаружении в свой ход обычно нет). Несколько
+			// обнаружений подряд перезаводят один таймер — возврат один, после
+			// последнего акцента.
+			GetWorldTimerManager().SetTimer(FirstSightedReturnTimer,
+				FTimerDelegate::CreateUObject(this,
+					&ATacticalPlayerController::ReturnCameraAfterFirstSighted),
+				FirstSightedDelay + 0.2f, /*bLoop=*/false);
 		}
 
 		// Вышел из-за угла посреди своего хода — подхватываем прямо на бегу
@@ -3001,6 +3011,37 @@ void ATacticalPlayerController::HandleFogVisibilityChanged(AActor* Actor, bool b
 		}
 		UE_LOG(LogXRU1Fog, Log, TEXT("[Fog] камера отпустила %s: он ушёл из зрения отряда"),
 			*GetNameSafe(Actor));
+	}
+}
+
+void ATacticalPlayerController::ReturnCameraAfterFirstSighted()
+{
+	ATacticalCameraPawn* Camera = Cast<ATacticalCameraPawn>(GetPawn());
+	if (!Camera)
+	{
+		return;
+	}
+
+	// Возврат — самый слабый претендент на камеру: уступает кадру выстрела,
+	// живой режиссуре, активному следованию и руке игрока, прервавшей акцент.
+	if (Camera->IsFramingShot() || Camera->IsDirectorHolding() ||
+		Camera->GetFollowTarget() || Camera->WasDirectorHoldBrokenByPlayer())
+	{
+		UE_LOG(LogXRU1Fog, Verbose,
+			TEXT("[Fog] возврат после первого обнаружения пропущен: камера занята или у игрока"));
+		return;
+	}
+
+	if (SelectedUnit && UTacticsCombatStatics::IsUnitAlive(SelectedUnit))
+	{
+		Camera->FocusOnActor(SelectedUnit);
+		UE_LOG(LogXRU1Fog, Log, TEXT("[Fog] акцент показан — камера вернулась к %s"),
+			*GetNameSafe(SelectedUnit));
+	}
+	else
+	{
+		FocusCameraOnSquad(/*bInstant=*/false);
+		UE_LOG(LogXRU1Fog, Log, TEXT("[Fog] акцент показан — камера вернулась к отряду"));
 	}
 }
 

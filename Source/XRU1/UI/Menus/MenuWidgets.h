@@ -360,6 +360,18 @@ private:
 	void RefreshControlsFromSettings();
 
 	/**
+	 * Перезаливает опции всех выпадающих списков локализованным текстом.
+	 *
+	 * UComboBoxString хранит опции как FString — строка «замораживается» на том
+	 * языке, на котором её добавили. Однократное заполнение в NativeOnInitialized
+	 * оставляло списки на языке первого открытия экрана: игрок переключался на
+	 * English, подписи перерисовывались, а «Эпическое/Полупрозрачная/Обычный»
+	 * оставались русскими. Поэтому опции перезаливаются при каждом Refresh —
+	 * выбор восстанавливает сам Refresh, идущий следом.
+	 */
+	void RebuildLocalizedComboOptions();
+
+	/**
 	 * Идёт программная расстановка контролов. `SetValue` слайдера вызывает
 	 * `OnValueChanged`, и без этого флага экран принимал бы собственную
 	 * инициализацию за действие игрока.
@@ -572,6 +584,14 @@ protected:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Hard;
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Back;
 
+	/**
+	 * «Пропустить обучение»: кампания стартует с уже зачтённым полигоном, и
+	 * боевая миссия открыта в хабе сразу. Галочка живёт на экране сложности,
+	 * потому что решение «без обучения» принимается вместе с выбором сложности,
+	 * а не посреди хаба.
+	 */
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UCheckBox> Chk_SkipTutorial;
+
 private:
 	UFUNCTION() void HandleEasyClicked();
 	UFUNCTION() void HandleMediumClicked();
@@ -587,12 +607,19 @@ class XRU1_API UPauseMenuWidget : public UMenuScreenBase
 public:
 	UPROPERTY(BlueprintAssignable, Category = "Menu") FOnMenuAction OnResumeClicked;
 	UPROPERTY(BlueprintAssignable, Category = "Menu") FOnMenuAction OnReturnToMenuClicked;
+	UPROPERTY(BlueprintAssignable, Category = "Menu") FOnMenuAction OnReturnToHubClicked;
 
 	/** Снимает паузу и закрывает экран. */
 	UFUNCTION(BlueprintCallable, Category = "Menu") void RequestResume();
 
 	/** Снимает паузу и возвращает в главное меню (уровень MainMenuLevel из GameInstance). */
 	UFUNCTION(BlueprintCallable, Category = "Menu") void RequestReturnToMenu();
+
+	/**
+	 * Снимает паузу и возвращает в хаб («на базу»), бросая текущую миссию.
+	 * Прогресс незавершённой миссии не сохраняется — как и при выходе в меню.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Menu") void RequestReturnToHub();
 
 	/** Экран настроек, открываемый из паузы (тот же WBP_Settings, что и в меню). */
 	UPROPERTY(EditDefaultsOnly, Category = "Menu|Screens")
@@ -603,10 +630,12 @@ protected:
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Resume;
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_Settings;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_ToHub;
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UButton> Btn_ReturnToMenu;
 
 private:
 	UFUNCTION() void HandleResumeClicked();
 	UFUNCTION() void HandleSettingsClicked();
+	UFUNCTION() void HandleToHubClicked();
 	UFUNCTION() void HandleReturnToMenuClicked();
 };

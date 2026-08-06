@@ -205,6 +205,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
 	void BreakDirectorHold();
 
+	/**
+	 * Последнее режиссёрское удержание кончилось РУКОЙ ИГРОКА, а не по таймеру.
+	 * Спрашивает возврат камеры после акцента первого обнаружения: если игрок
+	 * уже увёл камеру сам, дёргать её обратно к отряду — значит вырывать
+	 * управление. Сбрасывается следующим `FocusOnLocationDirected`.
+	 */
+	bool WasDirectorHoldBrokenByPlayer() const { return bDirectorHoldBrokenByPlayer; }
+
 	/** Снимает кадр и возвращает постоянный пользовательский ракурс и позицию до кадра. */
 	UFUNCTION(BlueprintCallable, Category = "Tactics|Camera")
 	void ClearShotFraming();
@@ -794,6 +802,9 @@ protected:
 
 	/** Остаток страховочного удержания, сек (< 0 — до явного снятия). */
 	float DirectorHoldTimeLeft = -1.f;
+
+	/** Последнее удержание прервал игрок (см. WasDirectorHoldBrokenByPlayer). */
+	bool bDirectorHoldBrokenByPlayer = false;
 
 	// --- Отложенный интент взгляда (монополия кадра презентации) --------------
 	// Фоновый запрос (фокус/следование), пришедший во время презентации, не

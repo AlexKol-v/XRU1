@@ -46,7 +46,13 @@ public class XRU1 : ModuleRules
 			// PCG nodes (hub landscape scatter/slope filter)
 			"PCG",
 			// Move-range zone fill (Tactics/MoveRangeVisualizer)
-			"ProceduralMeshComponent"
+			"ProceduralMeshComponent",
+			// Поиск ассетов по классу в РАНТАЙМЕ: «Пропустить обучение» находит
+			// все Tutorial-сценарии через AssetRegistry, без жёстких путей.
+			"AssetRegistry",
+			// Source Effects радио-обработки реплик (Audio/XRU1AudioAuthoringLibrary:
+			// BandPass + BitCrusher из плагина Synthesis; сами цепочки — рантайм).
+			"Synthesis"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });
@@ -63,9 +69,10 @@ public class XRU1 : ModuleRules
 				"UnrealEd",
 				"UMGEditor",
 				"StateTreeEditorModule",
-				// Тема проекта ищется по КЛАССУ, а не по зашитому пути ассета:
-				// раскладка /Game/XRU1Game/Data меняется, строка ломается молча.
-				"AssetRegistry"
+				// FStateTreeCompilerLog (перекомпиляция дерева после правки текстов
+				// в Tactics/Editor/XRU1LocalizationAuthoringLibrary) держит в себе
+				// FPropertyBindingBindableStructDescriptor — без модуля не линкуется.
+				"PropertyBindingUtils"
 			});
 		}
 
