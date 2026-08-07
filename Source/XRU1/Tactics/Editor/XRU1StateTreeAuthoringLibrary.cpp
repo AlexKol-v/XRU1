@@ -172,7 +172,7 @@ bool UXRU1StateTreeAuthoringLibrary::InsertPauseStateBefore(const FString& State
 
 	// ⚠️ Дефолт движка — `Any`: состояние закрывается, как только завершится
 	// ЛЮБАЯ задача. Мгновенный Action Gate закрывал бы паузу в тот же кадр, и
-	// задержка не работала бы вообще (поймано в прогоне 2026-08-02). Паузе
+	// задержка не работала бы вообще. Паузе
 	// нужен `All`: ждём и Delay Task, и всё остальное.
 	PauseState->TasksCompletion = EStateTreeTaskCompletionType::All;
 

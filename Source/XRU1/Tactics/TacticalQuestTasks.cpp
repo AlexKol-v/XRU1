@@ -116,7 +116,7 @@ namespace TacticalQuestTasks_Internal
 	// ⚠️ У Tutorial Beat гейта НЕТ намеренно. Его таймаут — не приговор шагу, а
 	// СПАСЕНИЕ: по нему реплика играет «как есть», когда триггер потерян или
 	// камера не освободилась (пауза посреди кадра выстрела оставляла
-	// IsPlayingPresentationFrame взведённым — лог 2026-08-05). Заморозка этого
+	// IsPlayingPresentationFrame взведённым). Заморозка этого
 	// таймаута по «игрок отошёл» превращала страховку в вечное ожидание: такт не
 	// стартовал, состояние не завершалось, диалог вставал насмерть. Реплика,
 	// сыгранная по таймауту при отошедшем игроке, — мелкая косметика; вставший
@@ -164,8 +164,8 @@ namespace TacticalQuestTasks_Internal
 	 *
 	 * `EnterState` обязан срабатывать один раз за вход, но неверно собранное
 	 * дерево может перезаходить каждый тик — и тогда полезный лог перестаёт
-	 * существовать: прогон 2026-08-04 дал 101 472 одинаковых блока подряд,
-	 * 99.4 % файла. Первый вход печатается как обычно, повторы в пределах
+	 * существовать: одинаковые блоки заполняют почти весь файл.
+	 * Первый вход печатается как обычно, повторы в пределах
 	 * `RepeatWindow` копятся молча, а когда частота выдаёт цикл — ОДИН раз
 	 * печатается предупреждение с числом входов. Диагностика от этого не
 	 * теряется: наоборот, аномалия становится видна прямо в логе.
@@ -708,7 +708,7 @@ EStateTreeRunStatus FTacticalTask_TutorialBeat::EnterState(
 	// этом уже сменился — очередь шагов решает квест-логика, а не презентация.
 	// Иначе реплика говорит «его ранили», пока камера доигрывает kill-cam, и
 	// показать раненого физически не может: фокус откладывается монополией
-	// кадра и приезжает, когда фраза уже кончилась (лог A9).
+	// кадра и приезжает, когда фраза уже кончилась.
 	if (IsCameraBusyForBeat(Context, Inst))
 	{
 		UE_LOG(LogXRU1Quest, Display,
@@ -772,7 +772,7 @@ EStateTreeRunStatus FTacticalTask_TutorialBeat::Tick(
 		// Отсчёт БЕЗ гейтов, в отличие от сценарных задач: этот таймаут не валит
 		// шаг, а спасает его — играет реплику «как есть», когда триггер потерян
 		// или камера так и не освободилась. Замороженная страховка уже вставала
-		// колом после паузы посреди кадра выстрела (2026-08-05).
+		// колом после паузы посреди кадра выстрела.
 		Inst.ElapsedTime += DeltaTime;
 
 		bool bTriggered = !Inst.TriggerEvent.IsValid(); // без триггера ждём только камеру
@@ -1065,7 +1065,7 @@ EStateTreeRunStatus FTacticalTask_ScriptedMove::Tick(
 	const bool bMoveIdle = !Controller ||
 		Controller->GetMoveStatus() != EPathFollowingStatus::Moving;
 	// Прибытие = маршрут завершён И осадка (подшаг к стене, доворот) закончена:
-	// раньше задача выходила до прижатия, и укрытие оставалось от старой позиции.
+	// выйти до прижатия — оставить укрытие от старой позиции.
 	if (Inst.bOrderIssued && bMoveIdle && !Unit->IsMoveSettlementInProgress() &&
 		FVector::Dist2D(Unit->GetActorLocation(), Destination->GetActorLocation())
 		<= Inst.AcceptanceRadius)
@@ -1262,7 +1262,7 @@ EStateTreeRunStatus FTacticalTask_ScriptedEnemyTurn::Tick(
 	// Программа обязана СТОЯТЬ, пока не исполнена, — декларативно, каждый тик.
 	// Одноразовый флаг терял постановку: OnPossess только что заспавненного
 	// контроллера вызывал ClearScriptedTurnProgram ПОСЛЕ первой постановки, и
-	// ход Holo_D шёл штатным AI (Investigate на шум — лог 2026-08-02).
+	// ход врага уходил штатному AI (Investigate на шум).
 	if (AI && !AI->WasScriptedTurnProgramExecuted() && !AI->HasScriptedTurnProgram())
 	{
 		AI->SetScriptedTurnProgram(BuildScriptedTurnProgram(Inst, Registry));
@@ -1323,7 +1323,7 @@ void FTacticalTask_ScriptedEnemyTurn::ExitState(
 
 	// Недоигранную программу снимаем ВМЕСТЕ с ходом: чужой шаг не должен
 	// получить врага с живым приказом, а остаток его ОД — не достаётся
-	// utility-AI (свободный выстрел по Кадету после провала, лог 2026-08-02).
+	// utility-AI (свободный выстрел по бойцу игрока после провала постановки).
 	if (AUnitAIController* AI = Unit ? Cast<AUnitAIController>(Unit->GetController()) : nullptr)
 	{
 		if (AI->HasScriptedTurnProgram())

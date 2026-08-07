@@ -94,7 +94,7 @@ public:
 	 * Прямоугольная зона (полуразмеры, см) в локальных осях актора — как у
 	 * ATacticalQuestZone. Ненулевой extent выключает круговой ZoneRadius: и
 	 * вход, и рамка считаются по прямоугольнику. Размер настраивается в
-	 * BP_EvacZone (v2.5 по фидбэку: эвакуация — область, а не круг).
+	 * BP_EvacZone (эвакуация — область, а не круг).
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tactics|Evac")
 	FVector2D ZoneExtent = FVector2D::ZeroVector;

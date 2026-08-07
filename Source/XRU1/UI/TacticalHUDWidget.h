@@ -25,7 +25,7 @@ class UWidget;
  * TurnManager и тактический контроллер; визуал (портреты, панель действий,
  * счётчики) — в WBP-наследнике через BP-хуки On*.
  *
- * Часть логики перенесена из WBP в C++ (аудит 2026-07-20):
+ * Логика, которая в шаблоне жила в WBP, вынесена в C++:
  * - RefreshActionButtons — серость кнопок (BP-версия ловила Accessed None:
  *   AND в Blueprint не short-circuit, Pure-цепочки от невалидного S считались);
  * - UpdateTargetPanel — панель цели у курсора (имя/HP/шанс/щит укрытия);
@@ -55,18 +55,6 @@ public:
 	/** Шанс попадания выбранного юнита по цели (для подсказки у курсора), -1 = нельзя. */
 	UFUNCTION(BlueprintPure, Category = "HUD")
 	float GetHitChanceOnTarget(AActor* Target) const;
-
-	/**
-	 * Укрытие цели ПРОТИВ выбранного стрелка (None — открыт ИЛИ фланкирован).
-	 *
-	 * ⚠️ LEGACY, двухсостоянийный. C++ панель цели его больше не использует:
-	 * после Ф8 щит имеет ТРИ состояния, и `None` здесь не различает «в чистом
-	 * поле» и «я его обошёл». Оставлен, потому что это `BlueprintPure` и его
-	 * может звать WBP. Для новых мест —
-	 * `UTacticsCombatStatics::GetCoverShieldAgainst` (ECoverShield).
-	 */
-	UFUNCTION(BlueprintPure, Category = "HUD")
-	ECoverType GetTargetCoverAgainstSelected(AActor* Target) const;
 
 	/** Живые враги на поле (счётчик в HUD). Обновлять по OnUnitsStateChanged. */
 	UFUNCTION(BlueprintPure, Category = "HUD")
@@ -253,7 +241,7 @@ private:
 	/**
 	 * TurnManager активировал врага в его фазу: показать карточку действующего
 	 * врага на панели отряда (низ-лево), без возможности клика. Скрытые туманом
-	 * враги карточку не получают (visibility gate 09_UI_HUD §6).
+	 * враги карточку не получают (visibility gate docs/03_ARCHITECTURE.md §11).
 	 */
 	UFUNCTION()
 	void HandleEnemyUnitActivated(AActor* Unit);

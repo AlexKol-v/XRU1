@@ -83,19 +83,10 @@ public class XRU1 : ModuleRules
 			"XRU1/Characters",
 			"XRU1/UI",
 			"XRU1/Hub",
-			"XRU1/Interaction",
 			"XRU1/PCG",
 			"XRU1/Tactics",
 			"XRU1/Subtitles",
 			"XRU1/UI/Menus"
 		});
-
-		// Uncomment if you are using Slate UI
-		// PrivateDependencyModuleNames.AddRange(new string[] { "Slate", "SlateCore" });
-
-		// Uncomment if you are using online features
-		// PrivateDependencyModuleNames.Add("OnlineSubsystem");
-
-		// To include OnlineSubsystemSteam, add it to the plugins section in your uproject file with the Enabled attribute set to true
 	}
 }

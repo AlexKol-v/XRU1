@@ -156,6 +156,9 @@ private:
 	/** Чистая геометрия + правило стороны, без кэша и без override компонента. */
 	bool ComputeActorVisible(const AActor* Actor, const TArray<AActor*>& Viewers) const;
 
+	/** Менеджер ходов текущего мира (nullptr до его создания). */
+	class UTurnManagerSubsystem* GetTurnManager() const;
+
 	/** Бежит ли сейчас хоть кто-то: во время движения видимость переоценивается. */
 	bool IsAnyUnitInTransit() const;
 

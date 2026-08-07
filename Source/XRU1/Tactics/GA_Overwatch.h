@@ -30,8 +30,8 @@ struct FAIStimulus;
  * завершается сама: после израсходования реакций или когда ход возвращается
  * стороне юнита.
  *
- * ДВА ТРИГГЕРА (W1, 2026-07-25), второй — надмножество первого:
- *  1. `OnTargetPerceptionUpdated` — враг ВОШЁЛ в зону видимости (было и раньше);
+ * ДВА ТРИГГЕРА, второй — надмножество первого:
+ *  1. `OnTargetPerceptionUpdated` — враг ВОШЁЛ в зону видимости;
  *  2. периодическая проверка ДВИЖУЩИХСЯ врагов (`ReactionCheckInterval`).
  *
  * ⚠️ Зачем понадобился второй. `OnTargetPerceptionUpdated` стреляет только на
@@ -281,11 +281,11 @@ protected:
 	TMap<TObjectKey<AActor>, FVector> MoveStartLocations;
 
 	/**
-	 * По кому уже отработали. v2.9: очищается ТОЛЬКО на границе фазы
+	 * По кому уже отработали. Очищается ТОЛЬКО на границе фазы
 	 * (Activate/HandleTurnStarted), а не «когда цель встала»: пауза мовера
 	 * реакцией выглядела как остановка, метка стиралась, и после аборта
-	 * сорванного монтажа шла ВТОРАЯ реакция по той же цели — уже без форса
-	 * (промах 54.9% в логе 2026-08-02). Одна реакция на цель за фазу.
+	 * сорванного монтажа шла ВТОРАЯ реакция по той же цели — уже без форса.
+	 * Одна реакция на цель за фазу.
 	 */
 	TSet<TObjectKey<AActor>> ReactedThisMove;
 
@@ -295,9 +295,14 @@ protected:
 
 	void HandleReactionActionTimeout(FGuid ActionId);
 	void ClearReactionActionWatchdog();
+
+	/**
+	 * Аварийный терминал реакции: watchdog, reset, слот, стоп montage, mover,
+	 * конец презентации. `FinishedAction` — уже снятая КОПИЯ контекста, не
+	 * ссылка на поле ReactionAction. Порядок вызовов внутри — часть контракта.
+	 */
+	void TerminateReactionAction(const FTacticalFireActionContext& FinishedAction, bool bAborted);
 	void ResumeReactionMover();
 	bool IsFrozenReactionCommitValid() const;
 	void EndReactionPresentation() const;
-	void StopReactionMontage(const FTacticalFireActionContext& FinishedAction) const;
-	void CheckCombatOutcomeAfterReaction() const;
 };

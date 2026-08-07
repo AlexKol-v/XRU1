@@ -81,11 +81,11 @@ struct FUnitVisualState
 	 * СТОРОНА УКРЫТИЯ: −1 — стена слева, +1 — справа, 0 — края нет. Именно по
 	 * ней ABP берёт `Left`/`Right`-вариант cover-клипа.
 	 *
-	 * Источник — `UCoverDetectionComponent::PeekSideSign` (§6): сторона считается
+	 * Источник — `UCoverDetectionComponent::PeekSideSign`: сторона считается
 	 * из геометрии стены и края В ПРОЕКТНОЙ СТОЙКЕ (боец вдоль стены лицом к
-	 * краю) и НЕ зависит от фактического поворота актора. Прежний вывод из
-	 * `CoverDirectionLocal.Y` вырождался в 0, если после settlement юнит стоял
-	 * не вдоль стены, — и выглядывание блокировалось навсегда.
+	 * краю) и НЕ зависит от фактического поворота актора. Вывод из
+	 * `CoverDirectionLocal.Y` вырождается в 0, если после settlement юнит стоит
+	 * не вдоль стены, — и выглядывание блокируется навсегда.
 	 */
 	UPROPERTY(BlueprintReadOnly, Category = "Tactics|Visual")
 	float PeekSideLocal = 0.f;

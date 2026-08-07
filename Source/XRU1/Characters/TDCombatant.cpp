@@ -66,7 +66,7 @@ void ATDCombatant::TickShieldDecay(float DeltaSeconds)
     const float New = FMath::Max(0.f, Current - DeltaSeconds);
 
     // SetNumericAttributeBase идёт через ASC и стреляет в AttributeValueChange-делегаты,
-    // на которые подписаны HealthBar / ShieldIcon виджеты.
+    // на которые подписаны виджеты атрибутов (HealthBar и т.п.).
     ASC->SetNumericAttributeBase(UTDAttributeSet::GetShieldAttribute(), New);
 }
 

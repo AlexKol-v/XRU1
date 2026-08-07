@@ -140,7 +140,7 @@ bool UGA_HunkerDown::CanActivateAbility(const FGameplayAbilitySpecHandle Handle,
 	}
 	// XCOM 2: глухая оборона только в укрытии. Тег Cover.Half/Full вешает
 	// UCoverDetectionComponent по BestCoverAround — без укрытия отказываем,
-	// чтобы игрок не сжёг ход впустую (§II.5).
+	// чтобы игрок не сжёг ход впустую.
 	const UAbilitySystemComponent* ASC = ActorInfo ? ActorInfo->AbilitySystemComponent.Get() : nullptr;
 	return ASC && (ASC->HasMatchingGameplayTag(TacticsGameplayTags::Cover_Half) ||
 		ASC->HasMatchingGameplayTag(TacticsGameplayTags::Cover_Full));

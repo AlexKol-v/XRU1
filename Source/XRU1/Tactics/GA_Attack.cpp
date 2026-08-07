@@ -15,8 +15,6 @@
 #include "Engine/World.h"
 #include "GameFramework/Pawn.h"
 #include "TimerManager.h"
-#include "Animation/AnimInstance.h"
-#include "Components/SkeletalMeshComponent.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogTacticsAttackAction, Log, All);
 
@@ -267,7 +265,7 @@ void UGA_Attack::ActivateAbility(
 			ResolvedDamage = ScriptedShot.Damage;
 		}
 		// Abort до commit вернёт форс юниту — сорванный монтаж не должен
-		// сжигать учебное «гарантированное попадание» (см. GA_Overwatch v2.9).
+		// сжигать учебное «гарантированное попадание» (см. GA_Overwatch).
 		ConsumedScriptedShot = ScriptedShot;
 		bConsumedScriptedShotValid = true;
 		UE_LOG(LogTacticsAttackAction, Log,
@@ -307,7 +305,7 @@ void UGA_Attack::ActivateAbility(
 	// Замороженное решение проверяется ЗДЕСЬ — до оплаты AP и до монтажа, тем же
 	// предикатом, что и commit. Иначе слепое решение (гонка после выбора цели)
 	// оплачивало монтаж, отклонялось на commit, возвращало AP — и детерминированный
-	// AI повторял его вечно: «монтаж → reject → refund → повтор» (лог 2026-07-30).
+	// AI повторял его вечно: «монтаж → reject → refund → повтор».
 	if (!IsFrozenFireCommitValid())
 	{
 		UE_LOG(LogTacticsAttackAction, Warning,
@@ -351,10 +349,10 @@ void UGA_Attack::ActivateAbility(
 	// Здесь НЕТ ResolveShot и EndAbility: BP/C++ coordinator должен доиграть
 	// StepOut/montage/ReturnToAnchor и вызвать terminal API.
 	//
-	// ⚠️ Презентация стартует В ТОТ ЖЕ КАДР, что и команда игрока: раньше здесь
-	// стоял таймер на PreShotCameraSettleDelay, и между нажатием и первым
-	// движением бойца висела мёртвая пауза («нажимаю — микропауза — юнит
-	// выходит»). Теперь ждёт только стрелковая анимация: остаток времени на
+	// ⚠️ Презентация стартует В ТОТ ЖЕ КАДР, что и команда игрока: таймер на
+	// PreShotCameraSettleDelay здесь нельзя — между нажатием и первым
+	// движением бойца висит мёртвая пауза («нажимаю — микропауза — юнит
+	// выходит»). Ждёт только стрелковая анимация: остаток времени на
 	// наводку камеры затянут в фазу доворота (GetCameraSettleRemaining), а
 	// выход на огневую точку идёт параллельно наезду кадра.
 	PresentationStartTime = Shooter->GetWorld() ? Shooter->GetWorld()->GetTimeSeconds() : 0.0;
@@ -394,7 +392,7 @@ float UGA_Attack::GetCameraSettleRemaining(const FGuid& ActionId) const
 	// ⚠️ Из ожидания вычитается время ДО ВЫСТРЕЛА ВНУТРИ montage: кадру нужно
 	// успеть к моменту выстрела, а не к первому кадру анимации. Без этого боец
 	// у полуукрытия неподвижно ждал всю паузу и только потом начинал вставать —
-	// «что-то делает, потом встаёт и стреляет» (запись PIE 2026-08-03).
+	// «что-то делает, потом встаёт и стреляет».
 	const double Elapsed = World->GetTimeSeconds() - PresentationStartTime;
 	const float MontageLeadIn = FindFireCommitTime(FireAction.FireMontage.Get());
 	// Нижняя граница ритма: даже когда анимация сама даёт кадру достаточно
@@ -441,8 +439,7 @@ void UGA_Attack::EndAbility(
 	//
 	// ⚠️ Мир берём у СПОСОБНОСТИ, а не через GetAvatarActorFromActorInfo():
 	// при выходе из PIE GAS отменяет способности уже после сброса ActorInfo, и
-	// тот путь ловил ensure(CurrentActorInfo) с пятисекундным дампом стека в лог
-	// (поймано в записи 2026-08-03).
+	// тот путь ловил ensure(CurrentActorInfo) с пятисекундным дампом стека в лог.
 	if (UWorld* World = GetWorld())
 	{
 		World->GetTimerManager().ClearTimer(PostHoldTimer);
@@ -451,20 +448,7 @@ void UGA_Attack::EndAbility(
 	if (FireAction.IsActive())
 	{
 		const FTacticalFireActionContext FinishedAction = FireAction;
-		const FGuid ActionId = FinishedAction.ActionId;
-		const bool bShotCommitted = FinishedAction.bShotCommitted;
-		ClearFireActionWatchdog();
-		// Сначала атомарно закрываем ActionId. Любой синхронный callback от остановки montage
-		// или возврата AP уже увидит inactive-context и не сможет повторить terminal/refund.
-		FireAction.Reset();
-		StopFireActionMontage(FinishedAction);
-		if (!bShotCommitted)
-		{
-			RefundPreCommitActionPoints(FinishedAction);
-		}
-		EndShotPresentation();
-		ReleasePresentationStanding(); // боец садится вместе с уходом камеры
-		OnFireActionTerminated(ActionId, bShotCommitted, /*bAborted=*/true);
+		TerminateFireAction(FinishedAction, /*bAborted=*/true);
 	}
 
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
@@ -586,7 +570,7 @@ bool UGA_Attack::FireCommit(const FGuid& ActionId, bool& bOutHit)
 			{
 				if (UTurnManagerSubsystem* TurnManager = World->GetSubsystem<UTurnManagerSubsystem>())
 				{
-					// A8 throttle считается по необратимому commit, а не по AP/reservation.
+					// Лимит атакующих считается по необратимому commit, а не по AP/reservation.
 					TurnManager->NotifyUnitAttacked(Shooter);
 					// Тот же момент фиксирует цель для сведения огня отряда.
 					TurnManager->NotifyUnitTargeted(Target);
@@ -680,8 +664,26 @@ bool UGA_Attack::CompleteFireAction(const FGuid& ActionId)
 		*ActionId.ToString(EGuidFormats::Digits));
 	OnFireActionTerminated(ActionId, /*bShotCommitted=*/true, /*bAborted=*/false);
 	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
-	CheckCombatOutcomeAfterAction();
+	CheckCombatOutcome();
 	return true;
+}
+
+void UGA_Attack::TerminateFireAction(const FTacticalFireActionContext& FinishedAction, bool bAborted)
+{
+	const FGuid ActionId = FinishedAction.ActionId;
+	const bool bShotCommitted = FinishedAction.bShotCommitted;
+	ClearFireActionWatchdog();
+	// Сначала атомарно закрываем ActionId. Любой синхронный callback от остановки montage
+	// или возврата AP уже увидит inactive-context и не сможет повторить terminal/refund.
+	FireAction.Reset();
+	StopFireMontage(FinishedAction);
+	if (!bShotCommitted)
+	{
+		RefundPreCommitActionPoints(FinishedAction);
+	}
+	EndShotPresentation();
+	ReleasePresentationStanding(); // боец садится вместе с уходом камеры
+	OnFireActionTerminated(ActionId, bShotCommitted, bAborted);
 }
 
 bool UGA_Attack::AbortFireAction(const FGuid& ActionId)
@@ -697,20 +699,11 @@ bool UGA_Attack::AbortFireAction(const FGuid& ActionId)
 		TEXT("[FireAction] ABORT id=%s committed=%d shooter=%s — транзакция прервана"),
 		*ActionId.ToString(EGuidFormats::Digits), bShotCommitted ? 1 : 0,
 		*GetNameSafe(FinishedAction.Shooter.Get()));
-	ClearFireActionWatchdog();
-	FireAction.Reset();
-	StopFireActionMontage(FinishedAction);
-	if (!bShotCommitted)
-	{
-		RefundPreCommitActionPoints(FinishedAction);
-	}
-	EndShotPresentation();
-	ReleasePresentationStanding(); // боец садится вместе с уходом камеры
-	OnFireActionTerminated(ActionId, bShotCommitted, /*bAborted=*/true);
+	TerminateFireAction(FinishedAction, /*bAborted=*/true);
 	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, true);
 	if (bShotCommitted)
 	{
-		CheckCombatOutcomeAfterAction();
+		CheckCombatOutcome();
 	}
 	return true;
 }
@@ -750,7 +743,7 @@ void UGA_Attack::RefundPreCommitActionPoints(
 	const FTacticalFireActionContext& FinishedAction)
 {
 	// Вместе с AP возвращается и потреблённый учебный форс: сорванная до
-	// commit атака не должна сжигать «гарантированное попадание» (v2.9).
+	// commit атака не должна сжигать «гарантированное попадание».
 	if (!FinishedAction.bShotCommitted && bConsumedScriptedShotValid)
 	{
 		if (AUnitBase* ShooterUnit = Cast<AUnitBase>(FinishedAction.Shooter.Get()))
@@ -834,27 +827,3 @@ void UGA_Attack::EndShotPresentation() const
 	}
 }
 
-void UGA_Attack::StopFireActionMontage(
-	const FTacticalFireActionContext& FinishedAction) const
-{
-	const AUnitBase* Shooter = Cast<AUnitBase>(FinishedAction.Shooter.Get());
-	UAnimMontage* Montage = FinishedAction.FireMontage.Get();
-	UAnimInstance* AnimInstance = Shooter && Shooter->GetMesh()
-		? Shooter->GetMesh()->GetAnimInstance()
-		: nullptr;
-	if (AnimInstance && Montage && AnimInstance->Montage_IsActive(Montage))
-	{
-		AnimInstance->Montage_Stop(0.1f, Montage);
-	}
-}
-
-void UGA_Attack::CheckCombatOutcomeAfterAction() const
-{
-	const UWorld* World = GetWorld();
-	if (UTurnManagerSubsystem* TurnManager = World
-		? World->GetSubsystem<UTurnManagerSubsystem>()
-		: nullptr)
-	{
-		TurnManager->CheckCombatOutcome();
-	}
-}

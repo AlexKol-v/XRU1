@@ -104,7 +104,7 @@ public:
 	/**
 	 * Переход «состояние завершилось успешно → перейти в `ToStateName`».
 	 * Пустое `ToStateName` со `bFailureToRoot` — терминальный переход в Root
-	 * по провалу (страховка уровня сценария, 11 §4.5).
+	 * по провалу (страховка уровня сценария, docs/03_ARCHITECTURE.md §9).
 	 */
 	UFUNCTION(BlueprintCallable, Category = "XRU1|StateTree Authoring")
 	static bool AddCompletionTransition(const FString& StateTreeAssetPath, FName FromStateName,

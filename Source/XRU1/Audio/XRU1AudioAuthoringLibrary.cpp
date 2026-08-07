@@ -44,8 +44,8 @@ FString UXRU1AudioAuthoringLibrary::CreateRadioEffectChain(const FString& ChainF
 #if WITH_EDITOR
 	using namespace XRU1AudioAuthoring;
 
-	// Телефонная/эфирная полоса — 300..3400 Гц. Первая версия делала один
-	// BandPass 1.7 кГц: полоса получалась чрезмерно узкой и «зажатой». Правильная
+	// Телефонная/эфирная полоса — 300..3400 Гц. Один
+	// BandPass 1.7 кГц не годится: полоса получается чрезмерно узкой и «зажатой». Правильная
 	// классика обработки walkie-talkie — ДВА среза (HPF + LPF) вместо колокола:
 	// внутри полосы речь остаётся ровной и разборчивой, режутся только края.
 	USourceEffectFilterPreset* HighPass = FindOrCreateAsset<USourceEffectFilterPreset>(

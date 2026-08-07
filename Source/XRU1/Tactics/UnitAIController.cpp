@@ -480,10 +480,10 @@ void AUnitAIController::HandlePerceptionUpdated(AActor* Actor, FAIStimulus Stimu
 		// ⚠️ Цель пропала из виду — точку берём из СТИМУЛА, а не с актора: его
 		// текущая позиция бойцу больше не известна.
 		//
-		// И тревога понижается только если это была ЕДИНСТВЕННАЯ цель. Раньше
-		// потеря любого противника роняла бойца в Investigate, даже когда рядом
-		// стоял второй, отлично видимый (§4/AI-2: «потеря одной цели не затирает
-		// более свежую память о другой»).
+		// И тревога понижается только если это была ЕДИНСТВЕННАЯ цель. Иначе
+		// потеря любого противника роняет бойца в Investigate, даже когда рядом
+		// стоит второй, отлично видимый. Потеря одной цели не затирает
+		// более свежую память о другой.
 		RememberContact(Actor, Stimulus.StimulusLocation, EAIContactSource::Sight, 0.8f);
 		if (AlertState == EUnitAlertState::Combat && !FindVisibleTarget())
 		{
@@ -520,7 +520,7 @@ void AUnitAIController::ExecuteUnitTurn(FSimpleDelegate OnFinished)
 	bScriptedRepositionTried = false;
 	TurnIdleReasons.Reset();
 	LastMoveFailure.Reset();
-	// AI-2: знание стареет на границе активации, а не посреди неё — иначе
+	// Знание стареет на границе активации, а не посреди неё — иначе
 	// решения одного и того же хода считались бы по «плывущей» достоверности.
 	AgeContactMemory();
 
@@ -602,7 +602,7 @@ void AUnitAIController::AdvanceTurnStep()
 		}
 		// Шаг не начался (точка недостижима бюджетом/контроллер занят). После
 		// нескольких попыток шаг ПРОПУСКАЕТСЯ: вечный повтор доводил задачу до
-		// Timeout, валил квест и отдавал остаток хода utility-AI (v2.9).
+		// Timeout, валил квест и отдавал остаток хода utility-AI.
 		++ScriptedStepFailedAttempts;
 		if (ScriptedStepFailedAttempts >= 6)
 		{
@@ -746,10 +746,10 @@ void AUnitAIController::AdvanceTurnStep()
 		// поэтому причина печатается всегда, а не под cvar: именно её ищут,
 		// когда «враги стоят столбом».
 		//
-		// ⚠️ Печатаем ПРИЧИНУ, а не только состояние. Прежняя строка сообщала
-		// alert/AP/число точек патруля — по ней нельзя было отличить «нет
-		// навмеша» от «нет способности», и каждый следующий прогон начинался с
-		// гадания (бриф AI §4.6). Отдельно проверяем, стоит ли боец вообще на
+		// ⚠️ Печатаем ПРИЧИНУ, а не только состояние. По строке из
+		// alert/AP/числа точек патруля нельзя отличить «нет
+		// навмеша» от «нет способности» — каждый разбор начинался бы с
+		// гадания. Отдельно проверяем, стоит ли боец вообще на
 		// навмеше: боец вне навмеша не строит НИ ОДНОГО маршрута, и это самая
 		// частая первопричина.
 		const UTacticalAIDirectorSubsystem* Director = GetAIDirector();
@@ -782,7 +782,7 @@ bool AUnitAIController::StepCombat(AUnitBase* Unit)
 		// Идём к самому достоверному контакту вместо возврата в патруль: боец,
 		// по которому только что стреляли, обязан двигаться, а не стоять.
 		//
-		// AI-2: знание пода СЛИВАЕТСЯ в личную память как «сообщил союзник» —
+		// Знание пода СЛИВАЕТСЯ в личную память как «сообщил союзник» —
 		// с пониженной достоверностью и отдельным источником. Так в логе видно,
 		// что боец идёт по чужой наводке, а не по собственным глазам, и так
 		// личная память не перетирается каждым обновлением группы.
@@ -904,7 +904,7 @@ FAIDecisionContext AUnitAIController::BuildDecisionContext(AUnitBase* Unit, AAct
 	Context.bCoverMoveDoneThisTurn = bCoverMoveDoneThisTurn;
 	Context.DecisionSeed = BuildDecisionSeed(Unit);
 
-	// A8: лимит одновременно атакующих. Счётчик общий на сторону и живёт в
+	// Лимит одновременно атакующих. Счётчик общий на сторону и живёт в
 	// TurnManager — контроллер знает только про своего юнита.
 	if (const UWorld* World = GetWorld())
 	{
@@ -950,8 +950,8 @@ FAIDecision AUnitAIController::DecideAction(const FAIDecisionContext& Context)
 	// Перебираем по УБЫВАНИЮ верхней границы скора. Это не косметика: как только
 	// текущий лучший результат достиг потолка следующего кандидата, остальные
 	// заведомо не выиграют — и дорогой FindCoverPoint (48 точек × трейсы LOS)
-	// для них не выполняется. Именно это отсечение сохраняет время хода врага
-	// таким же, каким оно было у прежнего приоритетного списка.
+	// для них не выполняется. Именно это отсечение удерживает время хода врага
+	// на уровне простого приоритетного списка.
 	TArray<UAIActionEvaluator*> Ordered;
 	Ordered.Reserve(ActionEvaluators.Num());
 	for (const TObjectPtr<UAIActionEvaluator>& Evaluator : ActionEvaluators)
@@ -1002,7 +1002,7 @@ FAIDecision AUnitAIController::DecideAction(const FAIDecisionContext& Context)
 			continue;
 		}
 
-		// AI-4: оценщик отдаёт 0..N предложений. Для большинства это по-прежнему
+		// Оценщик отдаёт 0..N предложений. Для большинства это по-прежнему
 		// ровно одно (база сводит метод к `ScoreAction`), но выстрел разворачивает
 		// перебор по всем доступным целям — и они сравниваются общей шкалой, а не
 		// проигрывают заранее выбранному `PrimaryThreat`.
@@ -1195,7 +1195,7 @@ bool AUnitAIController::StartManeuverTo(AUnitBase* Unit, const FVector& Point, c
 		// следующий шаг хода — MoveWithBudget за раз проходит максимум MoveRange.
 		PendingManeuverPoint = Point;
 		bManeuverInProgress = true;
-		// AI-5: закрепляем НАМЕРЕНИЕ. Пока боец в пути, диск занятости он не
+		// Закрепляем НАМЕРЕНИЕ. Пока боец в пути, диск занятости он не
 		// ставит, и следующий боец имеет полное право выбрать ту же клетку.
 		if (UTacticalAIDirectorSubsystem* Director = GetAIDirector())
 		{
@@ -1349,7 +1349,7 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 		return false;
 	}
 
-	// Тюнинг укрытий/LOS этого юнита (Ф3): TuningOverride → глобальный → CDO.
+	// Тюнинг укрытий/LOS этого юнита: TuningOverride → глобальный → CDO.
 	const UCoverTuningDataAsset* Tuning = Cover->GetTuning();
 
 	const FVector UnitLocation = Unit->GetActorLocation();
@@ -1357,7 +1357,7 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 
 	// Половина капсулы нужна только для высоты ГЛАЗ (LOS): глаза = пол +
 	// пол-капсулы + EyeHeightOffset. Укрытие теперь считается от точки ПОЛА
-	// навмеша напрямую (§II.3, Ф2), поэтому в Base укрытия капсулу не прибавляем.
+	// навмеша напрямую, поэтому в Base укрытия капсулу не прибавляем.
 	float CapsuleHalfHeight = 88.f;
 	float EyeHeight = CapsuleHalfHeight + Tuning->EyeHeightOffset;
 	if (const ACharacter* UnitCharacter = Cast<ACharacter>(Unit))
@@ -1374,7 +1374,7 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 	UTacticsCombatStatics::GetUnitObstacles(World, Unit, Obstacles);
 	const double ClearanceSq = FMath::Square(static_cast<double>(UTacticsCombatStatics::GetUnitClearance(Unit)));
 
-	// A5: все видимые угрозы, а не одна. Укрытие оценивается ПРОТИВ ВСЕХ —
+	// Все видимые угрозы, а не одна. Укрытие оценивается ПРОТИВ ВСЕХ —
 	// иначе бот прячется от одного врага, подставляясь остальным.
 	TArray<TObjectPtr<AActor>> Threats;
 	GatherVisibleThreats(Threats);
@@ -1436,7 +1436,7 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 	 */
 	// СТАДИЯ «ФАКТЫ»: только измерения, ни одного веса. Всё, что дальше делает с
 	// ними арифметику, живёт в чистой `ScorePositionFacts` и потому проверяемо
-	// автотестом без мира (AI-3).
+	// автотестом без мира.
 	auto BuildPositionFacts = [&](const FVector& FloorPoint, FAIPositionFacts& Facts,
 		FAICoverPointResult& Out)
 	{
@@ -1480,7 +1480,7 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 				++Out.ThreatsVisible;
 				++Facts.ThreatsVisible;
 
-				// 2b) A7 `SafeToMove`. Видимость взаимна: раз я вижу оттуда врага,
+				// 2b) `SafeToMove`. Видимость взаимна: раз я вижу оттуда врага,
 				// то и он видит меня — а если он В НАБЛЮДЕНИИ, то встретит меня
 				// реакционным выстрелом. Считается ЗДЕСЬ, потому что стоит ровно
 				// ноль: линия огня для этой пары уже посчитана строкой выше.
@@ -1543,8 +1543,8 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 			}
 		}
 
-		// 7) РИСК ПО МАРШРУТУ (AI-3). В XCOM `SafeToMove` проверяет весь путь; у
-		// нас раньше оценивалась только конечная точка, и бот спокойно пробегал
+		// 7) РИСК ПО МАРШРУТУ. В XCOM `SafeToMove` проверяет весь путь; по
+		// одной конечной точке бот спокойно пробегал бы
 		// через сектор чужого овервотча, лишь бы финиш был чистым.
 		//
 		// Полный перебор LOS по каждому отрезку каждого кандидата неподъёмен
@@ -1610,7 +1610,7 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 	FAICoverPointResult BestDetails;
 	bool bFound = false;
 
-	// СЧЁТЧИКИ СТАДИЙ (AI-1). Без них «поиск позиции ничего не нашёл» —
+	// СЧЁТЧИКИ СТАДИЙ. Без них «поиск позиции ничего не нашёл» —
 	// неразличимая ситуация: то ли навмеш пуст, то ли всё занято, то ли ни один
 	// кандидат не побил базовую линию. Каждая стадия отвечает за свой отказ.
 	const double SearchStartTime = FPlatformTime::Seconds();
@@ -1645,22 +1645,13 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 			}
 
 			// Точка занята/впритык к другому юниту — не кандидат.
-			bool bBlocked = false;
-			for (const FVector& Obstacle : Obstacles)
-			{
-				if (FVector::DistSquared2D(Obstacle, Projected.Location) < ClearanceSq)
-				{
-					bBlocked = true;
-					break;
-				}
-			}
-			if (bBlocked)
+			if (UTacticsCombatStatics::IsPointBlockedByUnits(Obstacles, Projected.Location, ClearanceSq))
 			{
 				++StatOccupied;
 				continue;
 			}
 
-			// AI-5: точку уже застолбил другой боец. Диски занятости этого не
+			// Точку уже застолбил другой боец. Диски занятости этого не
 			// ловят — тот, кто в пути, диск не ставит.
 			if (Director && Director->IsPositionReserved(Unit, Projected.Location, ReservationRadius))
 			{
@@ -1668,7 +1659,7 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 				continue;
 			}
 
-			// Base укрытия — точка пола навмеша напрямую (§II.3, Ф2).
+			// Base укрытия — точка пола навмеша напрямую.
 			FVector CandidatePoint = Projected.Location;
 			ECoverType CoverType = Cover->EvaluateCoverAtLocation(CandidatePoint, ThreatLocation);
 
@@ -1709,16 +1700,8 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 								Cover->EvaluateCoverAtLocation(SnapProjected.Location, ThreatLocation);
 							if (SnapCover != ECoverType::None)
 							{
-								bool bSnapBlocked = false;
-								for (const FVector& Obstacle : Obstacles)
-								{
-									if (FVector::DistSquared2D(Obstacle, SnapProjected.Location) < ClearanceSq)
-									{
-										bSnapBlocked = true;
-										break;
-									}
-								}
-								if (!bSnapBlocked)
+								if (!UTacticsCombatStatics::IsPointBlockedByUnits(
+									Obstacles, SnapProjected.Location, ClearanceSq))
 								{
 									CandidatePoint = SnapProjected.Location;
 									CoverType = SnapCover;
@@ -1728,11 +1711,11 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 					}
 				}
 			}
-			// ДОСТИЖИМОСТЬ — ДО оценки. Раньше было наоборот («дорогая проверка
-			// последней»), и это было верно, пока оценка стоила один трейс. После
-			// A5 оценка — это по каждой угрозе трейс укрытия ПЛЮС линия огня с
+			// ДОСТИЖИМОСТЬ — ДО оценки. Правило «дорогая проверка последней»
+			// здесь не работает:
+			// оценка позиции — это по каждой угрозе трейс укрытия ПЛЮС линия огня с
 			// перебором позиций выглядывания, то есть на порядок дороже одного
-			// запроса пути. Порядок инвертирован осознанно: сначала отсеиваем
+			// запроса пути. Поэтому сначала отсеиваем
 			// точки, куда всё равно не дойти.
 			FVector Reachable;
 			if (!UTacticsCombatStatics::GetPointAlongPathBudget(this, Unit, UnitLocation,
@@ -1785,7 +1768,7 @@ bool AUnitAIController::FindCoverPoint(AUnitBase* Unit, const AActor* Threat, fl
 				*BaselineDetails.Describe(), BaselineScore, BaselineScore + RelocateBias);
 		}
 
-		// AI-1: цена и КПД перебора по стадиям. «Оценено 0 из 48» и «оценено 40,
+		// Цена и КПД перебора по стадиям. «Оценено 0 из 48» и «оценено 40,
 		// но ни одна не побила базу» — совершенно разные диагнозы, и различить их
 		// иначе нечем.
 		UE_LOG(LogXRU1AI, Log,
@@ -1989,7 +1972,7 @@ bool AUnitAIController::StepInvestigate(AUnitBase* Unit)
 		// Точка проверена — контакт, который сюда вёл, отработан и забывается.
 		// Именно контакт, а не вся память: рядом может лежать более старое, но
 		// всё ещё живое знание о другом противнике, и его боец обязан проверить
-		// следующим (AI-2), а не начинать с чистого листа.
+		// следующим, а не начинать с чистого листа.
 		const FVector CheckedPoint = LastKnownThreatLocation;
 		const float ForgetRadius = FMath::Max(200.f, InvestigateAcceptanceRadius * 2.f);
 		ContactMemory.RemoveAll([&CheckedPoint, ForgetRadius](const FAIContact& Contact)
@@ -2013,9 +1996,9 @@ bool AUnitAIController::StepInvestigate(AUnitBase* Unit)
 		return true;
 	}
 
-	// Маршрут к точке интереса не строится. Раньше здесь ход просто заканчивался
-	// ничем: 14 пустых ходов группы `Post_7` в прогоне 2026-08-04 — это именно
-	// он. Боец, который слышал бой и знает направление, обязан хотя бы держать
+	// Маршрут к точке интереса не строится. Заканчивать ход просто ничем нельзя —
+	// это давало пустые ходы у групп на посту.
+	// Боец, который слышал бой и знает направление, обязан хотя бы держать
 	// его под прицелом (в XCOM 2 этого как раз не хватает, см. заголовок
 	// InvestigateOverwatchChance).
 	NoteIdleReason(FString::Printf(
@@ -2060,10 +2043,10 @@ bool AUnitAIController::IsPostSentry(const AUnitBase* Unit) const
 
 bool AUnitAIController::HoldPositionOnPost(AUnitBase* Unit, const TCHAR* Reason)
 {
-	// Часовой на посту держит направление под прицелом. Раньше боец без маршрута
-	// просто пропускал ход — на карте без расставленных PatrolPoints это
-	// выглядело как «половина врагов сломана»: камера подлетала к ним, и они
-	// ничего не делали.
+	// Часовой на посту держит направление под прицелом. Пропускать ход без
+	// действия нельзя — на карте без расставленных PatrolPoints это
+	// выглядит как «половина врагов сломана»: камера подлетает к ним, а они
+	// ничего не делают.
 	if (!Unit->OverwatchAbilityClass)
 	{
 		NoteIdleReason(FString::Printf(
@@ -2233,9 +2216,9 @@ bool AUnitAIController::StepPatrol(AUnitBase* Unit)
 		// ветки боец каждый ход «шёл» к точке, на которой уже стоит, маршрут
 		// не строился, и ход заканчивался без единого действия.
 		//
-		// ⚠️ ЧАСОВОЙ ВОЗВРАЩАЕТСЯ НА ПОСТ. Раньше боец без маршрута (`HoldPoint`
-		// == nullptr — так настроен сторож у заряда) всегда уходил в наблюдение
-		// ГДЕ СТОИТ: сместился на шум или его оттеснили — и объект остался без
+		// ⚠️ ЧАСОВОЙ ВОЗВРАЩАЕТСЯ НА ПОСТ. Уходить в наблюдение ГДЕ СТОИТ бойцу
+		// без маршрута (`HoldPoint` == nullptr — так настроен сторож у заряда)
+		// нельзя: сместился на шум или его оттеснили — и объект остался без
 		// охраны навсегда. Якорь у него есть (стартовая позиция), возвращаться
 		// есть куда.
 		if (!bAtAnchor)
@@ -2282,14 +2265,13 @@ bool AUnitAIController::StepPatrol(AUnitBase* Unit)
 
 	// ⚠️ ПЕРЕБОР ПО МАРШРУТУ, а не одна попытка.
 	//
-	// Прежняя версия делала РОВНО ОДИН `MoveWithBudget` к текущей вершине и при
-	// отказе возвращала false — без фолбэка вообще. Достаточно было одной
+	// Один `MoveWithBudget` к текущей вершине с возвратом false при отказе —
+	// без фолбэка — здесь недостаточен. Хватает одной
 	// недостижимой вершины (точка на бордюре, за закрытой дверью, в дыре
-	// навмеша), чтобы группа встала навсегда: индекс не двигался, и каждый
-	// следующий ход повторял тот же отказ. Ровно это и дал прогон 2026-08-04 —
-	// 62 пустых хода у группы `Post_3` с 12 точками.
+	// навмеша), чтобы группа встала на десятки ходов: индекс не двигается, и
+	// каждый следующий ход повторяет тот же отказ.
 	//
-	// Теперь недостижимая вершина ПРОПУСКАЕТСЯ: обходим маршрут дальше, как и
+	// Поэтому недостижимая вершина ПРОПУСКАЕТСЯ: обходим маршрут дальше, как и
 	// сделал бы часовой, наткнувшийся на запертую дверь. Ограничение — число
 	// точек: полный круг без успеха означает, что дело не в вершине.
 	FString FirstFailure;
@@ -3121,7 +3103,7 @@ void AUnitAIController::FinishUnitTurn()
 	RestoreMovementSpeed();
 	bTurnMoveInProgress = false;
 
-	// AI-5: намерение живёт ровно до конца активации. Дальше боец уже стоит на
+	// Намерение живёт ровно до конца активации. Дальше боец уже стоит на
 	// точке и держит её обычным диском занятости — держать ещё и резервацию
 	// значило бы запрещать соседу подойти к тому же укрытию навсегда.
 	if (UTacticalAIDirectorSubsystem* Director = GetAIDirector())
@@ -3204,7 +3186,7 @@ float AUnitAIController::ScoreTarget(const AUnitBase* Unit, const AActor* Candid
 		}
 	}
 
-	// 3) ФЛАНГ: цель в укрытии, но против нас оно не работает (Ф8).
+	// 3) ФЛАНГ: цель в укрытии, но против нас оно не работает.
 	if (UTacticsCombatStatics::IsTargetFlankedBy(Candidate, Unit))
 	{
 		Score += TargetScoreFlanked;

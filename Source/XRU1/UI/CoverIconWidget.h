@@ -43,10 +43,10 @@ protected:
     /**
      * Пока игрок целится, показывать укрытие ПРОТИВ ВЫБРАННОГО СТРЕЛКА, а не
      * «по кругу»: синий щит — укрытие работает против него, жёлтый — цель
-     * флангирована (Ф8). Вне прицеливания иконка возвращается к локальному
+     * флангирована. Вне прицеливания иконка возвращается к локальному
      * BestCoverAround — это статус самого юнита, он не зависит ни от кого.
      *
-     * Выключить = вернуть прежнее поведение (всегда локальное укрытие).
+     * Выключить = всегда показывать локальное укрытие.
      */
     UPROPERTY(EditDefaultsOnly, Category = "Cover Icon")
     bool bShowFlankedWhileTargeting = true;
@@ -63,11 +63,11 @@ private:
     UFUNCTION()
     void OnCoverStateChanged(ECoverType NewBestCover);
 
-	void Redraw();
-	const UTacticalHUDStyleData* GetUITheme() const;
+    void Redraw();
+    const UTacticalHUDStyleData* GetUITheme() const;
 
-	/** Стрелок, против которого считать щит; nullptr — показывать локальное укрытие. */
-	AActor* ResolveActiveShooter() const;
+    /** Стрелок, против которого считать щит; nullptr — показывать локальное укрытие. */
+    AActor* ResolveActiveShooter() const;
 
     UPROPERTY(Transient)
     TObjectPtr<UImage> IconImage;

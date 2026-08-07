@@ -122,7 +122,7 @@ EVisibility SXRU1SubtitleOverlay::GetHintVisibility() const
 {
 	// Подсказку рисует слой, а не автор реплики. Пока авторские тексты обучения
 	// содержат её сами, флаг темы держит её выключенной — иначе подсказка
-	// удвоится (см. docs/14_SUBTITLES.md).
+	// удвоится (см. docs/03_ARCHITECTURE.md §13).
 	const bool bShow = CachedStyle.bShowSkipHint
 		&& Owner.IsValid() && Owner->GetActiveLine().bSkippable;
 	return bShow ? EVisibility::HitTestInvisible : EVisibility::Collapsed;

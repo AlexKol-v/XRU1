@@ -8,7 +8,7 @@
 // арифметика, и именно они ломались молча: каждый разбор лога начинался с
 // вопроса «а точно ли отступление перестало любить открытые точки».
 //
-// Поэтому тесты закрывают ровно тот слой, который для этого и выделялся в AI-3:
+// Поэтому тесты закрывают ровно тот слой, который для этого и выделялся:
 // `AUnitAIController::ScorePositionFacts` — факты плюс веса, без мира. Всё, что
 // требует карты, остаётся в ручной матрице §6.
 //
@@ -85,7 +85,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FXRU1AIRetreatBreaksLineOfSightTest,
 
 bool FXRU1AIRetreatBreaksLineOfSightTest::RunTest(const FString&)
 {
-	// Регрессия из прогона 2026-08-04 («прячется где попало»): при отступлении
+	// Регрессия «прячется где попало»: при отступлении
 	// точка, откуда врага ВИДНО, выигрывала у настоящего укрытия. Тест валится
 	// ровно на возврате того знака.
 	const FAIPositionScoringTuning T = XRU1AITests::DefaultTuning();
@@ -122,7 +122,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FXRU1AIRouteRiskTest,
 
 bool FXRU1AIRouteRiskTest::RunTest(const FString&)
 {
-	// AI-3: пробежать под чужим овервотчем должно быть хуже, чем не пробежать,
+	// Пробежать под чужим овервотчем должно быть хуже, чем не пробежать,
 	// но дешевле, чем ВСТАТЬ под ним.
 	const FAIPositionScoringTuning T = XRU1AITests::DefaultTuning();
 	const FAIPositionFacts Safe = XRU1AITests::GoodCoverFacts(T);

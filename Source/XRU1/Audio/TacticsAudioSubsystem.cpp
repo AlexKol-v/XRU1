@@ -3,6 +3,7 @@
 #include "AudioDevice.h"
 #include "Components/AudioComponent.h"
 #include "Engine/World.h"
+#include "Misc/App.h"
 #include "TacticsUserSettings.h"
 #include "Kismet/GameplayStatics.h"
 #include "Sound/SoundBase.h"
@@ -108,6 +109,28 @@ void UTacticsAudioSubsystem::DumpAudioState()
 		TEXT("Применённые громкости: master=%.2f music=%.2f sfx=%.2f ui=%.2f voice=%.2f"),
 		AppliedSettings.MasterVolume, AppliedSettings.MusicVolume, AppliedSettings.SfxVolume,
 		AppliedSettings.UIVolume, AppliedSettings.VoiceVolume);
+
+	// ЭТАЖ НИЖЕ НАШЕЙ ПОДСИСТЕМЫ: глобальный множитель процесса. Движок глушит
+	// им неактивное PIE-окно (клик в редактор/другое приложение), и наши классы
+	// с миксами о нём ничего не знают: по нашим логам «звук ВОССТАНОВЛЕН», а в
+	// колонках тишина. 0.00 здесь при живом окне = залипший движковый мьют, и
+	// чинить его правкой классов бесполезно.
+	UE_LOG(LogXRU1Audio, Display,
+		TEXT("Глобальный множитель FApp: текущий=%.2f | для неактивного окна=%.2f | пауза боевого звука=%d"),
+		FApp::GetVolumeMultiplier(), FApp::GetUnfocusedVolumeMultiplier(),
+		bGameplayAudioPaused ? 1 : 0);
+
+	if (const UAudioComponent* Voice = VoiceComponent.Get())
+	{
+		UE_LOG(LogXRU1Audio, Display,
+			TEXT("Голос: '%s' | играет=%s | на паузе=%s | VolumeMultiplier=%.2f"),
+			*GetNameSafe(Voice->Sound), Voice->IsPlaying() ? TEXT("да") : TEXT("НЕТ"),
+			Voice->bIsPaused ? TEXT("ДА") : TEXT("нет"), Voice->VolumeMultiplier);
+	}
+	else
+	{
+		UE_LOG(LogXRU1Audio, Display, TEXT("Голос: компонента нет"));
+	}
 
 	if (const UTacticsUserSettings* UserSettings = UTacticsUserSettings::Get())
 	{
@@ -255,8 +278,8 @@ void UTacticsAudioSubsystem::ApplyAudioSettings(const FTacticsAudioSettings& Set
 	}
 
 	// Громкости применяются НЕЗАВИСИМО от наличия мира и микса: они живут в
-	// SoundClass, а он — глобальный ассет. Раньше здесь стоял ранний выход по
-	// отсутствию микса/мира, и настройки молча терялись.
+	// SoundClass, а он — глобальный ассет. Ранний выход по отсутствию
+	// микса/мира здесь нельзя: настройки молча теряются.
 	ApplyClassVolume(Asset->MasterClass, Settings.MasterVolume);
 	ApplyClassVolume(Asset->MusicClass, Settings.MusicVolume);
 	ApplyClassVolume(Asset->UIClass, Settings.UIVolume);
@@ -316,7 +339,7 @@ void UTacticsAudioSubsystem::ApplyAudioSettings(const FTacticsAudioSettings& Set
 void UTacticsAudioSubsystem::ApplyAudioSettingsFromSave()
 {
 	// Громкости живут в настройках приложения, а не в слоте кампании: они не
-	// часть прогресса и обязаны переживать «Новая игра» (docs/09_UI_HUD §5.5).
+	// часть прогресса и обязаны переживать «Новая игра» (docs/03_ARCHITECTURE.md §12).
 	if (const UTacticsUserSettings* UserSettings = UTacticsUserSettings::Get())
 	{
 		ApplyAudioSettings(UserSettings->GetAudioSettings());
@@ -352,10 +375,10 @@ void UTacticsAudioSubsystem::SetGameplayAudioPaused(bool bPaused)
 		Voice->SetPaused(bPaused);
 	}
 
-	// ⚠️ Глушим ТОЛЬКО боевые категории. Прежняя схема гасила transient-громкость
-	// всего аудио-устройства (`SetTransientPrimaryVolume(0)`) — вместе с музыкой
-	// и интерфейсом. Симптом: открыл настройки в главном меню — музыка пропала,
-	// хотя никакого геймплея под меню нет (поймано 2026-08-02). Пауза обязана
+	// ⚠️ Глушим ТОЛЬКО боевые категории. Гасить transient-громкость
+	// всего аудио-устройства (`SetTransientPrimaryVolume(0)`) нельзя — уйдут и
+	// музыка с интерфейсом. Симптом: открыл настройки в главном меню — музыка пропала,
+	// хотя никакого геймплея под меню нет. Пауза обязана
 	// приглушать бой, а не выключать звук игры целиком.
 	//
 	// Значения возвращаются из AppliedSettings, а не запоминаются отдельно:
@@ -607,9 +630,9 @@ void UTacticsAudioSubsystem::PlayMusic(USoundBase* Track, float FadeInTime)
 
 	// Никаких подписок на OnAudioFinished: у ЗАЦИКЛЕННОГО звука это событие
 	// означает «его остановили» (подтверждено форумом Epic — при обычном цикле
-	// оно не приходит вовсе). Прежняя «страховка» ловила завершение FadeOut
-	// предыдущего трека и перезапускала музыку поверх играющей, из-за чего
-	// музыка и замолкала через ~20 секунд. Трек должен быть зациклен в ассете —
+	// оно не приходит вовсе). «Страховка»-подписка ловит завершение FadeOut
+	// предыдущего трека и перезапускает музыку поверх играющей, из-за чего
+	// музыка замолкает через ~20 секунд. Трек должен быть зациклен в ассете —
 	// это его свойство, а не работа кода.
 	UE_LOG(LogXRU1Audio, Log, TEXT("[Audio] музыка: '%s' (длительность %.0f с%s)"),
 		*Track->GetName(), Track->GetDuration(),

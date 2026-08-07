@@ -8,12 +8,12 @@
 #include "Components/AudioComponent.h"
 #include "Sound/SoundBase.h"
 #include "SubtitleSubsystem.h"
+#include "TacticsAudioSubsystem.h"
 #include "TacticalCameraPawn.h"
 #include "TacticalPlayerController.h"
 #include "TurnManagerSubsystem.h"
 #include "XRU1Log.h"
 #include "Engine/World.h"
-#include "Kismet/GameplayStatics.h"
 
 
 bool UMissionVoiceDataAsset::AddLine(FName LineId, const FString& TriggerChannel,
@@ -185,14 +185,34 @@ void UMissionVoiceDirectorSubsystem::PlayLine(const FMissionVoiceLine& Line)
 	// Звук ведёт субтитр: строка живёт ровно столько, сколько звучит голос —
 	// штатный режим общего слоя субтитров (`ShowLineForSound`). Собственный
 	// таймер понадобился бы только реплике без озвучки.
+	//
+	// ⚠️ Голос — ТОЛЬКО через `UTacticsAudioSubsystem::PlayVoice2D`: подсистема —
+	// единственный владелец голосового канала. Её компонент пауза ставит на
+	// `SetPaused` (реплика замирает и продолжается с того же места), а новая
+	// реплика вытесняет предыдущую — «голос один», как и субтитр.
+	// Прямой `SpawnSound2D` здесь нельзя: такой компонент — UI-звук, он живёт в
+	// РЕАЛЬНОМ времени и беззвучно доигрывает под меню паузы (его глушит только
+	// громкость класса). После снятия паузы восстанавливать уже нечего: звука
+	// нет, а титр честно отживает своё игровое время — «титры идут, голос молчит».
 	UAudioComponent* VoiceComponent = nullptr;
 	float Duration = Line.Duration;
+	float VoiceDuration = 0.f;
 	if (USoundBase* Voice = Line.Voice.LoadSynchronous())
 	{
-		VoiceComponent = UGameplayStatics::SpawnSound2D(World, Voice);
+		UTacticsAudioSubsystem* Audio = World->GetGameInstance()
+			? World->GetGameInstance()->GetSubsystem<UTacticsAudioSubsystem>() : nullptr;
+		if (Audio)
+		{
+			VoiceComponent = Audio->PlayVoice2D(Voice, 1.f, /*bAutoSubtitle=*/false);
+		}
+		VoiceDuration = Voice->GetDuration();
+		if (VoiceDuration >= INDEFINITELY_LOOPING_DURATION)
+		{
+			VoiceDuration = 0.f; // зацикленный ассет длительности не имеет
+		}
 		if (Duration <= 0.f)
 		{
-			Duration = Voice->GetDuration();
+			Duration = VoiceDuration;
 		}
 	}
 	Duration = FMath::Clamp(Duration > 0.f ? Duration : 3.f, 1.f, 20.f);
@@ -208,7 +228,11 @@ void UMissionVoiceDirectorSubsystem::PlayLine(const FMissionVoiceLine& Line)
 		SubtitleLine.SourceId = Line.LineId;
 		if (VoiceComponent)
 		{
-			Subtitles->ShowLineForSound(SubtitleLine, VoiceComponent, Duration);
+			// `Duration` — «сколько держать субтитр» ЦЕЛИКОМ, а не добавка после
+			// звука: в hold уходит только остаток сверх длительности озвучки.
+			// Передавать сюда полный Duration нельзя — титр висел бы звук + Duration.
+			const float HoldAfterVoice = FMath::Max(0.f, Duration - VoiceDuration);
+			Subtitles->ShowLineForSound(SubtitleLine, VoiceComponent, HoldAfterVoice);
 		}
 		else
 		{

@@ -123,8 +123,8 @@ void UMenuScreenBase::NativeOnActivated()
 
 void UMenuScreenBase::ApplyScreenArt()
 {
-	// Собственный фон экрана больше не используется — прячем, чтобы картинка не
-	// шла в два слоя (в рукотворных экранах он остался с прежней схемы).
+	// Собственный фон экрана не используется — прячем, чтобы картинка не
+	// шла в два слоя (в рукотворных экранах виджет фона физически существует).
 	if (WidgetTree)
 	{
 		static const TCHAR* BackgroundNames[] = {
@@ -496,6 +496,13 @@ void UIntroPlayerWidget::NativeOnActivated()
 	SetKeyboardFocus();
 	ResetSkipHoldUI();
 
+	// Ролик обязан замирать вместе с миром (см. HandlePauseChanged).
+	if (UGamePauseSubsystem* Pause = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UGamePauseSubsystem>() : nullptr)
+	{
+		Pause->OnPauseChanged.AddUniqueDynamic(this, &UIntroPlayerWidget::HandlePauseChanged);
+	}
+
 	const UTacticalHUDStyleData* Theme = GetUITheme();
 	if (!Theme)
 	{
@@ -609,10 +616,49 @@ void UIntroPlayerWidget::HandleMediaOpened(FString OpenedUrl)
 	// буферизацию.
 	StartIntroSubtitles();
 
+	// Медиа могло открыться, пока мир на паузе (разфокус во время буферизации):
+	// стартовать под паузой нельзя — ролик уедет от вставшего мира. Запуск
+	// откладывается до снятия паузы (HandlePauseChanged).
+	const UGamePauseSubsystem* Pause = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UGamePauseSubsystem>() : nullptr;
+	if (Pause && Pause->IsPaused())
+	{
+		bPlayDeferredByPause = true;
+		UE_LOG(LogXRU1UI, Display,
+			TEXT("[Intro] мир на паузе — запуск ролика отложен до её снятия"));
+		return;
+	}
+
 	if (IntroPlayer && !IntroPlayer->IsPlaying())
 	{
 		const bool bStarted = IntroPlayer->Play();
 		UE_LOG(LogXRU1UI, Display, TEXT("[Intro] запуск воспроизведения: %s"),
+			bStarted ? TEXT("принят") : TEXT("ОТКАЗ"));
+	}
+}
+
+void UIntroPlayerWidget::HandlePauseChanged(bool bPaused)
+{
+	if (!IntroPlayer)
+	{
+		return;
+	}
+
+	if (bPaused)
+	{
+		if (IntroPlayer->IsPlaying())
+		{
+			IntroPlayer->Pause();
+			UE_LOG(LogXRU1UI, Display, TEXT("[Intro] ролик на паузе вместе с миром"));
+		}
+		return;
+	}
+
+	if (bPlayDeferredByPause || IntroPlayer->IsPaused())
+	{
+		bPlayDeferredByPause = false;
+		const bool bStarted = IntroPlayer->Play();
+		UE_LOG(LogXRU1UI, Display, TEXT("[Intro] ролик продолжен со снятием паузы: %s"),
 			bStarted ? TEXT("принят") : TEXT("ОТКАЗ"));
 	}
 }
@@ -682,6 +728,13 @@ void UIntroPlayerWidget::StartIntroSubtitles()
 
 void UIntroPlayerWidget::StopIntroPlayback()
 {
+	bPlayDeferredByPause = false;
+	if (UGamePauseSubsystem* Pause = GetGameInstance()
+		? GetGameInstance()->GetSubsystem<UGamePauseSubsystem>() : nullptr)
+	{
+		Pause->OnPauseChanged.RemoveDynamic(this, &UIntroPlayerWidget::HandlePauseChanged);
+	}
+
 	// Титры снимаются ПЕРВЫМИ: пропуск ролика не должен оставлять строку на
 	// экране ни на кадр — следующий экран уже другой.
 	if (SubtitleDriver)
@@ -1340,7 +1393,7 @@ void USettingsMenuWidget::HandleResetClicked()
 
 FTacticsAudioSettings USettingsMenuWidget::GetAudioSettings() const
 {
-	// Единственный источник правды — UTacticsUserSettings (docs/09_UI_HUD §5.5).
+	// Единственный источник правды — UTacticsUserSettings (docs/03_ARCHITECTURE.md §12).
 	if (const UTacticsUserSettings* UserSettings = UTacticsUserSettings::Get())
 	{
 		return UserSettings->GetAudioSettings();

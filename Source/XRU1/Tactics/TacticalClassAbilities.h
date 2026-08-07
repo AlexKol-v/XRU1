@@ -67,7 +67,7 @@ public:
 	/**
 	 * Глухая оборона ТРЕБУЕТ укрытия (XCOM 2: «can only be used in cover»). Без
 	 * укрытия ComputeHitChance не удваивает нулевой бонус — активация сожгла бы
-	 * весь ход впустую (§II.5). Требуем тег Cover.Half/Full (его вешает
+	 * весь ход впустую. Требуем тег Cover.Half/Full (его вешает
 	 * UCoverDetectionComponent по BestCoverAround).
 	 */
 	virtual bool CanActivateAbility(const FGameplayAbilitySpecHandle Handle,
@@ -124,7 +124,7 @@ public:
 
 	/**
 	 * Радиус применения (см) — «вплотную», как аптечка XCOM 2 (соседняя клетка):
-	 * прежние 600 см позволяли поднимать бойца с полукарты и обесценивали
+	 * большой радиус (метры) позволял бы поднимать бойца с полукарты и обесценивал
 	 * позиционирование медика.
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Tactics|Heal", meta = (ClampMin = "0"))

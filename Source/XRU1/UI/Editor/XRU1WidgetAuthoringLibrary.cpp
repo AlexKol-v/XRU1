@@ -52,7 +52,7 @@ struct FMenuPalette
 /**
  * Тема проекта для editor-сборки экранов. Ищется ПО КЛАССУ через AssetRegistry,
  * а не по зашитому пути: путь ассета — это раскладка контента, которая меняется
- * (2026-08-03 тема переехала в `/Data/Core`), и жёсткая строка ломается молча —
+ * (тема уже переезжала между папками), и жёсткая строка ломается молча —
  * экраны просто собираются дефолтной палитрой, без единой ошибки в логе.
  */
 const UTacticalHUDStyleData* FindProjectTheme()
@@ -75,7 +75,7 @@ const UTacticalHUDStyleData* FindProjectTheme()
 FMenuPalette LoadPalette()
 {
 	FMenuPalette Palette;
-	// Цвета не хардкодятся мимо темы (09_UI_HUD §1); дефолты структуры совпадают
+	// Цвета не хардкодятся мимо темы (docs/03_ARCHITECTURE.md §11); дефолты структуры совпадают
 	// с дефолтами C++-темы, поэтому отсутствие ассета не ломает сборку экрана.
 	if (const UTacticalHUDStyleData* Theme = FindProjectTheme())
 	{
@@ -225,8 +225,8 @@ UVerticalBox* MakeScreenScaffold(UWidgetBlueprint* Blueprint, const FText& Title
 	// Полноэкранное затемнение, чтобы экран читался поверх 3D-сцены/предыдущего.
 	UBorder* Dim = Tree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("BackgroundDim"));
 	FLinearColor DimColor = Palette.PanelBackground;
-	// Затемнение лежит ПОВЕРХ фонового арта: при прежних 0.85 картинка из темы
-	// была бы съедена почти полностью, и экран снова выглядел бы пустым.
+	// Затемнение лежит ПОВЕРХ фонового арта: при альфе вроде 0.85 картинка из
+	// темы была бы съедена почти полностью, и экран выглядел бы пустым.
 	DimColor.A = 0.55f;
 	Dim->SetBrushColor(DimColor);
 	Root->AddChildToOverlay(Dim);
@@ -740,9 +740,9 @@ bool UXRU1WidgetAuthoringLibrary::AddDifficultySkipTutorialToggle(const FString&
 	}
 
 	// Целевой контейнер — БЛИЖАЙШИЙ Overlay над кнопками: в нём строку можно
-	// поставить ПОД рядом кнопок по центру. Первая версия останавливалась на
-	// первом же контейнере «на несколько детей» — им оказывался HorizontalBox
-	// самих кнопок, и чекбокс вставал сбоку от «Сложный», а не под рядом.
+	// поставить ПОД рядом кнопок по центру. Останавливаться на
+	// первом же контейнере «на несколько детей» нельзя — им оказывается
+	// HorizontalBox самих кнопок, и чекбокс встаёт сбоку от «Сложный», а не под рядом.
 	UOverlay* Overlay = nullptr;
 	for (UPanelWidget* Ancestor = Hard->GetParent(); Ancestor; Ancestor = Ancestor->GetParent())
 	{

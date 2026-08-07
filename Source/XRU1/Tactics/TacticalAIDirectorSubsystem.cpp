@@ -48,18 +48,6 @@ void UTacticalAIDirectorSubsystem::RegisterUnit(AUnitBase* Unit)
 	Pod.Members.AddUnique(Unit);
 }
 
-void UTacticalAIDirectorSubsystem::UnregisterUnit(AUnitBase* Unit)
-{
-	if (!Unit)
-	{
-		return;
-	}
-	if (FAIPodState* Pod = Pods.Find(ResolvePodId(Unit)))
-	{
-		Pod->Members.Remove(Unit);
-	}
-}
-
 bool UTacticalAIDirectorSubsystem::AddContact(FName PodId, AActor* Target,
 	const FVector& Location, EAIContactSource Source, float Confidence)
 {
@@ -103,7 +91,7 @@ bool UTacticalAIDirectorSubsystem::IsEnemyPod(const FAIPodState& Pod)
 	// ⚠️ РЕГИСТРАЦИЯ идёт без фильтра команды (см. RegisterUnit: в OnPossess
 	// TeamId ещё не назначен), поэтому бойцы игрока тоже заводят себе поды.
 	// Механика подов — вражеская: под игрока нельзя ни вскрыть, ни поднять.
-	// Без этой проверки лог прогона 2026-08-04 пестрел строками вида
+	// Без этой проверки лог пестрит строками вида
 	// «Под BP_Unit_Sniper_C_0 вскрыт (рядом погиб союзник): поднято бойцов 0».
 	for (const TWeakObjectPtr<AUnitBase>& Member : Pod.Members)
 	{
@@ -258,7 +246,7 @@ void UTacticalAIDirectorSubsystem::NotifyCombatNoise(AActor* Instigator,
 	// `XComGameState_AIGroup::ApplyAlertAbilityToGroup`, а не к тому, кто
 	// оказался в радиусе. У нас же тревогу получал ровно тот, кто попал в круг,
 	// — поэтому напарник за стеной, в двух шагах от перестрелки, продолжал
-	// стоять на посту (жалоба по прогону 2026-08-04). Радиус решает, УСЛЫШАЛА ли
+	// стоять на посту. Радиус решает, УСЛЫШАЛА ли
 	// группа; дальше знание общее, как и память контактов пода.
 	//
 	// Вскрытия при этом по-прежнему нет: под поднимается в жёлтую тревогу и идёт
@@ -378,7 +366,7 @@ bool UTacticalAIDirectorSubsystem::GetBestContact(const AUnitBase* Unit, FAICont
 	return true;
 }
 
-// --- Резервации позиций (AI-5) ----------------------------------------------
+// --- Резервации позиций ----------------------------------------------
 
 void UTacticalAIDirectorSubsystem::ReservePosition(AUnitBase* Unit, const FVector& Point)
 {

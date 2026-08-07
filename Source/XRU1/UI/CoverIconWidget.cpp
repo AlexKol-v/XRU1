@@ -114,7 +114,7 @@ void UCoverIconWidget::Redraw()
 
     const UTacticalHUDStyleData* Theme = GetUITheme();
 
-    // Есть активный стрелок — считаем щит ПРОТИВ НЕГО (три состояния, Ф8);
+    // Есть активный стрелок — считаем щит ПРОТИВ НЕГО (три состояния);
     // иначе показываем локальное укрытие юнита, как и раньше.
     ECoverType IconCover = Cover->BestCoverAround;
     FLinearColor Tint = BaseColor;

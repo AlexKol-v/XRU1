@@ -19,7 +19,7 @@ UAIEval_Retreat::UAIEval_Retreat()
 
 bool UAIEval_Retreat::IsApplicable(const FAIDecisionContext& Context) const
 {
-	// Условия — дословно прежние (StepCombat п.1): не двигались в укрытие в этом
+	// Условия — те же, что в StepCombat: не двигались в укрытие в этом
 	// ходу, мало HP, стоим открытыми, есть чем оплатить.
 	return !Context.bCoverMoveDoneThisTurn && Context.bLowHealth && Context.bExposed &&
 		Context.ActionPointsLeft >= 1 && Context.Unit && Context.PrimaryThreat && Context.Controller;
@@ -79,8 +79,8 @@ float UAIEval_MoveToCover::ScoreAction(const FAIDecisionContext& Context, FAIDec
 	// ОТКРЫТЫЙ БОЕЦ СНАЧАЛА ВСТАЁТ В УКРЫТИЕ, а стреляет вторым очком.
 	//
 	// Без этой надбавки уверенный выстрел (Shoot: 100 × качество) всегда бил
-	// манёвр (80), и бот с двумя ОД оставался стрелять из чистого поля — жалоба
-	// «стоят и стреляют» по прогону 2026-08-04. Ошибка усиливается тем, что у
+	// манёвр (80), и бот с двумя ОД оставался стрелять из чистого поля
+	// («стоят и стреляют»). Ошибка усиливается тем, что у
 	// нас `GA_Attack.bConsumesAllRemainingAP = true`: выстрел с места сжигает и
 	// второе очко, то есть выбор здесь не «сначала стрельнуть, потом уйти», а
 	// строго «или укрытие, или открытая позиция до конца хода противника».
@@ -99,7 +99,7 @@ float UAIEval_MoveToCover::ScoreAction(const FAIDecisionContext& Context, FAIDec
 UAIEval_Shoot::UAIEval_Shoot()
 {
 	// ⚠️ ВЫШЕ, чем у манёвра в укрытие (80). Так и должно быть: уверенный
-	// выстрел важнее перебежки. Раньше приоритет был 60, и бот с шансом 93%
+	// выстрел важнее перебежки. С приоритетом ниже манёвра бот с шансом 93%
 	// уходил перепозиционироваться, а потом стрелял с 28% — это видно в логах
 	// боя прямо построчно. В XCOM порядок такой же: `ShootIfAvailable` стоит
 	// перед движением, а движение — это то, что делают, когда стрелять НЕЧЕМ.
@@ -113,7 +113,7 @@ UAIEval_Shoot::UAIEval_Shoot()
 
 bool UAIEval_Shoot::IsApplicable(const FAIDecisionContext& Context) const
 {
-	// A8: при достигнутом лимите атакующих выстрел запрещён — юнит проваливается
+	// При достигнутом лимите атакующих выстрел запрещён — юнит проваливается
 	// в занятую ветку (наблюдение/перемещение), а не стоит столбом.
 	return Context.bCanShootNow && !Context.bAttackThrottled &&
 		Context.PrimaryThreat && Context.ActionPointsLeft >= 1;
@@ -124,7 +124,7 @@ float UAIEval_Shoot::ScoreShotAt(const FAIDecisionContext& Context, AActor* Targ
 {
 	const float HitChance = UGA_Attack::ComputeAttackHitChance(Context.Unit, Target);
 
-	// Качество выстрела по тем же порогам, что и скоринг цели (A3): уверенный —
+	// Качество выстрела по тем же порогам, что и скоринг цели: уверенный —
 	// полный вес, средний — половина, сомнительный — четверть. Именно эта
 	// шкала и решает «стрелять или сначала перебежать».
 	const AUnitAIController* Controller = Context.Controller;
@@ -299,10 +299,11 @@ bool UAIEval_CloseDistance::IsApplicable(const FAIDecisionContext& Context) cons
 float UAIEval_CloseDistance::ScoreAction(const FAIDecisionContext& Context, FAIDecision& OutDecision) const
 {
 	// ⚠️ Цель — НЕ позиция врага, а точка на идеальной дистанции боя от него по
-	// линии «враг → я». Раньше сюда шла позиция врага с радиусом приёмки
-	// `AttackRange * 0.8` (≈2400 см): `MoveToLocation` с таким радиусом всегда
-	// отвечал `AlreadyAtGoal`, и юнит СЖИГАЛ очко действия, не сделав ни шага.
-	// Радиус приёмки теперь обычный, а «не подходить вплотную» выражено целью.
+	// линии «враг → я». Позицию врага с радиусом приёмки
+	// `AttackRange * 0.8` (≈2400 см) сюда отдавать нельзя: `MoveToLocation` с
+	// таким радиусом всегда отвечает `AlreadyAtGoal`, и юнит СЖИГАЕТ очко
+	// действия, не сделав ни шага.
+	// Радиус приёмки обычный, а «не подходить вплотную» выражено целью.
 	const FVector ThreatPos = Context.PrimaryThreat->GetActorLocation();
 	FVector Away = (Context.Unit->GetActorLocation() - ThreatPos).GetSafeNormal2D();
 	if (Away.IsNearlyZero())
@@ -323,7 +324,7 @@ float UAIEval_CloseDistance::ScoreAction(const FAIDecisionContext& Context, FAID
 UAIEval_Overwatch::UAIEval_Overwatch()
 {
 	// ПОТОЛОК 45 — выше наступления к укрытию (40), но достижим только в
-	// «занятой» ветке A8: юнит, которому лимит атакующих ЗАПРЕТИЛ стрелять,
+	// «занятой» ветке: юнит, которому лимит атакующих ЗАПРЕТИЛ стрелять,
 	// обязан удерживать позицию, а не бежать вперёд (иначе лимит превращается в
 	// «беги на игрока безоружным»).
 	// В обычном случае («стрелять не по кому») скор = IdleOverwatchScore = 30,
@@ -341,7 +342,7 @@ bool UAIEval_Overwatch::IsApplicable(const FAIDecisionContext& Context) const
 	}
 	// Два РАЗНЫХ основания встать в наблюдение:
 	//  - «не могу» (нет линии огня / вне дальности) — классический случай;
-	//  - «не разрешено» (A8, лимит атакующих) — занятая ветка XCOM.
+	//  - «не разрешено» (лимит атакующих) — занятая ветка XCOM.
 	return !Context.bCanShootNow || Context.bAttackThrottled;
 }
 
@@ -349,7 +350,7 @@ float UAIEval_Overwatch::ScoreAction(const FAIDecisionContext& Context, FAIDecis
 {
 	OutDecision.Kind = EAIActionKind::Overwatch;
 
-	// Занятая ветка A8 — БЕЗ розыгрыша и с полным приоритетом: юниту прямо
+	// Занятая ветка лимита — БЕЗ розыгрыша и с полным приоритетом: юниту прямо
 	// запретили стрелять, «иногда вместо этого побегу вперёд» здесь означало бы
 	// подставиться под отряд без возможности ответить.
 	if (Context.bAttackThrottled)

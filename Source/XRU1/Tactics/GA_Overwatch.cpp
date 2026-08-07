@@ -16,8 +16,6 @@
 #include "GameFramework/Pawn.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
-#include "Animation/AnimInstance.h"
-#include "Components/SkeletalMeshComponent.h"
 #include "Kismet/GameplayStatics.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogTacticsOverwatchAction, Log, All);
@@ -116,7 +114,7 @@ void UGA_Overwatch::ActivateAbility(
 			TurnManager->OnCombatEnded.AddDynamic(this, &UGA_Overwatch::HandleCombatEnded);
 		}
 
-		// ВТОРОЙ ТРИГГЕР (W1): движение уже видимого врага. Без него бот,
+		// ВТОРОЙ ТРИГГЕР: движение уже видимого врага. Без него бот,
 		// заставший отряд в поле зрения, не реагировал бы вообще — стимула
 		// «увидел» больше не будет.
 		World->GetTimerManager().SetTimer(ReactionCheckTimer, this,
@@ -127,7 +125,7 @@ void UGA_Overwatch::ActivateAbility(
 	{
 		Unit->NotifyUnitStateChanged();
 		Unit->PlayUnitSound(EUnitSoundEvent::OverwatchEnter);
-		// Всплывающее «НАБЛЮДЕНИЕ» над взведённым бойцом (09_UI_HUD §4).
+		// Всплывающее «НАБЛЮДЕНИЕ» над взведённым бойцом (docs/03_ARCHITECTURE.md §11).
 		if (UCombatFeedbackSubsystem* Feedback = UCombatFeedbackSubsystem::Get(Unit))
 		{
 			Feedback->ShowStatusText(Unit,
@@ -173,17 +171,7 @@ void UGA_Overwatch::EndAbility(
 	if (ReactionAction.IsActive())
 	{
 		const FTacticalFireActionContext FinishedAction = ReactionAction;
-		const FGuid ActionId = FinishedAction.ActionId;
-		const bool bShotCommitted = FinishedAction.bShotCommitted;
-		ClearReactionActionWatchdog();
-		// Снимаем action/slot до внешних callback от montage, mover и camera.
-		ReactionAction.Reset();
-		ReleaseReactionSlot(this);
-		StopReactionMontage(FinishedAction);
-		ResumeReactionMover();
-		EndReactionPresentation();
-		ReleasePresentationStanding(); // боец садится вместе с уходом камеры
-		OnReactionActionTerminated(ActionId, bShotCommitted, /*bAborted=*/true);
+		TerminateReactionAction(FinishedAction, /*bAborted=*/true);
 	}
 	else
 	{
@@ -244,10 +232,10 @@ bool UGA_Overwatch::TryReactTo(AActor* Target)
 	// в которые физически не может попасть.
 	//
 	// ⚠️ Линия огня спрашивается ТОЛЬКО через `CanTargetActor` — второй,
-	// параллельной проверки здесь быть не должно. Прежний дубль
-	// (`HasLineOfSight`) отвечал на вопрос видимости, а не огневого решения:
-	// реакция запускалась по одному предикату, а замороженную точку выстрела
-	// потом отклонял другой («Reject invalid frozen solution», лог PIE 2026-08-04).
+	// параллельной проверки здесь быть не должно. Дубль через `HasLineOfSight`
+	// отвечает на вопрос видимости, а не огневого решения: реакция запускается
+	// по одному предикату, а замороженную точку выстрела потом отклоняет другой
+	// (отказ «нет линии огня из замороженной позиции» уже после старта реакции).
 	const AUnitBase* ShooterUnit = Cast<AUnitBase>(Avatar);
 	if (!ShooterUnit || !DamageEffect || !UGA_Attack::CanTargetActor(ShooterUnit, Target))
 	{
@@ -293,7 +281,7 @@ void UGA_Overwatch::CheckMovingTargets()
 		const TObjectKey<AActor> Key(Enemy);
 
 		// Встал — точка старта следующего перемещения посчитается заново.
-		// ReactedThisMove здесь НЕ чистим (v2.9): пауза мовера реакцией
+		// ReactedThisMove здесь НЕ чистим: пауза мовера реакцией
 		// выглядела как остановка, метка стиралась, и по той же цели уходила
 		// вторая реакция без форса. Одна реакция на цель за фазу.
 		if (!UTacticsCombatStatics::IsUnitInTransit(Enemy))
@@ -534,7 +522,7 @@ bool UGA_Overwatch::BeginReactionAction(AActor* Target)
 	// иначе кадр «дёргается и сразу едет дальше» (фидбэк по реакции Танка).
 	// Таймер живёт в ИГРОВОМ времени, а slow-mo реакции уже включён — без
 	// умножения на дилатацию «0.9 с» растягивались в несколько реальных секунд
-	// («овервотч ушёл в паузу», лог 2026-08-02).
+	// («овервотч ушёл в паузу»).
 	if (PreReactionCameraSettleDelay > 0.f)
 	{
 		if (UWorld* World = Unit->GetWorld())
@@ -707,7 +695,7 @@ bool UGA_Overwatch::CompleteReactionAction(const FGuid& ActionId)
 	{
 		EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
 	}
-	CheckCombatOutcomeAfterReaction();
+	CheckCombatOutcome();
 	return true;
 }
 
@@ -721,7 +709,7 @@ bool UGA_Overwatch::AbortReactionAction(const FGuid& ActionId)
 	const FTacticalFireActionContext FinishedAction = ReactionAction;
 	const bool bShotCommitted = FinishedAction.bShotCommitted;
 
-	// Abort раньше был немым — источник сорванной транзакции не находился по логу.
+	// Немой abort оставляет источник сорванной транзакции ненаходимым по логу.
 	UE_LOG(LogTacticsOverwatchAction, Display,
 		TEXT("[ReactionAction] ABORT id=%s phase=%d committed=%d shooter=%s target=%s"),
 		*ActionId.ToString(EGuidFormats::Digits), static_cast<int32>(FinishedAction.Phase),
@@ -741,14 +729,7 @@ bool UGA_Overwatch::AbortReactionAction(const FGuid& ActionId)
 		}
 	}
 	bConsumedScriptedShotValid = false;
-	ClearReactionActionWatchdog();
-	ReactionAction.Reset();
-	ReleaseReactionSlot(this);
-	StopReactionMontage(FinishedAction);
-	ResumeReactionMover();
-	EndReactionPresentation();
-	ReleasePresentationStanding(); // боец садится вместе с уходом камеры
-	OnReactionActionTerminated(ActionId, bShotCommitted, /*bAborted=*/true);
+	TerminateReactionAction(FinishedAction, /*bAborted=*/true);
 
 	// После commit квота уже потрачена; parent снимается только после cleanup.
 	if (bShotCommitted && ReactionShotsUsed >= MaxReactionShots)
@@ -757,9 +738,24 @@ bool UGA_Overwatch::AbortReactionAction(const FGuid& ActionId)
 	}
 	if (bShotCommitted)
 	{
-		CheckCombatOutcomeAfterReaction();
+		CheckCombatOutcome();
 	}
 	return true;
+}
+
+void UGA_Overwatch::TerminateReactionAction(const FTacticalFireActionContext& FinishedAction, bool bAborted)
+{
+	const FGuid ActionId = FinishedAction.ActionId;
+	const bool bShotCommitted = FinishedAction.bShotCommitted;
+	ClearReactionActionWatchdog();
+	// Снимаем action/slot до внешних callback от montage, mover и camera.
+	ReactionAction.Reset();
+	ReleaseReactionSlot(this);
+	StopFireMontage(FinishedAction);
+	ResumeReactionMover();
+	EndReactionPresentation();
+	ReleasePresentationStanding(); // боец садится вместе с уходом камеры
+	OnReactionActionTerminated(ActionId, bShotCommitted, bAborted);
 }
 
 void UGA_Overwatch::HandleReactionActionTimeout(FGuid ActionId)
@@ -777,7 +773,7 @@ void UGA_Overwatch::HandleReactionActionTimeout(FGuid ActionId)
 void UGA_Overwatch::ClearReactionActionWatchdog()
 {
 	// Мир — у способности: путь идёт из EndAbility, где ActorInfo при выходе
-	// из PIE уже сброшен (ensure(CurrentActorInfo), запись 2026-08-03).
+	// из PIE уже сброшен (ensure(CurrentActorInfo)).
 	if (UWorld* World = GetWorld())
 	{
 		World->GetTimerManager().ClearTimer(ReactionActionWatchdogTimer);
@@ -823,31 +819,6 @@ void UGA_Overwatch::EndReactionPresentation() const
 		: nullptr)
 	{
 		PC->EndReactionShotPresentation();
-	}
-}
-
-void UGA_Overwatch::StopReactionMontage(
-	const FTacticalFireActionContext& FinishedAction) const
-{
-	const AUnitBase* Shooter = Cast<AUnitBase>(FinishedAction.Shooter.Get());
-	UAnimMontage* Montage = FinishedAction.FireMontage.Get();
-	UAnimInstance* AnimInstance = Shooter && Shooter->GetMesh()
-		? Shooter->GetMesh()->GetAnimInstance()
-		: nullptr;
-	if (AnimInstance && Montage && AnimInstance->Montage_IsActive(Montage))
-	{
-		AnimInstance->Montage_Stop(0.1f, Montage);
-	}
-}
-
-void UGA_Overwatch::CheckCombatOutcomeAfterReaction() const
-{
-	const UWorld* World = GetWorld();
-	if (UTurnManagerSubsystem* TurnManager = World
-		? World->GetSubsystem<UTurnManagerSubsystem>()
-		: nullptr)
-	{
-		TurnManager->CheckCombatOutcome();
 	}
 }
 

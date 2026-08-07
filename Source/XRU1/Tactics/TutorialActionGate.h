@@ -104,7 +104,7 @@ struct XRU1_API FTutorialActionPolicy
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnTutorialPolicyChanged);
 
 /**
- * Единственный арбитр «что сейчас разрешено» в обучении (11_SHARED_MAP_TUTORIAL §8).
+ * Единственный арбитр «что сейчас разрешено» в обучении (docs/03_ARCHITECTURE.md §9).
  *
  * StateTree описывает, ЧЕГО мы ждём, но не должен становиться системой ввода:
  * hotkey и кнопка HUD спрашивают один и тот же CanIssueAction ДО изменения мира,

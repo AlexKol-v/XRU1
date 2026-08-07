@@ -495,6 +495,17 @@ private:
 	/** Медиа открылось: печатаем, что именно открылось и играет ли оно. */
 	UFUNCTION() void HandleMediaOpened(FString OpenedUrl);
 
+	/**
+	 * Пауза мира (разфокус окна, меню) ставит на паузу И РОЛИК.
+	 *
+	 * MediaPlayer живёт вне паузы мира, а звук ролика — `VoiceClass`, который
+	 * пауза глушит в ноль. Без этой сцепки при разфокусе картинка уезжает
+	 * вперёд немой, а после возврата плеер ресинхронизирует аудио с видео
+	 * рывками — «интро фризит». Ролик обязан замирать и продолжаться вместе
+	 * с миром, как голос реплик.
+	 */
+	UFUNCTION() void HandlePauseChanged(bool bPaused);
+
 	/** Ролик доигран до конца — уходим в хаб. */
 	UFUNCTION() void HandleMediaEndReached();
 
@@ -520,9 +531,12 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UMediaPlayer> IntroPlayer;
 
+	/** Медиа открылось под активной паузой — запуск отложен до её снятия. */
+	bool bPlayDeferredByPause = false;
+
 	/**
 	 * Звук ролика. MediaPlayer сам ничего не озвучивает: без этого компонента
-	 * интро идёт немым — ровно так оно и вело себя до 2026-08-02.
+	 * интро идёт немым.
 	 */
 	UPROPERTY(Transient)
 	TObjectPtr<class UMediaSoundComponent> IntroSound;

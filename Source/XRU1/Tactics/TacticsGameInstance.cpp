@@ -99,7 +99,7 @@ void UTacticsGameInstance::ApplySavedUserSettings()
 {
 	// Единственный источник — UTacticsUserSettings. Слот кампании больше не
 	// участвует: пока настройки жили в двух местах, меню показывало одно, а
-	// движок применял другое (docs/09_UI_HUD §5.5).
+	// движок применял другое (docs/03_ARCHITECTURE.md §12).
 	if (UTacticsAudioSubsystem* Audio = GetSubsystem<UTacticsAudioSubsystem>())
 	{
 		Audio->ApplyAudioSettingsFromSave();

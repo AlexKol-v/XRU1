@@ -73,7 +73,7 @@ protected:
 
 	/**
 	 * Брифинг между выбором точки и боем. Не назначен — точка запускает миссию
-	 * сразу (прежнее поведение), поэтому хаб остаётся рабочим и без экрана.
+	 * сразу, поэтому хаб остаётся рабочим и без экрана.
 	 */
 	UPROPERTY(EditDefaultsOnly, Category = "Hub|UI")
 	TSubclassOf<UMissionBriefingWidget> BriefingScreenClass;

@@ -115,8 +115,7 @@ void UMissionVfxSubsystem::SpawnAtActor(UNiagaraSystem* System, const UObject* A
 	// убьёт никогда. Именно DestroyComponent, а не Deactivate: деактивация лишь
 	// останавливает спавн НОВЫХ частиц, а существующие доживают свой срок — у
 	// «аур» набора частица (ромб эвакуации, молния) живёт практически вечно, и
-	// после Deactivate эффект продолжал висеть (прогон 2026-08-06, вторая
-	// итерация).
+	// после Deactivate эффект продолжает висеть.
 	const float Lifetime = UMissionVfxDataAsset::Get(World)->OneShotLifetimeSeconds;
 	if (Component && Lifetime > 0.f)
 	{

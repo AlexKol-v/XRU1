@@ -99,7 +99,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Tactics|Turns")
 	int32 GetAliveEnemyCount() const;
 
-	// --- A8: лимит одновременно атакующих (XCOM `MaxEngagedEnemies`) ----------
+	// --- Лимит одновременно атакующих (XCOM `MaxEngagedEnemies`) --------------
 	//
 	// Самый дешёвый и самый честный регулятор сложности: врагу не подкручивают
 	// точность и не отнимают у игрока информацию — просто ограничивают, сколько
@@ -162,7 +162,7 @@ public:
 	UPROPERTY(BlueprintReadWrite, Category = "Tactics|Turns")
 	bool bAutoWinWhenEnemiesDead = true;
 
-	/** С какого остатка ходов начинает тикать заряд (02 §6: «ТРИ хода»). */
+	/** С какого остатка ходов начинает тикать заряд (docs/02_LORE_SCRIPT.md §6: «ТРИ хода»). */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Tactics|Turns", meta = (ClampMin = "0"))
 	int32 BombTickWarningTurns = 3;
 
@@ -277,7 +277,7 @@ protected:
 	FTimerHandle EnemyStepTimerHandle;
 
 	/**
-	 * Кто из врагов уже атаковал В ЭТОМ ходу (A8). Считаем ЮНИТОВ, а не выстрелы:
+	 * Кто из врагов уже атаковал В ЭТОМ ходу. Считаем ЮНИТОВ, а не выстрелы:
 	 * лимит XCOM — «сколько врагов вступило в бой», и второй выстрел того же
 	 * бойца его не расходует. Сбрасывается при старте вражеской фазы.
 	 * `TObjectKey` — ключ без удержания ссылки (юнит может погибнуть в ходу).

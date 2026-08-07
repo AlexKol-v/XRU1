@@ -23,7 +23,7 @@ class USlateWidgetStyleAsset;
  * Style Asset через BarStyleAsset. Базовый Tint (FillColorAndOpacity) приходит
  * из FUnitHUDWidgetSlot::Color через ApplyStyle() — он умножается поверх FillImage.
  *
- * Наследники (UHealthBarWidget, UMoveSpeedBarWidget) переопределяют
+ * Наследники (UHealthBarWidget) переопределяют
  * BindDelegates / RefreshFromASC — здесь только рисующая часть.
  */
 UCLASS(BlueprintType)

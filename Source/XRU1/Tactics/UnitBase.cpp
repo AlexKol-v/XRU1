@@ -168,7 +168,7 @@ void AUnitBase::PlayUnitSound(EUnitSoundEvent Event)
 	// шестнадцатой не должно требовать помнить про туман. Боевые события через
 	// него не теряются: выстрел скрытого врага невозможен по построению —
 	// стрельба требует взаимного LOS в пределах того же радиуса обзора
-	// (docs/10_FOG_OF_WAR.md §4).
+	// (docs/03_ARCHITECTURE.md §8).
 	if (UFogRevealableComponent::IsActorPresentationHidden(this))
 	{
 		return;
@@ -463,11 +463,11 @@ void AUnitBase::RebuildVisualState()
 	}
 
 	// СТОРОНА УКРЫТИЯ для выбора Left/Right-клипа — из кэша компонента укрытий
-	// (§6: единый источник — геометрия стены и края). Прежний вывод из
-	// `CoverDirectionLocal.Y` был вторым источником правды и ломался, как только
-	// юнит после settlement оказывался не вдоль стены (доказано логом [Peek]:
-	// Y=0.02–0.21 при живом крае): порог 0.35 не проходил, сторона застревала
-	// в 0, и выглядывание не начиналось никогда.
+	// (единый источник — геометрия стены и края). Вывод из
+	// `CoverDirectionLocal.Y` был бы вторым источником правды и ломается, как
+	// только юнит после settlement оказывается не вдоль стены (Y=0.02–0.21 при
+	// живом крае): порог 0.35 не проходит, сторона застревает
+	// в 0, и выглядывание не начинается никогда.
 	State.PeekSideLocal = Cover ? Cover->PeekSideSign : 0.f;
 	// Во время уже начатого cosmetic peek сторона неизменяема: перевыбор стены
 	// не имеет права посреди клипа переключить Left/Right на противоположный.
@@ -489,7 +489,7 @@ void AUnitBase::RebuildVisualState()
 	// правильно). Поза обязана следовать за фактическим перемещением: пока
 	// здесь стоял общий предикат, каждый доворот перед выстрелом поднимал бойца
 	// из укрытия в локомоцию и тут же сажал обратно — «встал, резко сел, потом
-	// выстрел» (запись PIE 2026-08-03).
+	// выстрел».
 	State.bMoving = IsPhysicallyMoving();
 	State.bPlayerSide = GetGenericTeamId() == FGenericTeamId(TacticsTeamIds::Player);
 	State.PendingTurnYaw = bTurningInPlace ? PendingTurnAmount : 0.f;
@@ -588,9 +588,9 @@ void AUnitBase::HugCover()
 
 	// Дальность подшага = дальность, на которой стена ещё СЧИТАЕТСЯ укрытием.
 	// Один источник правды: если стена достаточно близка, чтобы дать cover, она
-	// достаточно близка, чтобы к ней прижаться. Прежний фиксированный лимит
-	// 45 см оставлял бойца в «укрытии» в метре от стены (лог: план 45 см,
-	// «упёрлись в ничего») — стена давала cover с CoverTraceDistance, а подшаг
+	// достаточно близка, чтобы к ней прижаться. Фиксированный лимит
+	// 45 см оставлял бойца в «укрытии» в метре от стены («упёрлись в ничего»)
+	// — стена давала cover с CoverTraceDistance, а подшаг
 	// до неё не доставал.
 	const UCoverTuningDataAsset* Tuning = UTacticsCombatStatics::GetCoverTuning(GetWorld());
 	const float HugReach = Tuning->CoverTraceDistance;
@@ -643,8 +643,8 @@ void AUnitBase::HugCover()
 		Capsule->GetCollisionObjectType(), Shape, Params))
 	{
 		// Свип не нащупал стену, хотя укрытие засчитано. Слепой шаг «на всю
-		// дальность» здесь запрещён: раньше он был ограничен 45 см и был почти
-		// безвреден, а на полной дальности укрытия увёл бы бойца в открытое
+		// дальность» здесь запрещён: в пределах 45 см он был бы почти
+		// безвреден, а на полной дальности укрытия уводит бойца в открытое
 		// поле. Не знаем, куда шагать, — стоим и доворачиваемся.
 		if (UTacticsCombatStatics::IsCoverDebugEnabled())
 		{
@@ -1104,9 +1104,9 @@ UAnimMontage* AUnitBase::GetFireMontageFor(const AActor* Target, EFiringStance& 
 	{
 		const UCoverTuningDataAsset* Tuning = UTacticsCombatStatics::GetCoverTuning(GetWorld());
 		// GetFiringPositions уже вернул nav-projected root, прошедший occupancy и
-		// capsule sweep. Вторая независимая проекция здесь раньше сдвигала капсулу
-		// до 51 см, но оставляла frozen eye на старом месте — механика и персонаж
-		// стреляли из разных точек. Обратное преобразование теперь точное.
+		// capsule sweep. Вторая независимая проекция здесь сдвигала бы капсулу
+		// (до полуметра), оставляя frozen eye на старом месте — механика и
+		// персонаж стреляли бы из разных точек. Обратное преобразование точное.
 		OutPresentationRootLocation = OutFiringEyeLocation
 			- FVector(0.f, 0.f, Tuning->EyeHeightOffset);
 	}
@@ -1334,7 +1334,7 @@ void AUnitBase::SetDowned(bool bNewDowned, float ReviveHealth, bool bPlaySound)
 
 	// Боец отряда УПАЛ — доменный факт для реплики медика. Именно падение, а не
 	// любое попадание: «Держись! Иду» на царапину звучит нелепо, а на лежащем
-	// бойце — ровно по делу (фидбэк прогона 2026-08-04).
+	// бойце — ровно по делу.
 	if (bIsDowned && GetGenericTeamId().GetId() == TacticsTeamIds::Player)
 	{
 		UTacticalQuestEvents::BroadcastQuestEvent(

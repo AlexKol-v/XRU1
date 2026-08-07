@@ -5,7 +5,7 @@
 
 UUnitHUDLayoutData::UUnitHUDLayoutData()
 {
-	TacticalStatusWidgetClass = UUnitStatusIconWidget::StaticClass();
+    TacticalStatusWidgetClass = UUnitStatusIconWidget::StaticClass();
 }
 
 #if WITH_EDITOR

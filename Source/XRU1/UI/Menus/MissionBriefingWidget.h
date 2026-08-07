@@ -8,7 +8,7 @@ class AMissionPointOfInterest;
 class UTacticalScenarioDataAsset;
 
 /**
- * Брифинг миссии между выбором точки в хабе и боем (09_UI_HUD §5).
+ * Брифинг миссии между выбором точки в хабе и боем (docs/03_ARCHITECTURE.md §11).
  *
  * Свой текст экран не сочиняет: название и описание принадлежат миссии
  * (`UTacticalScenarioDataAsset::DisplayName` / `BriefingText`), а роль

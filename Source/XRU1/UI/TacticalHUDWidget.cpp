@@ -106,18 +106,6 @@ float UTacticalHUDWidget::GetHitChanceOnTarget(AActor* Target) const
 	return UGA_Attack::ComputeAttackHitChance(Shooter, Target);
 }
 
-ECoverType UTacticalHUDWidget::GetTargetCoverAgainstSelected(AActor* Target) const
-{
-	const ATacticalPlayerController* Controller = GetTacticalController();
-	const AUnitBase* Shooter = Controller ? Controller->GetSelectedUnit() : nullptr;
-	if (!Shooter || !Target)
-	{
-		return ECoverType::None;
-	}
-	const UCoverDetectionComponent* Cover = Target->FindComponentByClass<UCoverDetectionComponent>();
-	return Cover ? Cover->GetCoverAgainst(Shooter) : ECoverType::None;
-}
-
 int32 UTacticalHUDWidget::GetAliveEnemyCount() const
 {
 	// Критерий «жив» живёт в TurnManager (общий с условием конца боя).
@@ -361,8 +349,8 @@ void UTacticalHUDWidget::RefreshActionButtons()
 	// Перенесено из WBP: в Blueprint AND не short-circuit — Pure-цепочки от
 	// невалидного S всё равно вычислялись и сыпали «Accessed None» на старте.
 	//
-	// Фаза входит в условие ЯВНО: раньше серость в ход врага держалась только на
-	// том, что BP гасит всю ActionsPanel — скрытая связанность с графом. Теперь
+	// Фаза входит в условие ЯВНО: держать серость в ход врага только на том,
+	// что BP гасит всю ActionsPanel, — скрытая связанность с графом.
 	// C++ самодостаточен, а disabled-панель в BP — просто дублирующая страховка.
 	const ATacticalPlayerController* Controller = GetTacticalController();
 	AUnitBase* Selected = Controller ? Controller->GetSelectedUnit() : nullptr;
@@ -426,11 +414,11 @@ void UTacticalHUDWidget::RefreshActionButtons()
 	// Пассивка Осы (ClassAbilityClass пуст): кнопка — ИНДИКАТОР «Прицела отряда».
 	//
 	// ⚠️ Признак «Squadsight сейчас работает» — это «цель ДАЛЬШЕ собственного
-	// обзора и всё равно доступна». Прежнее условие «доступна, но своей LOS нет»
-	// стало недостижимым после ревизии обнаружения (2026-07-31): `GetTargetStatus`
+	// обзора и всё равно доступна». Условие «доступна, но своей LOS нет»
+	// недостижимо по построению: `GetTargetStatus`
 	// требует геометрическую линию огня ВСЕГДА, значит `CanTargetActor` и
-	// `!HasLineOfSight` не могут быть истинны одновременно — кнопка была серой
-	// навсегда. Разбор — docs/13_LOS_TARGETING.md §3.1.
+	// `!HasLineOfSight` не могут быть истинны одновременно — кнопка была бы серой
+	// навсегда. Разбор — docs/03_ARCHITECTURE.md §4.
 	bool bAbilityEnabled = Controller &&
 		Controller->CanIssueCommand(ETacticalPlayerCommand::ClassAbility);
 	if (Selected && !Selected->ClassAbilityClass)
@@ -459,9 +447,9 @@ void UTacticalHUDWidget::RefreshActionButtons()
 
 	// ⚠️ ПОДСКАЗКА, а не подпись. Переименовать кнопку в вёрстке нельзя из кода,
 	// поэтому имя способности, остаток применений и стоимость уходят в tooltip —
-	// он живёт на самой кнопке и не требует нового виджета. До этого у всех
-	// классов на кнопке стояло родовое «классовая способность», а сколько
-	// осталось зарядов, не было видно нигде (найдено на прогоне 2026-08-03).
+	// он живёт на самой кнопке и не требует нового виджета. Без него у всех
+	// классов на кнопке стоит родовое «классовая способность», а сколько
+	// осталось зарядов, не видно нигде.
 	if (AbilityBtn)
 	{
 		FText AbilityTip;
@@ -577,8 +565,8 @@ void UTacticalHUDWidget::UpdateTargetPanel(AUnitBase* Hovered)
 	}
 	if (HitChanceText)
 	{
-		// Разные тексты для «слишком далеко» и «нет линии огня» — раньше обе
-		// причины схлопывались в один -1 и HUD всегда писал «Нет линии огня»,
+		// Разные тексты для «слишком далеко» и «нет линии огня»: схлопнутые в
+		// один -1 причины заставляли HUD всегда писать «Нет линии огня»,
 		// даже когда дело было только в дальности (см. EAttackTargetStatus).
 		switch (UGA_Attack::GetTargetStatus(Shooter, Hovered))
 		{
@@ -599,11 +587,11 @@ void UTacticalHUDWidget::UpdateTargetPanel(AUnitBase* Hovered)
 	}
 	if (TargetCoverIcon)
 	{
-		// Три состояния XCOM (Ф8): синий щит — укрытие работает против нашего
+		// Три состояния XCOM: синий щит — укрытие работает против нашего
 		// стрелка; жёлтый — цель В укрытии, но мы зашли во фланг (шанс НЕ
-		// снижен); нет щита — цель в чистом поле. Раньше жёлтое и «нет щита»
-		// схлопывались в отсутствие иконки, и заработанный манёвром фланг ничем
-		// не отличался от открытой цели.
+		// снижен); нет щита — цель в чистом поле. Схлопнуть жёлтое и «нет щита»
+		// в отсутствие иконки нельзя: заработанный манёвром фланг ничем
+		// не отличался бы от открытой цели.
 		ECoverType ShieldCover = ECoverType::None;
 		const ECoverShield Shield = UTacticsCombatStatics::GetCoverShieldAgainst(
 			Hovered, Shooter, ShieldCover);
@@ -1079,7 +1067,7 @@ void UTacticalHUDWidget::RefreshActiveEnemyCardVisibility()
 		return;
 	}
 
-	// Туман войны: невидимый отряду враг не раскрывается карточкой (09_UI_HUD §6).
+	// Туман войны: невидимый отряду враг не раскрывается карточкой (docs/03_ARCHITECTURE.md §11).
 	const UWorld* World = GetWorld();
 	const UFogOfWarSubsystem* Fog = World ? World->GetSubsystem<UFogOfWarSubsystem>() : nullptr;
 	const bool bVisible = !Fog || Fog->IsActorCurrentlyVisible(EnemyUnit);
@@ -1135,7 +1123,7 @@ void UTacticalHUDWidget::ShowActiveEnemyCard(AUnitBase* EnemyUnit)
 		? FindFProperty<FObjectProperty>(CardClass, TEXT("Unit")) : nullptr;
 	if (!UnitProperty)
 	{
-		// Тихий отказ раньше выглядел как «фича не работает» — теперь причина
+		// Тихий отказ выглядит как «фича не работает» — причина должна быть
 		// видна в логе (один раз, тем же флагом, что и у карточек отряда).
 		if (!bPortraitUnitLookupWarned)
 		{

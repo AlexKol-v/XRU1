@@ -30,11 +30,11 @@
 #include "HAL/IConsoleManager.h"
 
 /**
- * Диагностика линии огня (Ф4): при `xru1.LOS.Debug 1` логировать по запасному
+ * Диагностика линии огня: при `xru1.LOS.Debug 1` логировать по запасному
  * пути число огневых позиций и итог видимости, а также рисовать позиции
  * DrawDebugSphere; GetFiringStance печатает выбранную стойку. Образец —
- * `xru1.AI.LogCombat` в UnitAIController.cpp. Без этого критерии приёмки про
- * стойку (Ф4 №4) и взаимность (Ф5 №6) не наблюдаемы в PIE.
+ * `xru1.AI.LogCombat` в UnitAIController.cpp. Без этого выбор стойки и
+ * взаимность видимости (инвариант Ф5) не наблюдаемы в PIE.
  */
 static TAutoConsoleVariable<int32> CVarLOSDebug(
 	TEXT("xru1.LOS.Debug"),
@@ -163,8 +163,8 @@ const FCollisionObjectQueryParams& UTacticsCombatStatics::GetShotGeometryObjects
 
 const UCoverTuningDataAsset* UTacticsCombatStatics::GetCoverTuning(const UWorld* World)
 {
-	// Глобальный тюнинг с GameInstance (обычно BP-наследник), иначе CDO. CDO
-	// несёт дефолты = прежние числа кода, поэтому фолбэк не меняет поведение.
+	// Глобальный тюнинг с GameInstance (обычно BP-наследник), иначе CDO. Дефолты
+	// CDO совпадают с поведением без ассета, поэтому фолбэк не меняет поведение.
 	if (World)
 	{
 		if (const UTacticsGameInstance* GI = World->GetGameInstance<UTacticsGameInstance>())
@@ -348,17 +348,17 @@ bool UTacticsCombatStatics::ResolveShotMechanics(AActor* Shooter, AActor* Target
 	}
 	else
 	{
-		// Промах виден над целью, а не только в Output Log (09_UI_HUD §4).
+		// Промах виден над целью, а не только в Output Log (docs/03_ARCHITECTURE.md §11).
 		if (UCombatFeedbackSubsystem* Feedback = UCombatFeedbackSubsystem::Get(Target))
 		{
 			Feedback->ShowMiss(Target);
 		}
 	}
 
-	// ПОПАДАНИЕ поднимает под цели безусловно. Раньше единственным способом
-	// разбудить врага был шум, который меряется от позиции СТРЕЛКА, — поэтому
-	// бойца, обстреливаемого с дистанции больше радиуса шума, никто не будил, и
-	// он продолжал стоять на посту под огнём.
+	// ПОПАДАНИЕ поднимает под цели безусловно. Одного шума мало: шум меряется
+	// от позиции СТРЕЛКА, поэтому
+	// бойца, обстреливаемого с дистанции больше радиуса шума, никто не будил бы,
+	// и он продолжал бы стоять на посту под огнём.
 	if (bHit)
 	{
 		if (UWorld* DamageWorld = Shooter->GetWorld())
@@ -491,13 +491,13 @@ void UTacticsCombatStatics::GetFiringPositions(const UWorld* World, const AActor
 		}
 	}
 
-	// Точка ПОЛА (§II.3): EyeLocation = пол + пол-капсулы + EyeHeightOffset.
+	// Точка ПОЛА: EyeLocation = пол + пол-капсулы + EyeHeightOffset.
 	const FVector FootBase = EyeLocation - FVector(0.f, 0.f, Tuning->EyeHeightOffset + CapsuleHalfHeight);
 
 	// ФАКТИЧЕСКАЯ огневая позиция текущего юнита строится только в frame
-	// зафиксированной ActiveCover. Прежний код брал tangent от цели, подтверждал
-	// peek одной стеной, а край искал по другой — отсюда выбор противоположного
-	// угла и попытка возврата сквозь геометрию.
+	// зафиксированной ActiveCover. Брать tangent от цели нельзя: peek
+	// подтверждается одной стеной, а край ищется по другой — отсюда выбор
+	// противоположного угла и попытка возврата сквозь геометрию.
 	const FVector CurrentEye = Unit->GetActorLocation()
 		+ FVector(0.f, 0.f, Tuning->EyeHeightOffset);
 	const bool bAtCurrentUnitPosition = EyeLocation.Equals(CurrentEye, 2.f);
@@ -608,15 +608,7 @@ void UTacticsCombatStatics::GetFiringPositions(const UWorld* World, const AActor
 					break;
 				}
 
-				bool bOccupied = false;
-				for (const FVector& Obstacle : Obstacles)
-				{
-					if (FVector::DistSquared2D(Obstacle, Projected.Location) < ClearanceSq)
-					{
-						bOccupied = true;
-						break;
-					}
-				}
+				const bool bOccupied = IsPointBlockedByUnits(Obstacles, Projected.Location, ClearanceSq);
 				const FVector ProjectedRoot = Projected.Location
 					+ FVector(0.f, 0.f, CapsuleHalfHeight);
 				FHitResult CapsuleHit;
@@ -726,16 +718,7 @@ void UTacticsCombatStatics::GetFiringPositions(const UWorld* World, const AActor
 			FNavLocation Projected;
 			if (NavSys && NavSys->ProjectPointToNavigation(PeekFoot, Projected, FVector(60.f, 60.f, 200.f)))
 			{
-				bool bOccupied = false;
-				for (const FVector& Obstacle : Obstacles)
-				{
-					if (FVector::DistSquared2D(Obstacle, Projected.Location) < ClearanceSq)
-					{
-						bOccupied = true;
-						break;
-					}
-				}
-				if (!bOccupied)
+				if (!IsPointBlockedByUnits(Obstacles, Projected.Location, ClearanceSq))
 				{
 					const FVector PeekEye =
 						Projected.Location + FVector(0.f, 0.f, CapsuleHalfHeight + Tuning->EyeHeightOffset);
@@ -801,7 +784,7 @@ bool UTacticsCombatStatics::HasLineOfSightFromLocation(const UWorld* World, cons
 	};
 
 	// Точки стрелка — ТОТ ЖЕ набор (глаза и корпус). Видимость обязана быть
-	// симметричной (Ф5): «A видит B» ⟺ «B видит A». С односторонним набором
+	// симметричной: «A видит B» ⟺ «B видит A». С односторонним набором
 	// (только глаза стрелка) пара «глаза→корпус» не имела зеркала: на склоне
 	// боец выше видел бойца ниже через низкую стену, а обратная проверка
 	// проваливалась — AI честно отказывался стрелять в того, кто его обстреливал.
@@ -946,7 +929,7 @@ void UTacticsCombatStatics::GetTargetExposedPoints(const UWorld* World, const AA
 	const FVector TargetLocation = Target->GetActorLocation();
 	const FVector TargetEye = TargetLocation + FVector(0.f, 0.f, Tuning->EyeHeightOffset);
 
-	// Пики цели — ТА ЖЕ функция, что строит огневые позиции стрелка (§III.2),
+	// Пики цели — ТА ЖЕ функция, что строит огневые позиции стрелка (Ф5),
 	// с переставленными аргументами: отдельной логики для цели нет.
 	GetFiringPositions(World, Target, TargetEye, FromEye, OutPoints);
 	// Точка КОРПУСА (цель на уступе/за низкой стеной видна по корпусу; легко
@@ -968,8 +951,8 @@ void UTacticsCombatStatics::GetViableFiringPositions(const AActor* Shooter, cons
 	const FVector EyeLocation = Shooter->GetActorLocation() + FVector(0.f, 0.f, Tuning->EyeHeightOffset);
 	const FVector TargetLocation = Target->GetActorLocation();
 
-	// Точки цели — общий набор (центр + пики + корпус): раньше здесь были только
-	// глаза/корпус, и у цели в полном укрытии НИ ОДНА позиция не проходила —
+	// Точки цели — общий набор (центр + пики + корпус): с одними глазами/корпусом
+	// у цели в полном укрытии НИ ОДНА позиция не проходила —
 	// GetCoverAgainst откатывался на «pos=1» от центра и врал про фланг.
 	TArray<FVector, TInlineAllocator<4>> TargetPoints;
 	GetTargetExposedPoints(World, Target, EyeLocation, TargetPoints);
@@ -1127,14 +1110,14 @@ bool UTacticsCombatStatics::FindFiringSolution(const AActor* Shooter, const AAct
 	GetFiringPositions(World, Shooter, EyeLocation, TargetLocation, Positions);
 
 	// Корпусная точка стрелка — зеркало корпуса цели из GetTargetExposedPoints
-	// (Ф5). Без неё наборы направлений несимметричны: «стрелок.глаза → враг.корпус»
+	//. Без неё наборы направлений несимметричны: «стрелок.глаза → враг.корпус»
 	// проходило, а «враг.глаза → стрелок.корпус» — нет, и боец на склоне стрелял
 	// в того, кто ответить не мог. Идёт ПОСЛЕДНЕЙ: выйти краем лучше, чем бить от
 	// бедра. Классифицируется как центр (та же XY) — стойка по позе, не StepOut.
 	Positions.Add(EyeLocation - FVector(0.f, 0.f, Tuning->EyeHeightOffset + 20.f));
 
 	// Порядок в Positions: центр → быстрый step-out → края → корпус. Первая
-	// позиция с линией огня и определяет стойку (§III.3).
+	// позиция с линией огня и определяет стойку.
 	EFiringStance Stance = EFiringStance::Open;
 	bool bFound = false;
 	for (int32 i = 0; i < Positions.Num(); ++i)
@@ -1160,14 +1143,14 @@ bool UTacticsCombatStatics::FindFiringSolution(const AActor* Shooter, const AAct
 			}
 			OutFiringEyeLocation = Positions[i];
 			// ⚠️ Стойка решается ПОЗОЙ бойца, а не направлением его стены.
-			// Прежнее правило смотрело только на `Cover` — укрытие МЕЖДУ стрелком и
-			// целью: боец, сидящий за стеной, которая смотрит вбок или назад,
+			// Смотреть только на `Cover` — укрытие МЕЖДУ стрелком и целью —
+			// нельзя: боец, сидящий за стеной, которая смотрит вбок или назад,
 			// получал `Open` («стреляй с места, вставать незачем») и выпускал
 			// очередь СИДЯ, потому что стрелковый montage анимирован стоя, а поза
-			// оставалась `Crouch`/`High` (лог PIE 2026-08-04: 18 выстрелов из 43 —
-			// `[FireCommit] … поза=2/3`). Отдельного клипа стрельбы из приседа нет и
-			// не планируется, поэтому единственная честная презентация из укрытия —
-			// подняться, довернуться, выстрелить (та же ветка, что у OverCover).
+			// оставалась `Crouch`/`High` — очередь уходила из приседа в пол.
+			// Отдельного клипа стрельбы из приседа нет и не планируется, поэтому
+			// единственная честная презентация из укрытия — подняться,
+			// довернуться, выстрелить (та же ветка, что у OverCover).
 			Stance = IsUnitInCoverPose(Shooter) ? EFiringStance::OverCover : EFiringStance::Open;
 		}
 		else
@@ -1276,7 +1259,7 @@ bool UTacticsCombatStatics::IsTargetFlankedByLocation(const AActor* Target, cons
 	}
 
 	// Против стрелка считаем ЗАНОВО (стороны + дуга): зависит от того, откуда
-	// стреляют, и кэшировать это нельзя — сломает разрушаемость (§V.2 п.4).
+	// стреляют, и кэшировать это нельзя — сломает разрушаемость.
 	float TargetHalfHeight = 88.f;
 	if (const ACharacter* TargetCharacter = Cast<ACharacter>(Target))
 	{
@@ -1434,20 +1417,17 @@ bool UTacticsCombatStatics::GetPointAlongPathBudget(UObject* WorldContextObject,
 	}
 
 	// ⚠️ ПУТЬ СКВОЗЬ СОЮЗНИКА — НЕ ПРЕПЯТСТВИЕ (правило XCOM и корень «ботов
-	// гуськом», 2026-07-25).
+	// гуськом»).
 	//
-	// Раньше здесь бюджет дополнительно урезался `FindPathClearanceLimit`:
-	// длиной до первого места, где полилиния навмеша подходит к стоящему юниту
-	// ближе `GetUnitClearance` (≈94 см). Последствие проявлялось не в самом
-	// движении, а в `FindCoverPoint`: он считает точку достижимой, только если
-	// урезанный путь пришёл в неё (расхождение ≤ 75 см). То есть ЛЮБАЯ позиция
-	// за спиной союзника отбраковывалась как недостижимая — и бойцы могли
-	// выбирать точки только «до» товарищей, выстраиваясь в колонну.
-	//
-	// Заголовок `FindPathClearanceLimit` прямо предупреждал: «путь задевает
-	// юнита» != «дойти нельзя», навмеш строит прямую и в чистом поле пройдёт
-	// сквозь одиночного бойца, которого Detour Crowd обходит на бегу. Функция
-	// использовалась ровно вопреки собственному контракту, поэтому удалена.
+	// Урезать бюджет до первого места, где полилиния навмеша подходит к
+	// стоящему юниту ближе `GetUnitClearance` (≈94 см), нельзя. Последствие
+	// проявляется не в самом движении, а в `FindCoverPoint`: он считает точку
+	// достижимой, только если путь пришёл в неё (расхождение ≤ 75 см). То есть
+	// ЛЮБАЯ позиция за спиной союзника отбраковывается как недостижимая — и
+	// бойцы могут выбирать точки только «до» товарищей, выстраиваясь в колонну.
+	// К тому же «путь задевает юнита» != «дойти нельзя»: навмеш строит прямую и
+	// в чистом поле пройдёт сквозь одиночного бойца, которого Detour Crowd
+	// обходит на бегу.
 	//
 	// Занятость по-прежнему соблюдается, но там, где ей место — на КОНЦЕ пути:
 	// кандидаты в `FindCoverPoint` проверяются на диски занятости, а
@@ -1513,14 +1493,6 @@ float UTacticsCombatStatics::GetUnitClearance(const AActor* Mover)
 	return UnitObstacleRadius + MoverRadius;
 }
 
-// ⚠️ `FindPathClearanceLimit` УДАЛЕНА (2026-07-25). Она отвечала на вопрос
-// «докуда мы точно дойдём по прямой, не задев стоящего юнита», а вызывалась как
-// ответ на «достижима ли точка» — ровно вопреки предупреждению в собственном
-// заголовке. Из-за этого `FindCoverPoint` отбраковывал любую позицию за спиной
-// союзника, и бойцы строились в колонну. Единственный вызов убран, функция
-// вместе с ним: держать метрику, которую снова захочется применить не по
-// назначению, хуже, чем не иметь её вовсе.
-
 // --- Занятость (диски юнитов вместо мутаций навмеша) ---------------------------
 
 bool UTacticsCombatStatics::IsUnitInTransit(const AActor* Unit)
@@ -1580,6 +1552,18 @@ void UTacticsCombatStatics::GetUnitObstacles(UWorld* World, const AActor* Ignore
 		}
 		OutPositions.Add(Unit->GetActorLocation());
 	}
+}
+
+bool UTacticsCombatStatics::IsPointBlockedByUnits(const TArray<FVector>& Obstacles, const FVector& Point, double ClearanceSq)
+{
+	for (const FVector& Obstacle : Obstacles)
+	{
+		if (FVector::DistSquared2D(Obstacle, Point) < ClearanceSq)
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 bool UTacticsCombatStatics::AdjustGoalOutOfUnits(UWorld* World, const AActor* Mover, FVector& InOutGoal)

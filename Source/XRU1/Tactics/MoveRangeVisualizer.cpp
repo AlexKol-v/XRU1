@@ -313,14 +313,7 @@ bool AMoveRangeVisualizer::BuildDistanceField(const AUnitBase* Unit, double Budg
 	const double BlockRadiusSq = FMath::Square(FieldClearance);
 	auto IsBlockedByUnit = [this, BlockRadiusSq](const FVector& Position)
 	{
-		for (const FVector& Obstacle : FieldObstacles)
-		{
-			if (FVector::DistSquared2D(Obstacle, Position) < BlockRadiusSq)
-			{
-				return true;
-			}
-		}
-		return false;
+		return UTacticsCombatStatics::IsPointBlockedByUnits(FieldObstacles, Position, BlockRadiusSq);
 	};
 
 	// ВОЛНА ПО СЕТКЕ СЭМПЛОВ (не по полигонам: полигонный Dijkstra на огромных
@@ -354,8 +347,8 @@ bool AMoveRangeVisualizer::BuildDistanceField(const AUnitBase* Unit, double Budg
 	Field.SetNum(NumSamples);
 
 	// Одна условность «недостижимо» на ВСЕХ потребителей поля: чуть дальше
-	// максимального порога. Раньше отрисовка и запрос считали её по-разному —
-	// отсюда и расхождение «нарисовано больше, чем кликается».
+	// максимального порога. Считать её в отрисовке и в запросе по-разному
+	// нельзя — отсюда расхождение «нарисовано больше, чем кликается».
 	FieldUnreachableDistance = BudgetMax + CellSize;
 
 	// Рабочие данные волны: позиция сэмпла на навмеше и его полигон.
@@ -544,8 +537,8 @@ bool AMoveRangeVisualizer::PlanMoveTo(const FVector& Goal, FMoveOrderPlan& OutPl
 	}
 
 	// 1) Приводим цель к полю ОДИН раз — и превью, и приказ дальше работают с
-	// этой точкой. Раньше превью просто пряталось на занятой точке, а клик её
-	// выталкивал и проходил: ховер говорил «нельзя», клик делал.
+	// этой точкой. Иначе превью просто прячется на занятой точке, а клик её
+	// выталкивает и проходит: ховер говорит «нельзя», клик делает.
 	FVector Adjusted = Goal;
 	if (!UTacticsCombatStatics::AdjustGoalOutOfUnits(FieldObstacles, Unit, Adjusted))
 	{
@@ -701,10 +694,10 @@ void AMoveRangeVisualizer::BuildContourSection(int32 SectionIndex, double MinDis
 	// f = min(D − MinDist, MaxDist − D) ≥ 0 внутри; ноль — искомый контур.
 	//
 	// Дистанцию берём через ОБЩИЙ SampleDistance — ту же, по которой отвечает
-	// PlanMoveTo. Прежняя версия дополнительно ЗАЖИМАЛА достижимые сэмплы
-	// (min(D, MaxDist+CellSize)): на крутом градиенте у стены или диска это
-	// уводило нарисованную границу к дальнему углу ячейки, и зона выглядела
-	// заметно больше того, что реально кликалось.
+	// PlanMoveTo. Дополнительно ЗАЖИМАТЬ достижимые сэмплы
+	// (min(D, MaxDist+CellSize)) нельзя: на крутом градиенте у стены или диска
+	// это уводит нарисованную границу к дальнему углу ячейки, и зона выглядит
+	// заметно больше того, что реально кликается.
 	auto Inside = [this, MinDist, MaxDist](int32 IX, int32 IY) -> double
 	{
 		const double D = SampleDistance(IY * FieldSamplesPerSide + IX);
@@ -712,8 +705,8 @@ void AMoveRangeVisualizer::BuildContourSection(int32 SectionIndex, double MinDis
 	};
 	// Через общий SampleLocation: достижимый угол берётся ТАМ, куда его
 	// спроецировал навмеш (по этим точкам волна и считала длины), недостижимый —
-	// узлом сетки. Раньше здесь был узел сетки всегда, и контур расходился с
-	// метрикой на пол-ячейки там, где проекция уползала.
+	// узлом сетки. С узлом сетки всегда контур расходится с
+	// метрикой на пол-ячейки там, где проекция уползает.
 	auto SamplePos = [this](int32 IX, int32 IY) -> FVector
 	{
 		return SampleLocation(IY * FieldSamplesPerSide + IX);

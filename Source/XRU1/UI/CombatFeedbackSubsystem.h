@@ -34,7 +34,7 @@ struct FCombatFloatingTextEntry
 
 /**
  * Всплывающий боевой фидбек над юнитами: урон, лечение, «ПРОМАХ», статусы
- * (09_UI_HUD §4). Чистый Slate поверх viewport по образцу STutorialHintOverlay —
+ * (docs/03_ARCHITECTURE.md §11). Чистый Slate поверх viewport по образцу STutorialHintOverlay —
  * WBP не требуется, настройки — в UTacticalHUDStyleData («08. Боевой фидбек»).
  *
  * Вызывается из подтверждённых точек механики (ResolveShotMechanics, heal,

@@ -39,3 +39,29 @@
 # --- Прочее ---
 *.pdf filter=lfs diff=lfs merge=lfs -text
 *.dat filter=lfs diff=lfs merge=lfs -text
+
+# --- Бинарные, но НЕ в LFS ---
+# Скомпилированная локализация UE (~50 КБ на язык): бинарный формат, но мелкий,
+# в LFS не отправляем — иначе история файла размажется между LFS и обычными
+# объектами. Помечаем binary, чтобы git не нормализовал переводы строк и не
+# пытался делать текстовый merge.
+*.locres  binary
+*.locmeta binary
+# .manifest/.archive — UTF-16LE, git видит их как бинарные. Помечаем явно, чтобы
+# нормализация CRLF никогда не поломала кодировку исходников перевода.
+Content/Localization/**/*.manifest binary
+Content/Localization/**/*.archive  binary
+
+# --- Текстовые файлы: под LFS не отправлять ---
+# Явная страховка: исходники, конфиги и документация обязаны лежать в git как
+# обычный текст — иначе преподаватель без установленного git-lfs получит вместо
+# кода и .ini указатели LFS, а diff по истории станет нечитаемым.
+*.cpp  !filter !diff !merge
+*.h    !filter !diff !merge
+*.cs   !filter !diff !merge
+*.ini  !filter !diff !merge
+*.md   !filter !diff !merge
+*.uproject !filter !diff !merge
+*.uplugin  !filter !diff !merge
+*.ps1  !filter !diff !merge
+*.json !filter !diff !merge

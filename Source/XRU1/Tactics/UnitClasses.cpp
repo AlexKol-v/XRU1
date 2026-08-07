@@ -53,7 +53,7 @@ AUnit_Tank::AUnit_Tank()
 	ShotDamage = 25.f;
 	IdealCombatRange = 600.f;  // танк лезет вперёд — он для этого и есть
 	ClassAbilityClass = UGA_Taunt::StaticClass();
-	// AttackRange — дефолт из AUnitBase (3000): не переопределяем (раньше был
-	// короче остальных — 900, без всякой причины короче даже AI SightRadius).
+	// AttackRange — дефолт из AUnitBase (3000): не переопределяем — незачем
+	// делать его короче остальных и тем более короче AI SightRadius.
 	bCanBeDowned = true;
 }

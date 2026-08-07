@@ -33,11 +33,11 @@
 ATacticsGameMode::ATacticsGameMode()
 {
 	// Дефолтные пресеты сложности по GDD §10 (правятся в BP).
-	// Последнее поле — лимит одновременно атакующих врагов (A8), verbatim XCOM 2
+	// Последнее поле — лимит одновременно атакующих врагов, verbatim XCOM 2
 	// `MaxEngagedEnemies`: Rookie 4 / Veteran 6 / Legend −1 (без лимита).
 	//
-	// Лимит ходов пересчитан 2026-08-03 под реальный масштаб двора: дорога до
-	// заряда занимает порядка десяти ходов, поэтому прежние 12/10/8 делали
+	// Лимит ходов посчитан под реальный масштаб двора: дорога до
+	// заряда занимает порядка десяти ходов, поэтому 12/10/8 сделали бы
 	// миссию непроходимой ещё до первого выстрела. Числа держат ту же разницу
 	// между уровнями (запас ~25 % / ~12 % / 0 к «чистому» проходу).
 	DifficultyParams.Add(EDifficultyLevel::Easy,   {80.f,  55.f, 31,  4});
@@ -56,8 +56,8 @@ void ATacticsGameMode::BeginPlay()
 	}
 
 	// Scenario-run стартует только из Director после OnLevelShown: в BeginPlay
-	// scenario actors ещё могут отсутствовать. Прямой PIE старых карт сохраняет
-	// прежний delayed-start без обязательного Scenario Data Asset.
+	// scenario actors ещё могут отсутствовать. Прямой PIE старых карт идёт
+	// через delayed-start без обязательного Scenario Data Asset.
 	const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>();
 	if (GameInstance && GameInstance->GetActiveScenario())
 	{
@@ -110,7 +110,7 @@ bool ATacticsGameMode::StartScenarioCombat()
 	// вызова, а сам бой может быть отложен ожиданием навмеша
 	// (`NavigationReadyTimeout`). Пока директор реплик стартовал вместе с боем,
 	// стартовая реплика Осы улетала в пустоту: подписки ещё не было
-	// (прогон 2026-08-04, разрыв 0.4 с). Презентационному слою готовый бой не
+	// (разрыв около 0.4 с). Презентационному слою готовый бой не
 	// нужен — ему нужна таблица, а она известна сразу.
 	StartMissionVoiceDirector();
 
@@ -307,11 +307,16 @@ void ATacticsGameMode::StartMissionCombat()
 		Pointers->ClearAllObjectives();
 	}
 
+	// Заодно взводим флаги наличия целей: таймер бомбы и запрет победы зачисткой
+	// ниже решаются по ним, второй проход по миру не нужен.
+	bool bHasBomb = false;
+	bool bHasEvacZone = false;
 	for (TActorIterator<ABombObjective> It(GetWorld()); It; ++It)
 	{
+		bHasBomb = true;
 		It->OnDisarmed.AddUniqueDynamic(this, &ATacticsGameMode::HandleBombDisarmed);
 		// Куда идти — задача UI, а не тумана: цель не прячется никогда (модель
-		// XCOM 2, docs/10_FOG_OF_WAR.md §2.6). Счётчик у стрелки показывает
+		// XCOM 2, docs/03_ARCHITECTURE.md §8). Счётчик у стрелки показывает
 		// остаток ходов — аналог `CounterValue` у `XComGameState_IndicatorArrow`.
 		if (Pointers)
 		{
@@ -323,6 +328,7 @@ void ATacticsGameMode::StartMissionCombat()
 	}
 	for (TActorIterator<AEvacZone> It(GetWorld()); It; ++It)
 	{
+		bHasEvacZone = true;
 		It->OnUnitEvacuated.AddUniqueDynamic(this, &ATacticsGameMode::HandleUnitEvacuated);
 		// Правило показа — «зона включена», поэтому регистрировать можно сразу:
 		// пока туториал её не активировал, указатель молчит сам.
@@ -355,8 +361,7 @@ void ATacticsGameMode::StartMissionCombat()
 
 	// Группы-энкаунтеры создаются ДО сбора сторон: их бойцы должны попасть в бой
 	// обычным путём, наравне с расставленными руками. Отсев по сложности — это
-	// «не создать лишнего», а не «удалить актора посреди первого хода»
-	// (правило 11 §6.1).
+	// «не создать лишнего», а не «удалить актора посреди первого хода».
 	SpawnConfiguredEncounters(Difficulty);
 
 	// Сбор сторон по каноническим TacticsTeamIds.
@@ -424,25 +429,13 @@ void ATacticsGameMode::StartMissionCombat()
 		Players.Num(), Enemies.Num());
 
 	// Таймер бомбы включаем только там, где есть заряд.
-	bool bHasBomb = false;
-	for (TActorIterator<ABombObjective> It(GetWorld()); It; ++It)
-	{
-		bHasBomb = true;
-		break;
-	}
-	bool bHasEvacZone = false;
-	for (TActorIterator<AEvacZone> It(GetWorld()); It; ++It)
-	{
-		bHasEvacZone = true;
-		break;
-	}
 	int32 ResolvedTurnLimit = bHasBomb && AppliedParams ? AppliedParams->TurnLimit : 0;
 	if (Scenario && Scenario->TurnLimit >= 0)
 	{
 		ResolvedTurnLimit = Scenario->TurnLimit;
 	}
 	TurnManager->SetTurnLimit(ResolvedTurnLimit);
-	// A8: лимит одновременно атакующих врагов — из того же пресета сложности.
+	// Лимит одновременно атакующих врагов — из того же пресета сложности.
 	TurnManager->SetMaxAttackersPerTurn(AppliedParams ? AppliedParams->MaxAttackersPerTurn : -1);
 	// Победа зачисткой запрещена везде, где есть авторская цель. В туториале
 	// бомбы нет, но после D2 все голограммы мертвы, и без учёта evac-зоны бой
@@ -557,7 +550,7 @@ bool ATacticsGameMode::AreAllLivingPlayersEvacuated() const
 	// Источник состава — АКТУАЛЬНАЯ сторона игрока TurnManager, а не стартовый
 	// PlayerUnits: staged-бойцы туториола (Танк/Оса/Кадет) регистрируются в бою
 	// уже ПОСЛЕ старта сценария и в стартовый список не попадают — правило по
-	// нему никогда не видело ни одного эвакуированного (прогон 2026-08-01).
+	// нему никогда не видело ни одного эвакуированного.
 	const UTurnManagerSubsystem* TurnManager = GetWorld()
 		? GetWorld()->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
 	if (!TurnManager)
@@ -612,7 +605,7 @@ void ATacticsGameMode::HandleCombatEnded(bool bPlayerWon)
 	}
 
 	// Scenario run обязан иметь ровно один Director текущего поколения. Legacy
-	// direct PIE без ActiveScenario сохраняет прежний синхронный result path.
+	// direct PIE без ActiveScenario идёт по синхронному result path.
 	const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>();
 	if (GameInstance && GameInstance->GetActiveScenario())
 	{

@@ -145,7 +145,7 @@ bool ATacticalSpawnGroupBase::ResolveSpawnLocation(int32 Index, FVector& OutLoca
 	// точки и связного пути до неё. При RuntimeGeneration=Dynamic на момент
 	// старта боя дальние участки могут быть ещё не сгенерированы, и запрос
 	// возвращает false даже там, где место очевидно есть. Из-за этого бойцы
-	// группы молча пропадали (прогон 2026-08-03: «создано 1 из 3»).
+	// группы молча пропадали («создано 1 из 3»).
 	const float Radii[] = { SpawnScatterRadius, SpawnScatterRadius * 0.5f,
 		FMath::Max(SpawnScatterRadius, 400.f) };
 	for (float Radius : Radii)

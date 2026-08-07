@@ -53,8 +53,8 @@ public:
 	/**
 	 * Единый тюнинг укрытий/LOS/выглядывания/высоты (DA_CoverTuning). Назначается
 	 * один раз в BP-наследнике GameInstance. Если не назначен —
-	 * UTacticsCombatStatics::GetCoverTuning отдаёт CDO (дефолты = прежние числа),
-	 * и поведение игры не меняется.
+	 * UTacticsCombatStatics::GetCoverTuning отдаёт CDO (дефолты равны поведению
+	 * без ассета), и поведение игры не меняется.
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Tactics|Cover")
 	TObjectPtr<UCoverTuningDataAsset> CoverTuning;

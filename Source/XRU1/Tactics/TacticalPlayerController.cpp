@@ -434,8 +434,8 @@ void ATacticalPlayerController::DrawCoverSidesDebug(const AActor* Unit) const
 
 	const FVector Origin = Unit->GetActorLocation();
 
-	// ⚠️ Дугу защиты здесь рисовать НЕЛЬЗЯ, хотя раньше рисовали: правило больше
-	// не угловое. Укрытие решается физикой выстрела (луч от цели к огневой
+	// ⚠️ Дугу защиты здесь рисовать НЕЛЬЗЯ: правило не угловое.
+	// Укрытие решается физикой выстрела (луч от цели к огневой
 	// позиции стрелка), и нарисованный сектор врал бы игроку.
 	//
 	// Стрелки — это ВИЗУАЛЬНЫЙ слой: «к каким стенам боец прижат». Полезно для
@@ -719,32 +719,6 @@ FText ATacticalPlayerController::GetTutorialDenialText() const
 	return LastDenialReason;
 }
 
-FText ATacticalPlayerController::GetTutorialBeatSubtitle() const
-{
-	const UWorld* World = GetWorld();
-	const UTutorialPresentationSubsystem* Presentation = World
-		? World->GetSubsystem<UTutorialPresentationSubsystem>() : nullptr;
-	if (!Presentation || !Presentation->IsBeatActive())
-	{
-		return FText::GetEmpty();
-	}
-
-	const FTacticalTutorialBeat Beat = Presentation->GetActiveBeat();
-	if (Beat.Subtitle.IsEmpty())
-	{
-		return FText::GetEmpty();
-	}
-
-	const FText Line = Beat.Speaker.IsEmpty()
-		? Beat.Subtitle
-		: FText::Format(NSLOCTEXT("XRU1.Tutorial", "BeatSubtitle", "{0}: {1}"),
-			Beat.Speaker, Beat.Subtitle);
-
-	// Подсказка про пропуск обязательна: на время реплики ввод заблокирован, и
-	// без неё «игра не отвечает» читается как баг, а не как «идёт инструктаж».
-	return FText::Format(NSLOCTEXT("XRU1.Tutorial", "BeatSubtitleWithSkip", "{0}\n\n[Пробел — пропустить]"), Line);
-}
-
 bool ATacticalPlayerController::IsUnitSelectableByGate(const AUnitBase* Unit) const
 {
 	const UTutorialActionGateSubsystem* Gate = UTutorialActionGateSubsystem::Get(this);
@@ -811,8 +785,8 @@ void ATacticalPlayerController::SelectUnitInternal(AUnitBase* Unit, bool bPlayer
 
 	// Сначала штатно выходим из модального targeting. ExitTargetingMode вернёт
 	// глобальный пользовательский yaw/zoom; FocusOnActor ниже заменит только XY
-	// цели полёта. Прежний pre-Abandon превращал временный yaw прицела в
-	// постоянный и потому визуально «сбрасывал» поворот при смене бойца.
+	// цели полёта. Pre-Abandon здесь нельзя: он превращает временный yaw прицела
+	// в постоянный и потому визуально «сбрасывает» поворот при смене бойца.
 	SetTargetingMode(EPlayerTargetingMode::None);
 	UE_LOG(LogXRU1Camera, Display, TEXT("[Select] %s → %s (byPlayer=%d)"),
 		*GetNameSafe(SelectedUnit), *GetNameSafe(Unit), bPlayerInitiated ? 1 : 0);
@@ -985,8 +959,8 @@ void ATacticalPlayerController::HandleTutorialPolicyChanged()
 	OnAvailableActionsChanged.Broadcast();
 
 	// Шаг мог открыть EndTurn УЖЕ ПОСЛЕ того, как отряд сжёг все ОД
-	// (Overwatch/Hunker завершают активацию без движения — прежний триггер
-	// автозавершения по финишу бега не срабатывал). Проверка ОТЛОЖЕНА на тик:
+	// (Overwatch/Hunker завершают активацию без движения — триггер
+	// автозавершения по финишу бега тут не срабатывает). Проверка ОТЛОЖЕНА на тик:
 	// синхронный EndTurn прямо из каскада входа нового шага (SetActive/Force/
 	// программа врага) запускал фазу врага раньше, чем шаг закончил Enter.
 	GetWorldTimerManager().SetTimerForNextTick(this,
@@ -1369,9 +1343,9 @@ bool ATacticalPlayerController::CanIssueCommandLogged(ETacticalPlayerCommand Com
 
 	// ОТКАЗ АТАКИ ОБЯЗАН НАЗЫВАТЬ ПРИЧИНУ ПО КАЖДОМУ ВРАГУ. Строки выше говорят
 	// только «условия свободны, но целей нет» — а игрок в этот момент ВИДИТ врага
-	// на экране и считает отказ багом (разбор лога 2026-08-04: 16 таких нажатий,
-	// все оказались честными — боец после перемещения сам закрылся стеной, — но
-	// доказывать это пришлось перекрёстной сверкой с оценками целей AI).
+	// на экране и считает отказ багом (такие отказы обычно честные — боец после
+	// перемещения сам закрылся стеной, — но доказать это без строки по каждому
+	// врагу нечем).
 	// Печатаем ровно тот статус, которым `GetTargetStatus` решает допуск, плюс
 	// дистанцию и видимость отрядом: по этой строке сразу видно, чем «нет линии
 	// огня из этой позиции» отличается от «слишком далеко» и «его никто не видит».
@@ -1494,7 +1468,7 @@ bool ATacticalPlayerController::CanShowCommandAffordance(ETacticalPlayerCommand 
 		return CanUseAbility(SelectedUnit->OverwatchAbilityClass);
 
 	case ETacticalPlayerCommand::HunkerDown:
-		// Ф7: глухая оборона требует укрытия — серим кнопку без укрытия, чтобы
+		// Глухая оборона требует укрытия — серим кнопку без укрытия, чтобы
 		// игрок не сжёг AP впустую. То же условие в UGA_HunkerDown::CanActivateAbility.
 		return CanUseAbility(SelectedUnit->HunkerAbilityClass) &&
 			SelectedUnit->GetCoverDetection() &&
@@ -1516,8 +1490,10 @@ bool ATacticalPlayerController::CanShowCommandAffordance(ETacticalPlayerCommand 
 
 bool ATacticalPlayerController::IsEnemyPhaseNow() const
 {
+	// «Идёт бой, и фаза не наша». Отличие от простого !IsPlayerPhase(): вне боя
+	// оба предиката обязаны отвечать false.
 	const UTurnManagerSubsystem* TurnManager = GetWorld() ? GetWorld()->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
-	return TurnManager && TurnManager->IsInCombat() && TurnManager->GetCurrentPhase() != ETurnPhase::Player;
+	return TurnManager && TurnManager->IsInCombat() && !IsPlayerPhase();
 }
 
 void ATacticalPlayerController::RefreshSelectionHighlight()
@@ -1597,7 +1573,7 @@ void ATacticalPlayerController::TryMoveSelectedUnit(const FVector& Goal)
 	// заставлял навмеш строить свою прямую — сквозь стоящих бойцов, которых
 	// он не видит. Боец упирался в них, а очко действия уже было списано.
 	// Радиус приёмки финала — 10 см, т.е. практически «ровно в точку клика».
-	// Прежние 50 см и были причиной «недобега»: path following считает цель
+	// Допуск 50 см давал «недобег»: path following считает цель
 	// достигнутой, как только центр бойца вошёл в этот радиус, — боец замирал в
 	// полуметре от курсора и не мог прижаться к укрытию. Ехать в саму точку
 	// безопасно: цель уже спроецирована на навмеш (PlanMoveTo), а навмеш отступает
@@ -2358,7 +2334,7 @@ void ATacticalPlayerController::RequestInteract()
 	case EInteractionKind::Evacuate:
 		// Переход выбора сделает HandleSelectedUnitStateChanged (Evacuate()
 		// бросает OnUnitStateChanged) — здесь не дублируем, иначе двойной прыжок.
-		// «Evac All» (v2.6, по правилу одноимённого мода XCOM 2): одно нажатие
+		// «Evac All» (по правилу одноимённого мода XCOM 2): одно нажатие
 		// уводит ВСЕХ бойцов, стоящих в зоне и имеющих 1 ОД, а не только
 		// выбранного — индивидуальные нажатия каждым были рутиной.
 		Zone->TryEvacuateAllInside();
@@ -2372,8 +2348,8 @@ bool ATacticalPlayerController::IsWorldAcceptingCommands() const
 {
 	// ⚠️ Уровень МИРА, отдельно от уровня бойца. Конец хода легален и без
 	// выбранного юнита, поэтому он не может пройти через CanIssueCommand
-	// целиком — и раньше оставался единственной командой ВНЕ общей воронки: в
-	// логе игрок передавал ход прямо посреди реплики «сейчас будет неприятно»,
+	// целиком — а команду ВНЕ общей воронки оставлять нельзя:
+	// игрок передавал ход прямо посреди реплики «сейчас будет неприятно»,
 	// после чего сценарный выстрел следующего шага стрелял до старта шага.
 	if (bReactionPlaying || !IsPlayerPhase())
 	{
@@ -2396,8 +2372,8 @@ bool ATacticalPlayerController::IsTutorialBeatBlockingInput() const
 	// Останавливать игру на время реплики — свойство СЦЕНАРИЯ, а не такта.
 	// Обучение ведёт игрока: следующий шаг не имеет права начаться, пока
 	// «Купол» не договорил. Боевая миссия наоборот — игрок ходит сразу, реплики
-	// только комментируют бой; блокировка там читается как зависание
-	// (прогон 2026-08-04: субтитр Осы и «ничего нельзя сделать»).
+	// только комментируют бой; блокировка там читается как зависание:
+	// субтитр идёт, а сделать ничего нельзя.
 	if (const UTacticsGameInstance* GameInstance = GetGameInstance<UTacticsGameInstance>())
 	{
 		if (const UTacticalScenarioDataAsset* Scenario = GameInstance->GetActiveScenario())
@@ -2629,10 +2605,10 @@ bool ATacticalPlayerController::IsCameraInputBlocked() const
 	// UGamePauseSubsystem, и та намеренно не трогает режим ввода — игнорировать
 	// ввод на паузе обязан контроллер.
 	//
-	// ⚠️ Раньше это работало само собой: панорама умножалась на дилатированную
-	// дельту, а она на паузе нулевая. С переходом камеры на РЕАЛЬНОЕ время
-	// (slow-mo не должен делать управление вязким) защита исчезла, и WASD с
-	// edge scroll поехали бы под открытым меню.
+	// ⚠️ Проверка обязательна: камера живёт в РЕАЛЬНОМ времени
+	// (slow-mo не должен делать управление вязким), поэтому нулевая
+	// дилатированная дельта паузы её не останавливает — без явного гейта WASD
+	// с edge scroll поехали бы под открытым меню.
 	const UWorld* World = GetWorld();
 	return World && World->IsPaused();
 }
@@ -2844,8 +2820,8 @@ bool ATacticalPlayerController::IsVisibleToSquad(const AActor* Unit) const
 {
 	const UWorld* World = GetWorld();
 	const UFogOfWarSubsystem* Fog = World ? World->GetSubsystem<UFogOfWarSubsystem>() : nullptr;
-	// Нет подсистемы — значит никто ничего не прячет: отвечаем «видно». Прежний
-	// фолбэк `Fog && ...` давал ОБРАТНЫЙ ответ и расходился с тем же местом в HUD
+	// Нет подсистемы — значит никто ничего не прячет: отвечаем «видно». Фолбэк
+	// `Fog && ...` дал бы ОБРАТНЫЙ ответ и разошёлся с тем же местом в HUD
 	// (`!Fog || Fog->IsActorCurrentlyVisible(...)`). Два разных умолчания на один
 	// вопрос — заготовка для расхождения камеры и счётчика.
 	return !Fog || Fog->IsActorCurrentlyVisible(Unit);
@@ -2960,8 +2936,7 @@ void ATacticalPlayerController::HandleFogVisibilityChanged(AActor* Actor, bool b
 		// и на нём каждый актор меняет состояние с «неизвестно» на фактическое —
 		// это инициализация кэша, а не обнаружение. Без гейта камера на нулевом
 		// кадре миссии уезжала к случайному врагу через всю карту и не отдавала
-		// кадр отряду («Focus → отряд ОТЛОЖЕН: камерой владеет режиссура такта»,
-		// прогон 2026-08-04).
+		// кадр отряду («Focus → отряд ОТЛОЖЕН: камерой владеет режиссура такта»).
 		const UTurnManagerSubsystem* TurnManager = GetWorld()
 			? GetWorld()->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
 		const bool bCombatRunning = TurnManager && TurnManager->IsInCombat();

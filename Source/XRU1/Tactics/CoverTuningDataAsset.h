@@ -7,17 +7,17 @@
 
 /**
  * Единый ассет тюнинга укрытий, линии видимости, выглядывания (peek) и высоты.
- * Собирает воедино параметры, раньше размазанные между UCoverDetectionComponent
- * (UPROPERTY), UTacticsCombatStatics (static constexpr) и захардкоженным
- * множителем глухой обороны (литерал 2.f). Теперь всё это тюнит дизайнер.
+ * Собирает воедино параметры, которым нельзя жить размазанными между
+ * UCoverDetectionComponent (UPROPERTY), UTacticsCombatStatics (static constexpr)
+ * и захардкоженным множителем глухой обороны. Всё это тюнит дизайнер.
  *
  * По образцу UTacticalHUDStyleData: ассет назначается один раз в
  * BP-наследнике UTacticsGameInstance (поле CoverTuning) и достаётся через
  * UTacticsCombatStatics::GetCoverTuning(World). Пер-юнитное переопределение —
  * UCoverDetectionComponent::TuningOverride.
  *
- * ВАЖНО: дефолты класса РАВНЫ прежним числам кода, поэтому пока ассет никуда не
- * назначен, резолвер отдаёт CDO и поведение игры не меняется ни на йоту.
+ * ВАЖНО: дефолты класса РАВНЫ поведению кода без ассета, поэтому пока ассет
+ * никуда не назначен, резолвер отдаёт CDO и поведение игры не меняется ни на йоту.
  */
 UCLASS(BlueprintType)
 class XRU1_API UCoverTuningDataAsset : public UDataAsset
@@ -30,20 +30,20 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cover|Detect", meta = (ClampMin = "10"))
 	float CoverTraceDistance = 120.f;
 
-	/** Низкое укрытие: высота трейса ОТ ПОЛА (после Ф2). Ящик 60 см = Half. */
+	/** Низкое укрытие: высота трейса ОТ ПОЛА. Ящик 60 см = Half. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cover|Detect", meta = (ClampMin = "10"))
 	float HalfCoverHeight = 60.f;
 
-	/** Высокое укрытие: ПОРОГ высоты трейса ОТ ПОЛА (после Ф2). Стена 160 см = Full. */
+	/** Высокое укрытие: ПОРОГ высоты трейса ОТ ПОЛА. Стена 160 см = Full. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cover|Detect", meta = (ClampMin = "10"))
 	float FullCoverHeight = 150.f;
 
-	// ⚠️ `CoverTraceChannel` УДАЛЁН (2026-07-25). Он задавал трейс по КАНАЛУ, а
-	// капсула/меш юнита блокируют канал `WorldStatic` — укрытием становились сам
-	// стрелок в упор, союзник рядом и труп. Геометрия укрытия теперь та же, что у
-	// линии огня: `UTacticsCombatStatics::GetShotGeometryObjects()`
-	// (WorldStatic + WorldDynamic, без юнитов). Ручка не возвращается: держать
-	// параметр, которым можно снова развести LOS и укрытие, — хуже, чем не иметь.
+	// ⚠️ Трейс укрытия идёт НЕ по каналу коллизии: капсула/меш юнита блокируют
+	// канал `WorldStatic` — укрытием стали бы сам стрелок в упор, союзник рядом
+	// и труп. Геометрия укрытия — та же, что у линии огня:
+	// `UTacticsCombatStatics::GetShotGeometryObjects()` (WorldStatic +
+	// WorldDynamic, без юнитов). Ручку канала не заводить: держать параметр,
+	// которым можно снова развести LOS и укрытие, — хуже, чем не иметь.
 
 	/** 4 оси или 8 (с диагоналями). Сколько лучей пускать вокруг юнита при поиске стен. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Cover|Detect", meta = (ClampMin = "4", ClampMax = "16"))
@@ -53,8 +53,8 @@ public:
 	 * Насколько дальше ближайшей стены ещё считается «моё укрытие» (см). Юнит
 	 * прячется за ближней стеной, а не за всем, что попало в радиус трейса.
 	 *
-	 * ⚠️ Уточнение (2026-07-25): «влияет только на визуальный слой» — неточность.
-	 * Через `CoverSides` он задаёт `BestCoverAround`, а тот РАЗЛИЧАЕТ жёлтый щит
+	 * ⚠️ Влияет не только на визуальный слой:
+	 * через `CoverSides` он задаёт `BestCoverAround`, а тот РАЗЛИЧАЕТ жёлтый щит
 	 * («в укрытии, но обойдён») и отсутствие щита («в чистом поле»). Направление
 	 * атаки этот параметр по-прежнему не судит — это физика выстрела, — но
 	 * слишком жёсткий отсев может превратить «фланкирован» в «открыт».

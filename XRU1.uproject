@@ -23,6 +23,10 @@
 			"Enabled": true
 		},
 		{
+			"Name": "PropertyBindingUtils",
+			"Enabled": true
+		},
+		{
 			"Name": "GameplayStateTree",
 			"Enabled": true
 		},
@@ -53,6 +57,9 @@
 		{
 			"Name": "UnrealClaude",
 			"Enabled": true,
+			"TargetAllowList": [
+				"Editor"
+			],
 			"SupportedTargetPlatforms": [
 				"Win64",
 				"Linux",

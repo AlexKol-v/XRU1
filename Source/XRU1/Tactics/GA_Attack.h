@@ -72,8 +72,8 @@ public:
 	 * Без неё выстрел с места «выстреливал» сразу по команде: у стойки поверх
 	 * укрытия анимация сама даёт 0.40 с до выстрела, вычет этого времени из
 	 * `PreShotCameraSettleDelay` обнулял ожидание целиком, и презентация
-	 * оказывалась вдвое короче, чем у выхода из-за угла — «не нормированный
-	 * тайминг» (фидбэк 2026-08-03). Перебежке StepOut эта фора не добавляется:
+	 * оказывалась вдвое короче, чем у выхода из-за угла.
+	 * Перебежке StepOut эта фора не добавляется:
 	 * там время уже потрачено на само перемещение.
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Tactics|Attack", meta = (ClampMin = "0"))
@@ -144,7 +144,7 @@ public:
 	 * Почему нельзя (или можно — Valid) выстрелить по цели прямо сейчас
 	 * (враждебность/жива/дальность/LOS-или-Squadsight, без учёта AP).
 	 * ЕДИНСТВЕННЫЙ источник причины для HUD — различает «слишком далеко» и
-	 * «нет линии огня» (раньше обе схлопывались в один bool).
+	 * «нет линии огня», а не схлопывает обе в один bool.
 	 */
 	UFUNCTION(BlueprintPure, Category = "Tactics|Attack")
 	static EAttackTargetStatus GetTargetStatus(const AUnitBase* Shooter, const AActor* Target);
@@ -257,10 +257,15 @@ private:
 	void FinishPostShotHold(FGuid ActionId);
 	void HandleFireActionTimeout(FGuid ActionId);
 	void ClearFireActionWatchdog();
+
+	/**
+	 * Аварийный терминал транзакции: watchdog, reset, стоп montage, refund,
+	 * конец презентации. `FinishedAction` — уже снятая КОПИЯ контекста, не
+	 * ссылка на поле FireAction. Порядок вызовов внутри — часть контракта.
+	 */
+	void TerminateFireAction(const FTacticalFireActionContext& FinishedAction, bool bAborted);
 	void RefundPreCommitActionPoints(const FTacticalFireActionContext& FinishedAction);
 	bool IsFrozenFireCommitValid() const;
 	void NotifyShotPresentation(AActor* Shooter, AActor* Target) const;
 	void EndShotPresentation() const;
-	void StopFireActionMontage(const FTacticalFireActionContext& FinishedAction) const;
-	void CheckCombatOutcomeAfterAction() const;
 };

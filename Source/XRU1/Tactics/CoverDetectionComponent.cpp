@@ -55,7 +55,7 @@ namespace
 	/**
 	 * Половина капсулы владельца (см), фолбэк — дефолт ACharacter (88). Нужна,
 	 * чтобы из ActorLocation (центр капсулы) получить точку ПОЛА: высоты укрытия
-	 * отсчитываются от пола (§II.3, Ф2).
+	 * отсчитываются от пола.
 	 */
 	float OwnerCapsuleHalfHeight(const AActor* Owner)
 	{
@@ -389,7 +389,7 @@ ECoverType UCoverDetectionComponent::EvaluateSurroundings()
 	// Сторона стены в ПРОЕКТНОЙ стойке: боец стоит вдоль стены лицом к краю
 	// (Forward = PeekEdgeDirection), право = Cross(Up, Forward). Знак говорит,
 	// с какой стороны от бойца стена, — чистая геометрия, фактический поворот
-	// актора не участвует. В правильной стойке совпадает с прежним
+	// актора не участвует. В правильной стойке совпадает с
 	// sign(CoverDirectionLocal.Y); в любой другой — определён, а не ноль.
 	PeekSideSign = PeekEdgeDirection.IsNearlyZero()
 		? 0.f
@@ -414,8 +414,8 @@ ECoverType UCoverDetectionComponent::EvaluateSurroundings()
 			PeekEdgeDistance, PeekSideSign);
 	}
 
-	// Оба события видят уже согласованные тип, GE и geometry. Старый delegate
-	// сохраняет прежнюю семантику и не стреляет при Full→Full.
+	// Оба события видят уже согласованные тип, GE и geometry. Delegate типа
+	// укрытия не стреляет при Full→Full — только на реальную смену типа.
 	if (bCoverTypeChanged)
 	{
 		OnCoverStateChanged.Broadcast(BestCoverAround);
@@ -465,7 +465,7 @@ bool UCoverDetectionComponent::MatchesActiveCoverHit(const FHitResult& Hit) cons
 	// доворачивающийся «к краю» посреди стены, и полностью мёртвое выглядывание.
 	//
 	// Одна и та же стена — это одна ПЛОСКОСТЬ: совпали нормаль и её удаление от
-	// начала координат. Допуск по плоскости чуть шире прежнего, чтобы пережить
+	// начала координат. Допуск по плоскости взят с запасом, чтобы пережить
 	// стыки модульных секций и небольшие зазоры между ними.
 	return FVector::DotProduct(HitNormal, ActiveCoverNormal) > 0.9659f
 		&& FMath::Abs(HitPlaneDistance - ActiveCoverPlaneDistance) <= CoverPlaneTolerance;
@@ -582,7 +582,7 @@ FVector UCoverDetectionComponent::FindPeekEdgeSide(float& OutEdgeDistance) const
 
 	if (BestSide.IsNearlyZero())
 	{
-		// Раньше эта ветка молчала, и «юнит у угла, а края нет» было не отличить
+		// Молчать эта ветка не должна: «юнит у угла, а края нет» иначе не отличить
 		// от честной глухой стены. Акторы последних совпавших проб дают ответ:
 		// тот же актор — стена реально длинная; другой — угол «зашит» склейкой
 		// коллинеарной соседки по плоскости.
@@ -630,14 +630,14 @@ ECoverType UCoverDetectionComponent::GetCoverAgainst(const AActor* Threat) const
 	const UCoverTuningDataAsset* Tuning = GetTuning();
 	const FVector FloorBase = Owner->GetActorLocation() - FVector(0.f, 0.f, OwnerCapsuleHalfHeight(Owner));
 
-	// ⚠️ УКРЫТИЕ = МИНИМУМ ПО ВСЕМ ОГНЕВЫМ ПОЗИЦИЯМ СТРЕЛКА (правка 2026-07-25).
+	// ⚠️ УКРЫТИЕ = МИНИМУМ ПО ВСЕМ ОГНЕВЫМ ПОЗИЦИЯМ СТРЕЛКА.
 	//
 	// Стрелок сам выбирает, откуда стрелять, и выберет позицию, которая обходит
-	// укрытие цели. Раньше здесь бралась ПЕРВАЯ позиция с линией огня
-	// (`GetFiringStance`, порядок центр → step-out → края) — и получалась
-	// неизбежная жалоба «стою у угла, точка выглядывания заведомо во фланге, а
-	// щит синий»: центр давал линию огня поверх низкой стены, перебор на нём
-	// останавливался, и фланг считался от центра.
+	// укрытие цели. Брать ПЕРВУЮ позицию с линией огня (`GetFiringStance`,
+	// порядок центр → step-out → края) нельзя: центр даёт линию огня поверх
+	// низкой стены, перебор на нём останавливается, фланг считается от центра —
+	// и получается неизбежная жалоба «стою у угла, точка выглядывания заведомо
+	// во фланге, а щит синий».
 	//
 	// Теперь перебираются ВСЕ позиции, откуда есть линия огня, и берётся
 	// НАИМЕНЬШЕЕ укрытие. Правило читается одной фразой и совпадает с тем, что
@@ -657,9 +657,9 @@ ECoverType UCoverDetectionComponent::GetCoverAgainst(const AActor* Threat) const
 
 	// ЕДИНЫЙ ИСТОЧНИК ПРАВДЫ: если EvaluateSurroundings не нашёл юниту стен —
 	// у него нет ни позы укрытия, ни иконки, ни GE, и выстрел ОБЯЗАН считать его
-	// открытым. Раньше физика ниже решала вопрос заново и находила «укрытие» в
-	// случайной геометрии (склон рампы, перепад пола) — юнит в полный рост без
-	// иконки получал бонус защиты.
+	// открытым. Давать физике ниже решать вопрос заново нельзя: она находит
+	// «укрытие» в случайной геометрии (склон рампы, перепад пола) — юнит в
+	// полный рост без иконки получал бонус защиты.
 	if (BestCoverAround == ECoverType::None || CoverSidePlanes.Num() == 0)
 	{
 		return ECoverType::None;
@@ -778,22 +778,6 @@ const UCoverTuningDataAsset* UCoverDetectionComponent::GetTuning() const
 		return TuningOverride;
 	}
 	return UTacticsCombatStatics::GetCoverTuning(GetWorld());
-}
-
-ECoverType UCoverDetectionComponent::TraceCoverInDirection(const FVector& Direction) const
-{
-	const AActor* Owner = GetOwner();
-	if (!Owner)
-	{
-		return ECoverType::None;
-	}
-	// Base — точка ПОЛА (ActorLocation − половина капсулы). Высоты Half/Full
-	// отсчитываются от пола, как задумано (§II.3): раньше Base был центром
-	// капсулы, и низкое укрытие (ящик 60 см) не детектилось вообще.
-	const UCoverTuningDataAsset* Tuning = GetTuning();
-	const FVector FloorBase = Owner->GetActorLocation() - FVector(0.f, 0.f, OwnerCapsuleHalfHeight(Owner));
-	return TraceCoverAtLocation(Owner->GetWorld(), FloorBase, Direction,
-		Tuning->CoverTraceDistance, Tuning->HalfCoverHeight, Tuning->FullCoverHeight, Owner);
 }
 
 ECoverType UCoverDetectionComponent::EvaluateCoverAtLocation(const FVector& Base, const FVector& ThreatLocation) const

@@ -31,7 +31,7 @@ struct FTacticsDifficultyParams
 	int32 TurnLimit = 10;
 
 	/**
-	 * СКОЛЬКО ВРАГОВ МАКСИМУМ АТАКУЕТ ЗА ОДИН ХОД (A8). −1 — без лимита.
+	 * СКОЛЬКО ВРАГОВ МАКСИМУМ АТАКУЕТ ЗА ОДИН ХОД. −1 — без лимита.
 	 *
 	 * Verbatim XCOM 2 (`XComAI.ini`, `MaxEngagedEnemies`): Rookie 4, Veteran 6,
 	 * Commander 6, Legend −1. У нас три уровня, поэтому 4 / 6 / −1.

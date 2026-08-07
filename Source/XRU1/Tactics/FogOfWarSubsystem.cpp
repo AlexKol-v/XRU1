@@ -139,9 +139,9 @@ TArray<AActor*> UFogOfWarSubsystem::GetCurrentlyVisibleEnemies() const
 int32 UFogOfWarSubsystem::GetCurrentlyVisibleEnemyCount() const
 {
 	// ⚠️ Счётчик поддерживается пересчётом, а не считается по запросу. Он висит на
-	// биндинге HUD, то есть спрашивается каждый кадр: прежняя редакция на каждый
-	// такой запрос строила массив (кучная аллокация) и опрашивала кэш по всем
-	// врагам. Здесь — обход уже готового списка без аллокаций.
+	// биндинге HUD, то есть спрашивается каждый кадр: строить на каждый
+	// такой запрос массив (кучная аллокация) и опрашивать кэш по всем
+	// врагам слишком дорого. Здесь — обход уже готового списка без аллокаций.
 	int32 Count = 0;
 	for (const TWeakObjectPtr<AActor>& Enemy : VisibleEnemies)
 	{
@@ -221,13 +221,12 @@ void UFogOfWarSubsystem::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
-	const UWorld* World = GetWorld();
-	const UTurnManagerSubsystem* TurnManager = World
-		? World->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
+	const UTurnManagerSubsystem* TurnManager = GetTurnManager();
 	if (!TurnManager)
 	{
 		return;
 	}
+	const UWorld* World = GetWorld();
 
 	// ⚠️ Проверки «идёт ли бой» здесь НЕТ намеренно. До старта боя стороны пусты,
 	// значит расчёт даёт «никого не видно» — и враги оказываются скрыты ещё до
@@ -336,14 +335,13 @@ bool UFogOfWarSubsystem::ComputeActorVisible(const AActor* Actor, const TArray<A
 
 void UFogOfWarSubsystem::RecomputeNow(const TCHAR* Reason, bool bRoutine)
 {
-	const UWorld* World = GetWorld();
-	const UTurnManagerSubsystem* TurnManager = World
-		? World->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
+	const UTurnManagerSubsystem* TurnManager = GetTurnManager();
 	if (!TurnManager)
 	{
 		return;
 	}
 
+	const UWorld* World = GetWorld();
 	LastRecomputeTime = World->GetTimeSeconds();
 	const bool bExplain = CVarFogExplain.GetValueOnGameThread() != 0;
 	const bool bDisabled = CVarFogDisable.GetValueOnGameThread() != 0;
@@ -423,8 +421,8 @@ void UFogOfWarSubsystem::RecomputeNow(const TCHAR* Reason, bool bRoutine)
 			// ⚠️ Уровень Display, а НЕ Verbose. Verbose-строки отфильтрованы
 			// умолчанием категории (`Log`), поэтому включённый `xru1.Fog.Explain 1`
 			// печатал только сводку, а сам разбор по акторам не доходил до
-			// журнала — половина инструмента была мёртвой (найдено разбором
-			// прохождения 2026-08-03). Гейт здесь — сам cvar, второй не нужен.
+			// журнала — половина инструмента была мёртвой.
+			// Гейт здесь — сам cvar, второй не нужен.
 			//
 			// У своих решение не принималось вовсе — печатать их последнюю
 			// (возможно, ещё стартовую) причину значило бы врать в диагностике,
@@ -450,8 +448,8 @@ void UFogOfWarSubsystem::RecomputeNow(const TCHAR* Reason, bool bRoutine)
 	}
 
 	// ⚠️ Рутинный пересчёт без изменений НЕ логируется даже при включённом разборе.
-	// В прохождении 2026-08-03 из 647 строк тумана 553 были «пересчёт «движение»:
-	// изменений=0» — сигнал утонул в шуме. Значимое (старт, граница хода, событие,
+	// Иначе журнал забивается строками «пересчёт «движение»: изменений=0», и
+	// сигнал тонет в шуме. Значимое (старт, граница хода, событие,
 	// любое изменение) печатается по-прежнему.
 	if (PendingBroadcasts.Num() > 0 || (bExplain && !bRoutine))
 	{
@@ -473,8 +471,7 @@ void UFogOfWarSubsystem::RecomputeNow(const TCHAR* Reason, bool bRoutine)
 		// ⚠️ Только В БОЮ. Первый пересчёт идёт из `StartMissionCombat` ДО
 		// `StartCombat`, и на нём КАЖДЫЙ актор меняет состояние с «неизвестно» на
 		// фактическое. Это инициализация кэша, а не обнаружение: без гейта
-		// реплика «Нас увидели» звучала на нулевом кадре миссии
-		// (прогон 2026-08-04).
+		// реплика «Нас увидели» звучала на нулевом кадре миссии.
 		const UTurnManagerSubsystem* Turns = GetWorld()
 			? GetWorld()->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
 		const bool bCombatRunning = Turns && Turns->IsInCombat();
@@ -496,4 +493,10 @@ void UFogOfWarSubsystem::RecomputeNow(const TCHAR* Reason, bool bRoutine)
 	// могли сдвинуться, а это меняет картину МЕСТНОСТИ, и визуальный слой обязан
 	// узнать об этом здесь, а не заводить собственное расписание.
 	OnVisibilityRecomputed.Broadcast();
+}
+
+UTurnManagerSubsystem* UFogOfWarSubsystem::GetTurnManager() const
+{
+	const UWorld* World = GetWorld();
+	return World ? World->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
 }

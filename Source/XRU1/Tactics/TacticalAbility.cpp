@@ -4,7 +4,9 @@
 #include "TacticalFireActionContext.h"
 #include "TacticsCombatStatics.h"
 #include "AnimNotify_FireCommit.h"
+#include "Animation/AnimInstance.h"
 #include "Animation/AnimMontage.h"
+#include "Components/SkeletalMeshComponent.h"
 #include "TurnManagerSubsystem.h"
 #include "UnitBase.h"
 #include "Engine/World.h"
@@ -266,7 +268,7 @@ void UTacticalAbility::FaceShotTargetLatent(FGuid ActionId, FLatentActionInfo La
 
 	// СТРЕЛЬБА ПОВЕРХ УКРЫТИЯ идёт в другом порядке: сначала боец встаёт (это
 	// начало montage), и только потом доворачивается. Разворот сидя с
-	// последующим вставанием читается как лишнее движение — фидбэк 2026-08-03.
+	// последующим вставанием читается как лишнее движение.
 	// Поэтому здесь ветка НЕ ждёт доворот: montage стартует сразу, а поворот
 	// уходит в таймер, рассчитанный так, чтобы закончиться до самого выстрела.
 	if (Action && Shooter && Action->FiringStance == EFiringStance::OverCover)
@@ -275,7 +277,7 @@ void UTacticalAbility::FaceShotTargetLatent(FGuid ActionId, FLatentActionInfo La
 		// (NotifyPresentationMontageStarting). Пока он ставился отсюда, таймер
 		// отсчитывался от вызова узла, а montage ещё ждал кадр — боец успевал
 		// довернуться СИДЯ и только потом вставал («что-то делает, потом встаёт
-		// и стреляет», запись PIE 2026-08-03).
+		// и стреляет»).
 		LatentManager.AddNewAction(LatentInfo.CallbackTarget, LatentInfo.UUID,
 			new FTacticalAimTurnLatentAction(LatentInfo, this, ActionId, Shooter,
 				AimTurnMaxWait, /*bSkipWait=*/true, 0.f, /*SettleDelay=*/0.f, ShooterName));
@@ -465,10 +467,10 @@ bool UTacticalAbility::NotifyPresentationMontageStarting(const FGuid& ActionId)
 
 	// ПОСЛЕДНЯЯ ТОЧКА, ГДЕ ОТКАЗ ЕЩЁ БЕСПЛАТЕН. Между активацией и стартом
 	// анимации проходит наводка камеры (а у реакции — ещё и окно slow-mo, за
-	// которое цель успевает уйти за стену). Раньше проверка стояла только на
-	// самом `FireCommit`: боец вскидывался, стрелял — и лишь тогда решение
-	// отклонялось («[ReactionAction] Reject invalid frozen solution», лог PIE
-	// 2026-08-04). Отказ ДО montage выглядит как несостоявшийся выстрел, а не
+	// которое цель успевает уйти за стену). Пока проверка стояла только на
+	// самом `FireCommit`, боец вскидывался, стрелял — и лишь тогда решение
+	// отклонялось («[ReactionAction] Reject invalid frozen solution»).
+	// Отказ ДО montage выглядит как несостоявшийся выстрел, а не
 	// как выстрел в никуда.
 	//
 	// ⚠️ КРОМЕ StepOut. Там боец УЖЕ вышел из укрытия, и возврат живёт в
@@ -497,8 +499,7 @@ bool UTacticalAbility::NotifyPresentationMontageStarting(const FGuid& ActionId)
 	// Стрелковый montage анимирован стоя; пока поза оставалась `Crouch`/`High`,
 	// боец выпускал очередь сидя. У StepOut это било так же, как у OverCover:
 	// он добегал до огневой точки, компонент укрытий снова находил там стену,
-	// поза возвращалась в `Crouch` — и выстрел уходил из приседа (лог PIE
-	// 2026-08-04, выстрелы 4/22/38: `стойка=StepOut`, `[FireCommit] … поза=2/3`).
+	// поза возвращалась в `Crouch` — и выстрел уходил из приседа.
 	// Обратно боец садится вместе с уходом камеры — в ReleasePresentationStanding.
 	if (Action->FiringStance == EFiringStance::OverCover
 		|| Action->FiringStance == EFiringStance::StepOut)
@@ -535,7 +536,7 @@ void UTacticalAbility::ScheduleAimTurnAfterRise(const FGuid& ActionId,
 	// Окно = момент выстрела внутри montage МИНУС микропауза: доворот обязан не
 	// просто уложиться до выстрела, а закончиться заметно раньше него. Без этого
 	// зазора поворот и выстрел склеивались в одно движение — «нет паузы между
-	// доворотом и выстрелом» (фидбэк 2026-08-03). Зазор тот же, что у остальных
+	// доворотом и выстрелом». Зазор тот же, что у остальных
 	// стоек (`AimTurnSettleDelay`), поэтому ритм выстрела одинаковый везде.
 	const float CommitTime = FindFireCommitTime(Action.FireMontage.Get());
 	const float Window = FMath::Max(0.f, CommitTime - FMath::Max(0.f, AimTurnSettleDelay));
@@ -753,4 +754,28 @@ UActionPointsComponent* UTacticalAbility::FindActionPoints(const FGameplayAbilit
 {
 	const AActor* Avatar = ActorInfo ? ActorInfo->AvatarActor.Get() : nullptr;
 	return Avatar ? Avatar->FindComponentByClass<UActionPointsComponent>() : nullptr;
+}
+
+void UTacticalAbility::StopFireMontage(const FTacticalFireActionContext& FinishedAction) const
+{
+	const AUnitBase* Shooter = Cast<AUnitBase>(FinishedAction.Shooter.Get());
+	UAnimMontage* Montage = FinishedAction.FireMontage.Get();
+	UAnimInstance* AnimInstance = Shooter && Shooter->GetMesh()
+		? Shooter->GetMesh()->GetAnimInstance()
+		: nullptr;
+	if (AnimInstance && Montage && AnimInstance->Montage_IsActive(Montage))
+	{
+		AnimInstance->Montage_Stop(0.1f, Montage);
+	}
+}
+
+void UTacticalAbility::CheckCombatOutcome() const
+{
+	const UWorld* World = GetWorld();
+	if (UTurnManagerSubsystem* TurnManager = World
+		? World->GetSubsystem<UTurnManagerSubsystem>()
+		: nullptr)
+	{
+		TurnManager->CheckCombatOutcome();
+	}
 }

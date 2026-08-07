@@ -99,8 +99,8 @@ void UTutorialPresentationSubsystem::StartBeat(const FTacticalTutorialBeat& Beat
 
 			// ⚠️ Раскрыть местность мало — надо показать и САМОГО актора, иначе
 			// камера наводится на пустое место: местность вокруг врага открыта,
-			// а он сам скрыт туманом (поймано прогоном 2026-08-03, беат
-			// `A8_ReturnFire` с фокусом на мародёре). Такты `Scripted Move` берут
+			// а он сам скрыт туманом (например, беат с фокусом на мародёре).
+			// Такты `Scripted Move` берут
 			// оба удержания парно — беат обязан вести себя так же.
 			if (UFogRevealableComponent* Reveal =
 				const_cast<AActor*>(FocusActor)->FindComponentByClass<UFogRevealableComponent>())
@@ -143,8 +143,8 @@ void UTutorialPresentationSubsystem::StartBeat(const FTacticalTutorialBeat& Beat
 	}
 
 	// Субтитр отдаётся общему слою: он один на всю игру и рисуется поверх любых
-	// экранов. Раньше строка жила в оверлее подсказок боевого контроллера и вне
-	// боя не существовала физически.
+	// экранов. В оверлее подсказок боевого контроллера строке не место — вне
+	// боя она не существовала бы физически.
 	if (UXRU1SubtitleSubsystem* Subtitles = UXRU1SubtitleSubsystem::Get(this))
 	{
 		FXRU1SubtitleLine Line;
