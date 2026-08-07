@@ -44,6 +44,31 @@ git lfs pull
 .\Build-XRU1.ps1
 ```
 
+### 1.1 Упаковка Shipping-билда
+
+Редактор закрыт; **локализация скомпилирована ДО кука** (§3.1.2) — `.locres`
+попадают в билд как обычный контент, и забытый Compile означает англоязычный
+билд с русскими строками. Проверено 2026-08-07: полный проход занимает ~2,5 мин.
+
+```powershell
+$eng = (Get-ItemProperty 'HKLM:\SOFTWARE\EpicGames\Unreal Engine\5.7').InstalledDirectory
+& "$eng\Engine\Build\BatchFiles\RunUAT.bat" BuildCookRun `
+  -project="$((Get-Location).Path)\XRU1.uproject" -noP4 -platform=Win64 `
+  -clientconfig=Shipping -build -cook -stage -pak -iostore -compressed -archive `
+  -archivedirectory="D:\Unrial_Projects\XRU1_Build" -unattended -utf8output -nocompileeditor
+```
+
+Результат — `<archivedirectory>\Windows\XRU1.exe` (~1,9 ГБ). Папку вывода держать
+**вне репозитория**.
+
+Про карты: `MapsToCook` в `Config/DefaultGame.ini` намеренно пуст, и это работает —
+переходы идут через `TSoftObjectPtr<UWorld>` (`BP_TacticsGameInstance`: HubLevel,
+MainMenuLevel, SharedCombatLevel; `ScenarioSublevel` сценарных Data Asset),
+поэтому кук находит все шесть карт по ссылкам. Задавать `-map` руками не нужно;
+если всё же задаёте — сублевелы лежат в `Maps/SubLavel/` (опечатка в имени папки
+историческая), и неверный путь даёт `LogCook: Warning: Unable to find package
+for cooking`, который легко принять за потерянную карту.
+
 ## 2. Пути ассетов
 
 | Назначение | Путь |
@@ -157,6 +182,25 @@ Python `unreal.Text`) — а именно этим способом собран
 сойдётся. Лечится открытием Localization Dashboard (он перезапишет пути под свою
 машину) до запуска Gather. Правки в этот ini руками бессмысленны — дашборд их
 затрёт.
+
+Для headless-прогона (агент, CI) дашборд открыть некому. Рабочая альтернатива:
+**копия** ini во временной папке, где `ManifestDependencies` заданы абсолютными
+путями к движку своей машины, и `-config="<абсолютный путь к копии>"`; остальные
+пути в файле относительны корня проекта и менять их не нужно. Оригинал при этом
+не трогается, и расхождения между машинами не возникает (проверено 2026-08-07).
+
+**Правка переводов без дашборда.** `.locres` компилируется из
+`Content/Localization/<Target>/<culture>/Game.archive` — это JSON в **UTF-16 LE
+с BOM**, отступы табами. Скрипт, который его читает и пишет (`json` +
+`indent='\t'`, `ensure_ascii=False`), воспроизводит формат байт-в-байт; перед
+первой правкой это стоит проверить round-trip'ом на неизменённых данных. `.po`
+рядом — экспорт для внешних переводчиков, компиляция его не читает.
+
+**Множественное число.** Русскому нужны четыре формы, и они пишутся прямо в
+исходной строке: `"{0} {0}|plural(one=ХОД,few=ХОДА,many=ХОДОВ,other=ХОДА)"`.
+Формы выбираются по правилам ЦЕЛЕВОЙ культуры, поэтому в английском переводе
+достаточно `one/other`. Аргумент `{0}` обязан повторяться и в переводе — иначе
+Compile с `bValidateFormatPatterns=true` его отвергнет.
 
 ### 3.2 Перенос и переименование
 

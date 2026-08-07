@@ -1,7 +1,11 @@
 #include "TacticalHUDWidget.h"
 #include "XRU1Log.h"
 #include "FogOfWarSubsystem.h"
+#include "QuestGameplayTags.h"   // родительский канал Quest.Event для подписки
+#include "QuestTypes.h"          // FQuestEventData
+#include "TacticalEncounter.h"   // маяк подкреплений: отсчёт для баннера
 #include "TacticalHUDStyleData.h"
+#include "TacticalQuestEvents.h" // каналы Reinforcements.Signaled/Arrived
 #include "TacticsAudioSubsystem.h"
 #include "TacticsGameInstance.h"
 #include "TacticalPlayerController.h"
@@ -14,6 +18,8 @@
 #include "TacticalAbility.h"        // имя, заряды и стоимость для подсказки кнопки
 #include "AbilitySystemComponent.h" // живой экземпляр способности знает остаток применений
 #include "Engine/World.h"
+#include "EngineUtils.h"  // TActorIterator по маякам подкреплений
+#include "TimerManager.h"
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Framework/Application/SlateApplication.h"
@@ -635,6 +641,107 @@ void UTacticalHUDWidget::UpdateTargetingBanner()
 	OnTargetingModeChanged(bTargeting);
 }
 
+// --- Баннер подкреплений врага -----------------------------------------------------
+
+UWidget* UTacticalHUDWidget::GetReinforcementBannerWidget() const
+{
+	if (ReinforcementPanel)
+	{
+		return ReinforcementPanel;
+	}
+	return ReinforcementText;
+}
+
+void UTacticalHUDWidget::HandleQuestEventForReinforcements(FGameplayTag Channel,
+	const FQuestEventData& /*Payload*/)
+{
+	// Каналы сравниваются точно (leaf) — как у слоя VFX: родительские дубли
+	// одного события не должны дёргать баннер дважды.
+	if (Channel == TacticalQuestTags::Event_Tactical_Reinforcements_Signaled)
+	{
+		// Новый сигнал важнее висящего «высадилось»: началась следующая волна.
+		bReinforcementArrivedShowing = false;
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(ArrivedBannerTimer);
+		}
+		RefreshReinforcementBanner();
+	}
+	else if (Channel == TacticalQuestTags::Event_Tactical_Reinforcements_Arrived)
+	{
+		UWidget* Banner = GetReinforcementBannerWidget();
+		if (!Banner)
+		{
+			return;
+		}
+		bReinforcementArrivedShowing = true;
+		if (ReinforcementText)
+		{
+			ReinforcementText->SetText(NSLOCTEXT("XRU1.HUD", "ReinforcementArrived",
+				"ПОДКРЕПЛЕНИЕ ПРОТИВНИКА ВЫСАДИЛОСЬ"));
+		}
+		Banner->SetVisibility(ESlateVisibility::HitTestInvisible);
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().SetTimer(ArrivedBannerTimer, this,
+				&UTacticalHUDWidget::HandleArrivedBannerExpired,
+				FMath::Max(0.5f, ReinforcementArrivedBannerSeconds), false);
+		}
+	}
+}
+
+void UTacticalHUDWidget::HandleArrivedBannerExpired()
+{
+	bReinforcementArrivedShowing = false;
+	RefreshReinforcementBanner();
+}
+
+void UTacticalHUDWidget::RefreshReinforcementBanner()
+{
+	UWidget* Banner = GetReinforcementBannerWidget();
+	if (!Banner)
+	{
+		return; // в WBP баннера нет — HUD работает без него
+	}
+	if (bReinforcementArrivedShowing)
+	{
+		return; // короткое «высадилось» отсчёт не перетирает
+	}
+
+	// Источник — сами маяки уровня: событие сигнала лишь повод перечитать их
+	// состояние, поэтому баннер не может разойтись с фактическим отсчётом
+	// (например, после пересоздания HUD посреди боя).
+	int32 TurnsLeft = -1;
+	const UTurnManagerSubsystem* TurnManager = GetTurnManager();
+	if (TurnManager && TurnManager->IsInCombat())
+	{
+		for (TActorIterator<ATacticalReinforcementBeacon> It(GetWorld()); It; ++It)
+		{
+			if (It->IsWavePending())
+			{
+				TurnsLeft = FMath::Max(TurnsLeft, It->GetCountdownLeft());
+			}
+		}
+	}
+
+	if (TurnsLeft < 0)
+	{
+		Banner->SetVisibility(ESlateVisibility::Collapsed);
+		return;
+	}
+
+	if (ReinforcementText)
+	{
+		// Отсчёт в ходах ВРАГА, как у маяка: «через 1 ход» = волна высадится в
+		// начале ближайшей вражеской фазы, на реакцию остаётся текущий ход.
+		ReinforcementText->SetText(FText::Format(
+			NSLOCTEXT("XRU1.HUD", "ReinforcementIncoming",
+				"ПОДКРЕПЛЕНИЕ ПРОТИВНИКА ЧЕРЕЗ {0} {0}|plural(one=ХОД,few=ХОДА,many=ХОДОВ,other=ХОДА)"),
+			FMath::Max(1, TurnsLeft)));
+	}
+	Banner->SetVisibility(ESlateVisibility::HitTestInvisible);
+}
+
 // --- Карточки отряда (XCOM-стиль) -------------------------------------------------
 
 void UTacticalHUDWidget::UpdateSquadCardVisibility(AUnitBase* Selected)
@@ -783,6 +890,21 @@ void UTacticalHUDWidget::NativeConstruct()
 		HandleHoveredUnitChanged(Controller->GetHoveredUnit());
 	}
 
+	// Баннер подкреплений слушает шину квест-событий (тот же вход, что у слоёв
+	// VFX и реплик): сигнал маяка и высадка волны — подтверждённые факты
+	// механики, а не предположения UI о состоянии маяков.
+	if (UGameplayMessageSubsystem::HasInstance(this))
+	{
+		QuestEventListenerHandle = UGameplayMessageSubsystem::Get(this).RegisterListener<FQuestEventData>(
+			QuestGameplayTags::Quest_Event,
+			[this](FGameplayTag Channel, const FQuestEventData& Data)
+			{
+				HandleQuestEventForReinforcements(Channel, Data);
+			},
+			EGameplayMessageMatch::PartialMatch);
+	}
+	RefreshReinforcementBanner();
+
 	// Клавиатура принадлежит игре, а не кнопкам HUD (фикс «пробел повторяет
 	// последнее нажатое действие»).
 	ApplyPortraitCardLayout();
@@ -839,6 +961,11 @@ void UTacticalHUDWidget::NativeDestruct()
 	if (UWorld* World = GetWorld())
 	{
 		World->GetTimerManager().ClearTimer(EnemyCardVisibilityTimer);
+		World->GetTimerManager().ClearTimer(ArrivedBannerTimer);
+	}
+	if (QuestEventListenerHandle.IsValid())
+	{
+		QuestEventListenerHandle.Unregister();
 	}
 	if (AttackBtn)
 	{
@@ -909,6 +1036,8 @@ void UTacticalHUDWidget::HandleTurnStarted(ETurnPhase Phase)
 	// исчезнуть на ход врага и вернуться в наш (курсор мог не двигаться).
 	// Прицеливание фаза тоже сбрасывает — баннер обязан погаснуть.
 	UpdateTargetingBanner();
+	// Отсчёт подкрепления тикает по фазам врага — перечитать его на границе.
+	RefreshReinforcementBanner();
 	if (const ATacticalPlayerController* Controller = GetTacticalController())
 	{
 		UpdateTargetPanel(Controller->GetHoveredUnit());
@@ -917,6 +1046,16 @@ void UTacticalHUDWidget::HandleTurnStarted(ETurnPhase Phase)
 
 void UTacticalHUDWidget::HandleCombatEnded(bool bPlayerWon)
 {
+	// Исход объявлен — отсчёт и «высадилось» больше не в тему.
+	bReinforcementArrivedShowing = false;
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(ArrivedBannerTimer);
+	}
+	if (UWidget* Banner = GetReinforcementBannerWidget())
+	{
+		Banner->SetVisibility(ESlateVisibility::Collapsed);
+	}
 	OnCombatFinished(bPlayerWon);
 }
 

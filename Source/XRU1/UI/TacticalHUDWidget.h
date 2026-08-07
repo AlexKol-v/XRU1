@@ -2,6 +2,8 @@
 
 #include "CoreMinimal.h"
 #include "CommonActivatableWidget.h"
+#include "GameFramework/GameplayMessageSubsystem.h" // хэндл подписки на шину Quest.Event
+#include "GameplayTagContainer.h"
 #include "TacticsTypes.h"
 #include "CoverTypes.h"
 #include "TacticalHUDWidget.generated.h"
@@ -9,6 +11,7 @@
 class AUnitBase;
 class ATacticalPlayerController;
 class UTurnManagerSubsystem;
+struct FQuestEventData;
 class UTacticalHUDStyleData;
 class UActionPointsComponent;
 class UCoverDetectionComponent;
@@ -124,6 +127,15 @@ protected:
 	 */
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UWidget> TargetingBanner;
 
+	/**
+	 * Баннер подкреплений врага (верх-центр): после сигнала маяка показывает
+	 * «высадка через N ход(ов)» и тикает по фазам, после высадки — короткое
+	 * «подкрепление высадилось». Опционален, как TargetingBanner: нет виджетов
+	 * в WBP — HUD работает без баннера.
+	 */
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UWidget> ReinforcementPanel;
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UTextBlock> ReinforcementText;
+
 	// Панель цели у курсора (центр-право).
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UWidget> TargetPanel;
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional)) TObjectPtr<UTextBlock> TargetNameText;
@@ -164,6 +176,10 @@ protected:
 	 */
 	UPROPERTY(EditDefaultsOnly, Category = "HUD|Style", meta = (ClampMin = "0.05"))
 	float EnemyCardVisibilityCheckInterval = 0.25f;
+
+	/** Сколько секунд держать «подкрепление высадилось» после прибытия волны. */
+	UPROPERTY(EditDefaultsOnly, Category = "HUD|Style", meta = (ClampMin = "0"))
+	float ReinforcementArrivedBannerSeconds = 4.f;
 
 	// --- BP-хуки ---------------------------------------------------------------
 
@@ -315,6 +331,24 @@ private:
 	/** Убирает карточку врага и возвращает обычную видимость карточек отряда. */
 	void ClearActiveEnemyCard();
 
+	/**
+	 * Событие с шины квестов. HUD интересуют только каналы подкреплений:
+	 * сигнал маяка включает отсчёт, высадка волны — временное сообщение.
+	 */
+	void HandleQuestEventForReinforcements(FGameplayTag Channel, const FQuestEventData& Payload);
+
+	/**
+	 * Пересчитать баннер по маякам уровня: волна в пути → отсчёт в ходах врага,
+	 * иначе баннер скрыт. Временное «высадилось» (таймер) не перетирается.
+	 */
+	void RefreshReinforcementBanner();
+
+	/** Истёк показ «подкрепление высадилось» — вернуть управление отсчёту. */
+	void HandleArrivedBannerExpired();
+
+	/** Видимый носитель баннера: панель, а без неё — сам текст. nullptr — баннера в WBP нет. */
+	UWidget* GetReinforcementBannerWidget() const;
+
 	/** Снимает карточку врага с панели без сброса ActiveEnemyUnit (для ребилда). */
 	void RemoveActiveEnemyCardFromPanel();
 
@@ -331,6 +365,15 @@ private:
 
 	/** Периодическая переоценка видимости действующего врага (фаза Enemy). */
 	FTimerHandle EnemyCardVisibilityTimer;
+
+	/** Подписка на шину Quest.Event (каналы подкреплений). */
+	FGameplayMessageListenerHandle QuestEventListenerHandle;
+
+	/** Таймер показа «подкрепление высадилось». */
+	FTimerHandle ArrivedBannerTimer;
+
+	/** Идёт показ «высадилось»: отсчёт не имеет права его перетереть. */
+	bool bReinforcementArrivedShowing = false;
 
 	/** Юниты обеих сторон, на чей OnUnitStateChanged мы подписаны (для отписки). */
 	TArray<TWeakObjectPtr<AUnitBase>> StateSubscribedUnits;

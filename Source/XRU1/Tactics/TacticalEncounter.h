@@ -298,6 +298,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Tactics|Подкрепление")
 	bool IsWavePending() const { return bWavePending; }
 
+	/** Сколько ходов врага осталось до высадки запрошенной волны (для баннера HUD). */
+	UFUNCTION(BlueprintPure, Category = "Tactics|Подкрепление")
+	int32 GetCountdownLeft() const { return CountdownLeft; }
+
 	/** Находит маяк по `BeaconId` (для StateTree-задачи). */
 	static ATacticalReinforcementBeacon* FindBeacon(const UObject* WorldContextObject, FName BeaconId);
 

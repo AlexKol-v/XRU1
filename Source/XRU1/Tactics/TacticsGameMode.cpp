@@ -53,6 +53,9 @@ void ATacticsGameMode::BeginPlay()
 	{
 		TurnManager->OnCombatEnded.AddUniqueDynamic(this, &ATacticsGameMode::HandleCombatEnded);
 		TurnManager->OnTurnLimitExpired.AddUniqueDynamic(this, &ATacticsGameMode::HandleTurnLimitExpired);
+		// Staged-бойцы туториала входят в бой позже старта — подписка на их
+		// состояние (для зачёта эвакуации) обновляется по смене состава.
+		TurnManager->OnUnitsChanged.AddUniqueDynamic(this, &ATacticsGameMode::HandleCombatUnitsChanged);
 	}
 
 	// Scenario-run стартует только из Director после OnLevelShown: в BeginPlay
@@ -471,6 +474,9 @@ void ATacticsGameMode::StartMissionCombat()
 
 	bCombatStarted = true;
 	TurnManager->StartCombat(Players, Enemies);
+	// Победа эвакуацией зависит и от смертей: подписка на состояние бойцов
+	// отряда (StartCombat состав уже зафиксировал, OnUnitsChanged не шлётся).
+	SubscribeToPlayerUnitStates();
 
 	// Боевая музыка стартует с подтверждённым боем, а не с загрузкой уровня:
 	// в туториале между стримом сублевела и первым ходом проходит заметная пауза.
@@ -521,6 +527,52 @@ void ATacticsGameMode::HandleBombDisarmed()
 
 void ATacticsGameMode::HandleUnitEvacuated(AUnitBase* /*Unit*/)
 {
+	TryCompleteSquadEvacuation();
+}
+
+void ATacticsGameMode::HandlePlayerUnitStateChanged()
+{
+	// Дёргается на каждой смене состояния (движение, стойки), поэтому вся
+	// работа — дешёвая перепроверка условия эвакуации с ранними выходами.
+	TryCompleteSquadEvacuation();
+}
+
+void ATacticsGameMode::HandleCombatUnitsChanged()
+{
+	if (bCombatStarted)
+	{
+		SubscribeToPlayerUnitStates();
+	}
+}
+
+void ATacticsGameMode::SubscribeToPlayerUnitStates()
+{
+	const UTurnManagerSubsystem* TurnManager = GetWorld()
+		? GetWorld()->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
+	if (!TurnManager)
+	{
+		return;
+	}
+	for (AActor* Actor : TurnManager->GetPlayerSideUnits())
+	{
+		if (AUnitBase* Unit = Cast<AUnitBase>(Actor))
+		{
+			Unit->OnUnitStateChanged.AddUniqueDynamic(this,
+				&ATacticsGameMode::HandlePlayerUnitStateChanged);
+		}
+	}
+}
+
+void ATacticsGameMode::TryCompleteSquadEvacuation()
+{
+	// Бой мог уже закончиться (таймер бомбы, гибель всего отряда) — событие
+	// эвакуации после его конца не должно ни слаться в квест, ни менять исход.
+	const UTurnManagerSubsystem* TurnManager = GetWorld()
+		? GetWorld()->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
+	if (!TurnManager || !TurnManager->IsInCombat())
+	{
+		return;
+	}
 	if (AreAllLivingPlayersEvacuated() && !bSquadEvacuationPending)
 	{
 		bSquadEvacuationPending = true;
@@ -532,7 +584,9 @@ void ATacticsGameMode::HandleUnitEvacuated(AUnitBase* /*Unit*/)
 void ATacticsGameMode::CompleteSquadEvacuation()
 {
 	bSquadEvacuationPending = false;
-	if (!AreAllLivingPlayersEvacuated())
+	const UTurnManagerSubsystem* Turns = GetWorld()
+		? GetWorld()->GetSubsystem<UTurnManagerSubsystem>() : nullptr;
+	if (!Turns || !Turns->IsInCombat() || !AreAllLivingPlayersEvacuated())
 	{
 		return;
 	}

@@ -719,6 +719,77 @@ bool UXRU1WidgetAuthoringLibrary::AddPauseMenuHubButton(const FString& AssetPath
 #endif
 }
 
+bool UXRU1WidgetAuthoringLibrary::AddTacticalHUDReinforcementBanner(const FString& AssetPath)
+{
+#if WITH_EDITOR
+	UWidgetBlueprint* Blueprint = LoadObject<UWidgetBlueprint>(nullptr, *NormalizeAssetPath(AssetPath));
+	if (!Blueprint || !Blueprint->WidgetTree)
+	{
+		UE_LOG(LogXRU1UI, Error, TEXT("WidgetAuthoring: не найден Widget Blueprint '%s'"), *AssetPath);
+		return false;
+	}
+	UWidgetTree* Tree = Blueprint->WidgetTree;
+
+	if (Tree->FindWidget(TEXT("ReinforcementPanel")))
+	{
+		return true; // баннер уже добавлен
+	}
+
+	// Баннер живёт на корневом Canvas: он должен висеть над всей вёрсткой и не
+	// зависеть от контейнеров, которые пересобираются в Designer.
+	UCanvasPanel* Canvas = Cast<UCanvasPanel>(Tree->RootWidget);
+	if (!Canvas)
+	{
+		UE_LOG(LogXRU1UI, Error,
+			TEXT("WidgetAuthoring: корень '%s' не CanvasPanel — некуда ставить баннер"), *AssetPath);
+		return false;
+	}
+
+	// Повторный запуск после неудачной вставки не должен падать на коллизии имён.
+	auto ReclaimName = [Tree](const TCHAR* Name)
+	{
+		if (UObject* Existing = StaticFindObject(UObject::StaticClass(), Tree, Name))
+		{
+			Existing->Rename(nullptr, GetTransientPackage(),
+				REN_DontCreateRedirectors | REN_NonTransactional);
+		}
+	};
+	ReclaimName(TEXT("ReinforcementPanel"));
+	ReclaimName(TEXT("ReinforcementText"));
+
+	const FMenuPalette Palette = LoadPalette();
+
+	UBorder* Panel = Tree->ConstructWidget<UBorder>(UBorder::StaticClass(), TEXT("ReinforcementPanel"));
+	Panel->SetBrushColor(Palette.PanelBackground);
+	Panel->SetPadding(FMargin(18.f, 8.f));
+	Panel->SetHorizontalAlignment(HAlign_Center);
+	Panel->SetVerticalAlignment(VAlign_Center);
+	// Скрыт до сигнала маяка: показом и текстом управляет UTacticalHUDWidget.
+	Panel->SetVisibility(ESlateVisibility::Collapsed);
+
+	UTextBlock* Text = MakeText(Tree, TEXT("ReinforcementText"),
+		NSLOCTEXT("XRU1.HUD", "ReinforcementPreview", "ПОДКРЕПЛЕНИЕ ПРОТИВНИКА"),
+		18, Palette.Warning);
+	Panel->AddChild(Text);
+
+	Canvas->AddChildToCanvas(Panel);
+	if (UCanvasPanelSlot* Slot = Cast<UCanvasPanelSlot>(Panel->Slot))
+	{
+		// Верх-центр, ниже индикатора фазы; при пересечении с рукотворной
+		// вёрсткой позиция правится в Designer как у обычного виджета.
+		Slot->SetAnchors(FAnchors(0.5f, 0.f, 0.5f, 0.f));
+		Slot->SetAlignment(FVector2D(0.5f, 0.f));
+		Slot->SetAutoSize(true);
+		Slot->SetPosition(FVector2D(0.f, 150.f));
+		Slot->SetZOrder(50);
+	}
+
+	return FinalizeBlueprint(Blueprint);
+#else
+	return false;
+#endif
+}
+
 bool UXRU1WidgetAuthoringLibrary::AddDifficultySkipTutorialToggle(const FString& AssetPath)
 {
 #if WITH_EDITOR

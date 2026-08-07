@@ -103,6 +103,15 @@ public:
 	static bool AddDifficultySkipTutorialToggle(const FString& AssetPath);
 
 	/**
+	 * Точечная правка WBP_TacticalHUD: баннер подкреплений врага верх-центр —
+	 * Border `ReinforcementPanel` с текстом `ReinforcementText`. Имена читает
+	 * BindWidgetOptional базы HUD; создаётся скрытым, показом и текстом
+	 * управляет UTacticalHUDWidget. Идемпотентна.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "XRU1|Widget Authoring")
+	static bool AddTacticalHUDReinforcementBanner(const FString& AssetPath);
+
+	/**
 	 * Вставляет в корневой лейаут (`WBP_PrimaryGameLayout`) общий фон
 	 * `Img_ScreenBackdrop` — под все стеки-слои.
 	 *

@@ -196,6 +196,27 @@ protected:
 	UFUNCTION()
 	void HandleUnitEvacuated(AUnitBase* Unit);
 
+	/**
+	 * Смена состояния бойца отряда (смерть/ранение). Условие «все живые
+	 * эвакуированы» может стать истинным не только от эвакуации: гибель
+	 * последних оставшихся на карте бойцов (двое ушли, двоих убили) тоже
+	 * завершает миссию. Без этой перепроверки бой зависал без исхода —
+	 * эвакуированные считаются живыми, поэтому поражение не наступает, а
+	 * победу больше некому объявить.
+	 */
+	UFUNCTION()
+	void HandlePlayerUnitStateChanged();
+
+	/** Состав боя изменился (staged-бойцы) — подписаться на новых бойцов отряда. */
+	UFUNCTION()
+	void HandleCombatUnitsChanged();
+
+	/** Идемпотентная подписка на OnUnitStateChanged всех бойцов стороны игрока. */
+	void SubscribeToPlayerUnitStates();
+
+	/** Общая точка победы эвакуацией: проверка условия + отложенный зачёт. */
+	void TryCompleteSquadEvacuation();
+
 	/** Разносит последний Evac.Unit и Evac.Squad по разным StateTree ticks. */
 	void CompleteSquadEvacuation();
 

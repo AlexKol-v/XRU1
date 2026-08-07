@@ -910,6 +910,14 @@ BP-хуки постановки: `OnBeaconSignal` (дым/сигнал), `OnWav
 `OnUnitsSpawned`. Отказ маяка (лимит исчерпан, волна уже в пути) шаг StateTree не
 роняет.
 
+Игроку о волне сообщает баннер боевого HUD (верх-центр): по квест-событию
+`Reinforcements.Signaled` включается отсчёт «через N ход(ов)» (числа HUD
+перечитывает из `IsWavePending()`/`GetCountdownLeft()` маяков — баннер не может
+разойтись с фактическим состоянием), по `Reinforcements.Arrived` — короткое
+«подкрепление высадилось». Виджеты `ReinforcementPanel`/`ReinforcementText`
+опциональны (BindWidgetOptional), вставка в вёрстку —
+`UXRU1WidgetAuthoringLibrary::AddTacticalHUDReinforcementBanner`.
+
 ### `xru1.Mission.Validate` — главный инструмент проверки расстановки
 
 Печатает по фактическому состоянию мира: бюджет хода бегом, сложность и лимит
